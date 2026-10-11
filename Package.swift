@@ -21,6 +21,21 @@ let package = Package(
             dependencies: ["RushCore"],
             path: "Sources/rushes"
         ),
+        .target(
+            name: "RushIntents",
+            dependencies: ["RushCore"],
+            path: "Sources/RushIntents"
+        ),
+        .executableTarget(
+            name: "RushIntentsExtension",
+            dependencies: ["RushIntents"],
+            path: "Sources/RushIntentsExtension"
+        ),
+        .testTarget(
+            name: "RushIntentsTests",
+            dependencies: ["RushIntents", "RushCore"],
+            path: "Tests/RushIntentsTests"
+        ),
         .testTarget(
             name: "RushCoreTests",
             dependencies: ["RushCore"],
