@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import LoomCore
+@testable import RushCore
 
 /// Live hardware checks. Skipped unless LOOM_LIVE_TESTS=1, because they read
 /// the real display, camera and microphone lists. Listing sources does not

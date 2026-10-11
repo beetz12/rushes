@@ -2,29 +2,29 @@
 import PackageDescription
 
 let package = Package(
-    name: "loom-clone",
+    name: "rushes",
     platforms: [
         .macOS("26.4")
     ],
     targets: [
         .target(
-            name: "LoomCore",
-            path: "Sources/LoomCore"
+            name: "RushCore",
+            path: "Sources/RushCore"
         ),
         .executableTarget(
-            name: "loomcore-engine",
-            dependencies: ["LoomCore"],
-            path: "Sources/loomcore-engine"
+            name: "rushcore-engine",
+            dependencies: ["RushCore"],
+            path: "Sources/rushcore-engine"
         ),
         .executableTarget(
-            name: "loomclone",
-            dependencies: ["LoomCore"],
-            path: "Sources/loomclone"
+            name: "rushes",
+            dependencies: ["RushCore"],
+            path: "Sources/rushes"
         ),
         .testTarget(
-            name: "LoomCoreTests",
-            dependencies: ["LoomCore"],
-            path: "Tests/LoomCoreTests"
+            name: "RushCoreTests",
+            dependencies: ["RushCore"],
+            path: "Tests/RushCoreTests"
         ),
     ]
 )

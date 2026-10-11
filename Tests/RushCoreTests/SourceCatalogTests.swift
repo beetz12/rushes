@@ -1,5 +1,5 @@
 import Testing
-@testable import LoomCore
+@testable import RushCore
 
 @Suite("SourceIds")
 struct SourceIdsTests {

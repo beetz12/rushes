@@ -1,10 +1,10 @@
 import Foundation
-import LoomCore
+import RushCore
 
 let cliVersion = "0.1.0-dev"
 
 if CommandLine.arguments.contains("--version") {
-    print("{\"name\":\"loomclone\",\"version\":\"\(cliVersion)\"}")
+    print("{\"name\":\"rushes\",\"version\":\"\(cliVersion)\"}")
     exit(0)
 }
 

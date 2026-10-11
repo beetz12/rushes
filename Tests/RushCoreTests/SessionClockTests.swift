@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import LoomCore
+@testable import RushCore
 
 @Suite("SessionClock")
 struct SessionClockTests {

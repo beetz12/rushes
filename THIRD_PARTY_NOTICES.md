@@ -9,10 +9,11 @@ of our changes.
 
 | Our path | Source repo | Pinned SHA | Source path | Licence | Copyright | Changes |
 |---|---|---|---|---|---|---|
+| Sources/RushCore/Writers/AudioSampleTiming.swift | aritropaul/voom | 410fb860b666 | Packages/VoomCore/Sources/VoomCore/Services/Capture/AudioSampleTiming.swift:1-53 | MIT (licenses/MIT-voom.txt) | Copyright (c) 2026 Aritro Paul | Added the "Derived from" provenance header; no other changes. |
 
-No third-party code has been copied yet. `Sources/LoomCore/Clock/SessionClock.swift`
-and the executable stubs are original code (docs/PLAN.md, Feature matrix:
-project-format and Clock rows, reuse mode own-design).
+`Sources/RushCore/Clock/SessionClock.swift`, the executable stubs, and every
+other file under `Sources/RushCore/Writers/` are original code (docs/PLAN.md,
+Feature matrix: project-format and Clock rows, reuse mode own-design).
 
 Every copied or ported file must start with a header of the form
 "Derived from owner/repo@sha:path (licence). See THIRD_PARTY_NOTICES.md."

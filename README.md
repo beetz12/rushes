@@ -1,4 +1,4 @@
-# loom-clone (working name)
+# Rushes
 
 David's own Loom-style screen and camera recorder. No app code yet.
 
