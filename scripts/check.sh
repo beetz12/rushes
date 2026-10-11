@@ -10,15 +10,14 @@ echo "== swift test =="
 swift test
 
 echo "== clean-room check on our source =="
-first=$(python3 -I tools/checks/check_clean.py Sources Tests | head -1)
+python3 tools/checks/test_clean_inputs.py
+clean_output=$(python3 -I tools/checks/check_clean.py Sources Tests)
+echo "$clean_output"
+first=${clean_output%%$'\n'*}
 [ "$first" = "0" ] || { echo "check_clean reported $first"; exit 1; }
 
 echo "== notices sync =="
-missing=0
-for f in $(grep -rl "Derived from" Sources Tests 2>/dev/null); do
-  rel=$(basename "$f")
-  grep -q "$rel" THIRD_PARTY_NOTICES.md || { echo "missing notice row: $f"; missing=1; }
-done
-[ "$missing" = "0" ] || exit 1
+python3 tools/checks/test_notices.py
+python3 -I tools/checks/check_notices.py
 
 echo "OK: build, tests, clean-room and notices all pass"

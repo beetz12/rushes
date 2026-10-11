@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Clean-room contamination check.
 
-Counts runs of K consecutive word tokens in our docs that also appear in a
+Counts runs of K consecutive word tokens in our source and docs that also appear in a
 copyleft source file (AGPL/GPL parts of Cap, Recordly, Screenity, and better-shot's copyleft_paths) and do NOT
 appear in any permissive source (so shared public-API boilerplate is ignored).
 
@@ -40,14 +40,22 @@ def tokens_with_lines(text: str):
 def doc_files(paths):
     for p in map(Path, paths):
         if p.is_dir():
-            yield from (f for f in sorted(p.rglob("*")) if f.is_file() and f.suffix in DOC_EXT)
+            yield from (f for f in sorted(p.rglob("*"))
+                        if f.is_file() and f.suffix in SRC_EXT
+                        and f.name not in SKIP_NAMES
+                        and not any(part in SKIP_DIRS for part in f.relative_to(p).parts[:-1]))
         elif p.is_file():
             yield p
+        else:
+            raise FileNotFoundError(f"clean-room input does not exist: {p}")
 
 
 def source_files(slug: str, want_permissive: bool):
     root = clone_dir(slug)
-    listed = subprocess.run(["git", "-C", str(root), "ls-files"], capture_output=True, text=True).stdout.splitlines()
+    listing = subprocess.run(["git", "-C", str(root), "ls-files"], capture_output=True, text=True)
+    if listing.returncode != 0:
+        raise RuntimeError(f"cannot inspect reference source {slug}: {listing.stderr.strip()}")
+    listed = listing.stdout.splitlines()
     for rel in listed:
         parts = rel.split("/")
         name = parts[-1]
@@ -64,8 +72,8 @@ def source_files(slug: str, want_permissive: bool):
             if f.stat().st_size > MAX_BYTES:
                 continue
             yield rel, f.read_text(errors="ignore")
-        except OSError:
-            continue
+        except OSError as error:
+            raise RuntimeError(f"cannot inspect reference file {slug}:{rel}") from error
 
 
 def scan(text: str, k: int, keys: dict, firsts: set):
