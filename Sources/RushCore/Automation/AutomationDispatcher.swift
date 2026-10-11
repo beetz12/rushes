@@ -57,6 +57,13 @@ public actor AutomationDispatcher {
             return rpcError(id: .null, code: -32600, message: "Invalid JSON-RPC request")
         }
         let id = object["id"] ?? .null
+        if object["id"] != nil {
+            switch id {
+            case .string, .int: break
+            case .double(let value) where value.isFinite: break
+            default: return rpcError(id: .null, code: -32600, message: "Request id must be a string or number")
+            }
+        }
         if object["id"] == nil {
             return methodName.hasPrefix("notifications/") ? .init(status: 202) : rpcError(id: .null, code: -32600, message: "Request id is required")
         }

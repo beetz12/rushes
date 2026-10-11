@@ -116,7 +116,7 @@ public enum TranscriptFormat: String, Codable, CaseIterable, Sendable { case jso
 public enum TranscriptFiles {
     public static func read(from packageURL: URL) throws -> TranscriptDocument {
         let document = try JSONDecoder().decode(TranscriptDocument.self,
-            from: Data(contentsOf: packageURL.appendingPathComponent("transcript.json")))
+            from: Data(contentsOf: TranscriptPackageIO.validatedSource("transcript.json", in: packageURL)))
         try document.validate(); return document
     }
     public static func write(_ document: TranscriptDocument, to packageURL: URL) throws {
@@ -147,5 +147,20 @@ public enum TranscriptFiles {
         let ms = Int(milliseconds.rounded())
         return String(format: "%02d:%02d:%02d%@%03d", ms / 3_600_000, (ms / 60_000) % 60,
                       (ms / 1000) % 60, separator, ms % 1000)
+    }
+}
+
+/// Shared sidecar/source defense: resolving a package path never opens a symlink outside that package.
+enum TranscriptPackageIO {
+    static func validatedSource(_ filename: String, in packageURL: URL) throws -> URL {
+        guard !filename.isEmpty, filename == (filename as NSString).lastPathComponent, !filename.hasPrefix(".") else {
+            throw ControlFailure(code: "invalid-params", message: "A direct package filename is required.")
+        }
+        let root = packageURL.standardizedFileURL.resolvingSymlinksInPath()
+        let source = root.appendingPathComponent(filename).standardizedFileURL.resolvingSymlinksInPath()
+        guard source.path.hasPrefix(root.path + "/") else {
+            throw ControlFailure(code: "unsafe-package-path", message: "The package contains a source symlink pointing outside the recording.")
+        }
+        return source
     }
 }

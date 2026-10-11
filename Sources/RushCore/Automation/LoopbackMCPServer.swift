@@ -52,7 +52,10 @@ private final class MCPHTTPConnection: @unchecked Sendable {
     }
     func start() {
         connection.start(queue: queue); receive()
-        queue.asyncAfter(deadline: .now() + 15) { [weak self] in self?.connection.cancel() }
+        queue.asyncAfter(deadline: .now() + 15) { [weak self] in
+            guard let self, !self.complete else { return }
+            self.connection.cancel()
+        }
     }
     func receive() {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [self] data, _, finished, error in

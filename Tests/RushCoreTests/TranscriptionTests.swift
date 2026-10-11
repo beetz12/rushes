@@ -1,4 +1,7 @@
 import Foundation
+import AVFoundation
+import Speech
+import FoundationModels
 import Testing
 @testable import RushCore
 
@@ -83,6 +86,37 @@ struct TranscriptionTests {
         #expect(matcher.consume("one two") == 3); #expect(matcher.consume("eight nine ten") == 10)
         #expect(matcher.consume("ten") == 10)
     }
+    @Test("PCM level detector measures a known two-second silent gap")
+    func levelSilence() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("silence-\(UUID().uuidString).caf")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1))
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 64000))
+        buffer.frameLength = 64000
+        let samples = try #require(buffer.floatChannelData)[0]
+        for index in 0..<64000 {
+            samples[index] = (index < 16000 || index >= 48000) ? Float(sin(Double(index) * 0.4) * 0.5) : 0
+        }
+        let writer = try AVAudioFile(forWriting: url, settings: format.settings)
+        try writer.write(from: buffer)
+        let input = try AVAudioFile(forReading: url)
+        let silence = try AudioSilenceDetector.detect(file: input)
+        #expect(silence == [.init(startMs: 1000, endMs: 3000)])
+        #expect(input.framePosition == 0)
+    }
+    @Test("Package reads reject source and transcript symlinks outside package")
+    func sourceContainment() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let external = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        try Data("external audio".utf8).write(to: external)
+        defer { try? FileManager.default.removeItem(at: folder); try? FileManager.default.removeItem(at: external) }
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("mic.mov"), withDestinationURL: external)
+        do { _ = try await TranscriptService.transcribe(packageURL: folder); Issue.record("Source escape accepted") }
+        catch let failure as ControlFailure { #expect(failure.payload.code == "unsafe-package-path") }
+        try FileManager.default.createSymbolicLink(at: folder.appendingPathComponent("transcript.json"), withDestinationURL: external)
+        #expect(throws: ControlFailure.self) { try TranscriptFiles.read(from: folder) }
+    }
     @Test("No audio is a structured actionable failure")
     func noAudio() async throws {
         do { _ = try await TranscriptService.transcribe(packageURL: URL(fileURLWithPath: "/tmp/no-rushes-package-\(UUID().uuidString)")); Issue.record("Expected missing audio failure") }
@@ -95,13 +129,81 @@ struct LiveTranscriptionTests {
     @Test("Recognizes actual audio bytes with Apple model and real timed words")
     func recognizesSpeechFixture() async throws {
         let path = try #require(ProcessInfo.processInfo.environment["RUSHES_SPEECH_FIXTURE"])
+        let module = SpeechTranscriber(locale: Locale(identifier: "en-US"), preset: .transcription)
+        let before = await AssetInventory.status(forModules: [module])
+        let started = Date()
         let doc = try await TranscriptService.transcribe(audioURL: URL(fileURLWithPath: path), allowAssetDownload: ProcessInfo.processInfo.environment["RUSHES_SPEECH_DOWNLOAD"] == "1")
+        let after = await AssetInventory.status(forModules: [module])
+        print("LIVE_ASSETS before=\(before) after=\(after) setupAndRecognitionSeconds=\(Date().timeIntervalSince(started)) downloadBytes=unavailable")
         print("LIVE_TRANSCRIPTION engine=\(doc.engine) locale=\(doc.locale) words=\(doc.words.count) text=\(doc.text)")
         #expect(doc.engine == "Apple SpeechAnalyzer")
         #expect(doc.words.count >= 10)
         #expect(doc.text.localizedCaseInsensitiveContains("recording"))
         #expect(doc.text.localizedCaseInsensitiveContains("video"))
+        let normalized = doc.text.lowercased().split { !$0.isLetter && !$0.isNumber }.joined(separator: " ")
+        #expect(normalized.contains("this is a recording test for our new video application"))
+        #expect(normalized.contains("this recording stays on this computer"))
         #expect(doc.words.allSatisfy { $0.endMs > $0.startMs && $0.startMs >= 0 })
         try doc.validate()
+    }
+    @Test("Recognizes a real MOV microphone track through package facade")
+    func recognizesMOVPackage() async throws {
+        let path = try #require(ProcessInfo.processInfo.environment["RUSHES_SPEECH_FIXTURE"])
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("asr-mov-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let asset = AVURLAsset(url: URL(fileURLWithPath: path))
+        let export = try #require(AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough))
+        try await export.export(to: folder.appendingPathComponent("mic.mov"), as: .mov)
+        let doc = try await TranscriptService.transcribe(packageURL: folder)
+        #expect(doc.inputFile == "mic.mov")
+        #expect(doc.words.count >= 10)
+        #expect(doc.text.localizedCaseInsensitiveContains("recording"))
+        #expect(try TranscriptFiles.read(from: folder) == doc)
+        #expect(FileManager.default.fileExists(atPath: folder.appendingPathComponent("captions.vtt").path))
+        let word = try #require(doc.words.first(where: { $0.text.lowercased() == "microphone" }))
+        _ = try await TranscriptCommands.handle(request: ControlRequest(id: "correction", cmd: "transcript.correct", args: .object(["wordId": .string(word.id), "text": .string("speaker")])), packageURL: folder)
+        let rerun = try await TranscriptService.transcribe(packageURL: folder)
+        #expect(rerun.words.contains { $0.id == word.id && $0.text == "speaker" && $0.source == "user" && $0.originalText.lowercased() == "microphone" })
+        #expect(try TranscriptFiles.read(from: folder) == rerun)
+    }
+}
+
+@Suite("Ten minute Apple speech benchmark", .enabled(if: ProcessInfo.processInfo.environment["RUSHES_LONG_SPEECH_FIXTURE"] == "1"))
+struct LongTranscriptionTests {
+    @Test("Recognizes ten minutes of synthesized speech audio within three minutes", .timeLimit(.minutes(3)))
+    func tenMinuteRecognition() async throws {
+        let path = try #require(ProcessInfo.processInfo.environment["RUSHES_SPEECH_FIXTURE"])
+        let source = AVURLAsset(url: URL(fileURLWithPath: path))
+        let sourceDuration = try await source.load(.duration)
+        let sourceTrack = try #require(try await source.loadTracks(withMediaType: .audio).first)
+        let composition = AVMutableComposition()
+        let track = try #require(composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid))
+        let total = CMTime(seconds: 600, preferredTimescale: 48_000)
+        var position = CMTime.zero
+        while position < total {
+            let duration = CMTimeMinimum(sourceDuration, CMTimeSubtract(total, position))
+            try track.insertTimeRange(CMTimeRange(start: .zero, duration: duration), of: sourceTrack, at: position)
+            position = CMTimeAdd(position, duration)
+        }
+        let output = FileManager.default.temporaryDirectory.appendingPathComponent("rushes-long-speech-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: output) }
+        let export = try #require(AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetAppleM4A))
+        try await export.export(to: output, as: .m4a)
+        let started = Date()
+        let document = try await TranscriptService.transcribe(audioURL: output)
+        let elapsed = Date().timeIntervalSince(started)
+        print("LONG_ASR durationMs=\(document.durationMs) words=\(document.words.count) elapsedSeconds=\(elapsed) source=synthesized-spoken-audio")
+        #expect(abs(document.durationMs - 600_000) < 100)
+        #expect(document.words.count > 500)
+        #expect(elapsed < 180)
+        #expect(document.words.last?.startMs ?? 0 > 570_000)
+        try document.validate()
+        let metadata = await MetadataService.generate(transcript: document)
+        print("LONG_METADATA engine=\(metadata.engine) chapters=\(metadata.chapters.count) lastStartMs=\(metadata.chapters.last?.startMs ?? -1)")
+        #expect(metadata.chapters.first?.startMs == 0)
+        #expect(metadata.chapters.last?.startMs ?? 0 > 420_000)
+        if SystemLanguageModel.default.availability == .available { #expect(metadata.engine == "Apple FoundationModels (on-device)") }
+        try metadata.validate(durationMs: document.durationMs)
     }
 }

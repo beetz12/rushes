@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import FoundationModels
 @testable import RushCore
 
 @Suite("Local metadata")
@@ -41,5 +42,25 @@ struct MetadataTests {
         let result = try await MetadataCommands.handle(request: request, packageURL: folder)
         #expect(result["title"]?.string == "My take")
         #expect(try MetadataService.read(from: folder).chapters.count == 1)
+    }
+}
+
+@Suite("Live on-device metadata", .enabled(if: ProcessInfo.processInfo.environment["RUSHES_SPEECH_FIXTURE"] != nil))
+struct LiveMetadataTests {
+    @Test("Uses the real on-device language model when available and identifies unavailable fallback")
+    func modelAvailability() async throws {
+        let path = try #require(ProcessInfo.processInfo.environment["RUSHES_SPEECH_FIXTURE"])
+        let transcript = try await TranscriptService.transcribe(audioURL: URL(fileURLWithPath: path))
+        let availability = SystemLanguageModel.default.availability
+        let result = await MetadataService.generate(transcript: transcript)
+        print("LIVE_METADATA availability=\(availability) engine=\(result.engine) title=\(result.title) warning=\(result.warning ?? "none")")
+        if availability == .available {
+            #expect(result.engine == "Apple FoundationModels (on-device)")
+            #expect(result.warning == nil)
+        } else {
+            #expect(result.engine == "extractive-fallback")
+            #expect(result.warning != nil)
+        }
+        try result.validate(durationMs: transcript.durationMs)
     }
 }

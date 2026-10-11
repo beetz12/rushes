@@ -12,16 +12,28 @@ public enum TranscriptService {
         guard FileManager.default.fileExists(atPath: input.path) else {
             throw ControlFailure(code: "no-audio", message: "This recording has no microphone or system audio track. Enable microphone or system audio for the next take.")
         }
-        var document = try await transcribe(audioURL: input, localeIdentifier: localeIdentifier,
+        let canonicalInput = try TranscriptPackageIO.validatedSource(input.lastPathComponent, in: packageURL)
+        var document = try await transcribe(audioURL: canonicalInput, localeIdentifier: localeIdentifier,
                                             allowAssetDownload: allowAssetDownload)
+        document.inputFile = input.lastPathComponent
         if let prior = try? TranscriptFiles.read(from: packageURL) {
+            var appliedCorrectionIds: Set<String> = []
             for index in document.words.indices {
-                if let corrected = prior.words.first(where: { $0.source == "user" &&
+                if let corrected = prior.words.first(where: { $0.source == "user" && !appliedCorrectionIds.contains($0.id) &&
                     abs($0.startMs - document.words[index].startMs) <= 80 &&
                     $0.originalText == document.words[index].originalText }) {
+                    appliedCorrectionIds.insert(corrected.id)
                     document.words[index].text = corrected.text
                     document.words[index].source = "user"; document.words[index].id = corrected.id
                 }
+            }
+            // A different ASR segmentation may shift sequential IDs. Preserve correction IDs
+            // and rename collided uncorrected IDs rather than losing a valid corrected transcript.
+            var used = Set(document.words.filter { $0.source == "user" }.map(\.id))
+            for index in document.words.indices where document.words[index].source != "user" {
+                let original = document.words[index].id
+                if used.contains(original) { document.words[index].id = "\(original)-rerun-\(index)" }
+                used.insert(document.words[index].id)
             }
             document.cues = try CaptionBuilder.build(words: document.words)
         }
@@ -76,6 +88,7 @@ public enum TranscriptService {
             } catch { throw ControlFailure(code: "audio-unreadable", message: error.localizedDescription) }
         }
         let durationMs = Double(audio.length) / audio.processingFormat.sampleRate * 1000
+        let silence = try AudioSilenceDetector.detect(file: audio)
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         let resultTask = Task { () throws -> [TranscriptWord] in
             var words: [TranscriptWord] = []
@@ -108,7 +121,8 @@ public enum TranscriptService {
             try await analyzer.finalizeAndFinishThroughEndOfInput()
             let words = try await resultTask.value
             return try TranscriptDocument(locale: locale.identifier, inputFile: audioURL.lastPathComponent,
-                                           durationMs: max(durationMs, words.last?.endMs ?? 0), words: words)
+                                           durationMs: max(durationMs, words.last?.endMs ?? 0), words: words,
+                                           cues: try CaptionBuilder.build(words: words, silence: silence))
         } catch {
             await analyzer.cancelAndFinishNow(); resultTask.cancel()
             if let failure = error as? ControlFailure { throw failure }
@@ -135,9 +149,15 @@ public enum TranscriptCommands {
         case "transcript.get": return try JSONValue(encoding: TranscriptFiles.read(from: packageURL))
         case "transcript.edit-plan":
             let doc = try TranscriptFiles.read(from: packageURL)
+            var measuredSilence: [TranscriptInterval] = []
+            if args["levelSilence"]?.bool == true {
+                let source = try TranscriptPackageIO.validatedSource(doc.inputFile, in: packageURL)
+                measuredSilence = try await AudioSilenceDetector.detect(audioURL: source)
+            }
             let cuts = try TranscriptEditPlanner.suggestions(words: doc.words, durationMs: doc.durationMs,
                 selectedWordIds: Set(args["wordIds"]?.array?.compactMap(\.string) ?? []),
-                removeFillers: args["removeFillers"]?.bool ?? false, removeSilence: args["removeSilence"]?.bool ?? false)
+                removeFillers: args["removeFillers"]?.bool ?? false, removeSilence: args["removeSilence"]?.bool ?? false,
+                measuredSilence: measuredSilence)
             return try JSONValue(encoding: cuts)
         case "transcript.correct":
             guard let wordId = args["wordId"]?.string, let text = args["text"]?.string,
@@ -146,7 +166,7 @@ public enum TranscriptCommands {
             }
             var doc = try TranscriptFiles.read(from: packageURL)
             guard let index = doc.words.firstIndex(where: { $0.id == wordId }) else { throw ControlFailure(code: "not-found", message: "Word identifier not found.") }
-            doc.words[index].text = text; doc.words[index].source = "user"
+            doc.words[index].text = text.split(whereSeparator: \.isWhitespace).joined(separator: " "); doc.words[index].source = "user"
             doc.cues = try CaptionBuilder.build(words: doc.words); try TranscriptFiles.write(doc, to: packageURL)
             return try JSONValue(encoding: doc)
         case "captions.export":

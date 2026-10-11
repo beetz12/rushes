@@ -16,7 +16,7 @@ public struct RecordingMetadata: Codable, Equatable, Sendable {
         self.title = title; self.summary = summary; self.chapters = chapters; self.engine = engine; self.warning = warning
     }
     public func validate(durationMs: Double? = nil) throws {
-        guard !title.isEmpty, title.count <= 240, summary.count <= 32_768,
+        guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !title.contains(where: \.isNewline), title.count <= 240, summary.count <= 32_768,
               chapters.count <= 100 else { throw ControlFailure(code: "invalid-metadata", message: "Title or summary is empty or exceeds its size limit.") }
         var prior = -1.0
         for chapter in chapters {
@@ -98,7 +98,7 @@ public enum MetadataService {
     }
     public static func read(from packageURL: URL) throws -> RecordingMetadata {
         let metadata = try JSONDecoder().decode(RecordingMetadata.self,
-            from: Data(contentsOf: packageURL.appendingPathComponent("metadata.json")))
+            from: Data(contentsOf: TranscriptPackageIO.validatedSource("metadata.json", in: packageURL)))
         try metadata.validate(); return metadata
     }
     public static func write(_ metadata: RecordingMetadata, to packageURL: URL) throws {

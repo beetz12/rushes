@@ -2,9 +2,7 @@ import Foundation
 
 public enum DiagnosticRedactor {
     public static func redact(_ text: String, homePath: String = FileManager.default.homeDirectoryForCurrentUser.path) -> String {
-        var result = text
-        if !homePath.isEmpty { result = result.replacingOccurrences(of: homePath, with: "<home>") }
-        result = replace(pattern: #"/(?:Users|home)/[^\s/\\\"']+"#, in: result, with: "<home>")
+        var result = text.replacingOccurrences(of: "\\/", with: "/")
         // URL queries can contain signed credentials. Fragments and userinfo are removed too.
         let urlPattern = #"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s\"'<>]+"#
         if let regex = try? NSRegularExpression(pattern: urlPattern) {
@@ -19,6 +17,8 @@ public enum DiagnosticRedactor {
                 result.replaceSubrange(range, with: value)
             }
         }
+        if !homePath.isEmpty { result = result.replacingOccurrences(of: homePath, with: "<home>") }
+        result = replace(pattern: #"/(?:Users|home)/[^\s/\\\"']+"#, in: result, with: "<home>")
         result = replace(pattern: #"(?i)(bearer\s+)[^\s\"',;]+"#, in: result, with: "$1<redacted>")
         result = replace(pattern: #"(?i)((?:token|secret|password|api[_-]?key|authorization|access[_-]?key|cookie)\s*[\"']?\s*[:=]\s*[\"']?)[^\s\"',;]+"#,
                          in: result, with: "$1<redacted>")

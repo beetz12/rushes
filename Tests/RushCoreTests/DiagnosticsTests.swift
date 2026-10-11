@@ -12,6 +12,13 @@ struct DiagnosticsTests {
         #expect(!clean.contains("private")); #expect(!clean.contains("user:pass"))
         #expect(clean.contains("https://example.com/video"))
     }
+    @Test("Encoded JSON paths and URL queries remain private after decoding")
+    func escapedJSON() throws {
+        let source = #"{"path":"\/Users\/dave\/Movies","url":"https:\/\/example.com\/Users\/dave\/video?signature=private"}"#
+        let clean = DiagnosticRedactor.redact(source, homePath: "/Users/dave")
+        let object = try JSONDecoder().decode([String: String].self, from: Data(clean.utf8))
+        #expect(!object.values.contains { $0.contains("/Users/dave") || $0.contains("?") || $0.contains("private") })
+    }
     @Test("ZIP roundtrip contains no home path or URL query")
     func archive() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
