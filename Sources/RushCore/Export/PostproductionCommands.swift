@@ -6,7 +6,11 @@ extension PostproductionService {
         guard let id=request.param("id")?.string,!id.isEmpty else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"A recording ID is required") }
         switch request.cmd {
         case "edit.get": return try JSONValue(encoding:await getEdit(id:id))
-        case "share.assets": return try JSONValue(encoding:await ShareAssetsService(root:root,postproduction:self).assets(id:id))
+        case "share.assets":
+            let snapshot:EditDocument?
+            if let value=request.param("editSnapshot") { snapshot=try JSONDecoder().decode(EditDocument.self,from:ControlWire.encoder.encode(value)) }
+            else { snapshot=nil }
+            return try JSONValue(encoding:await ShareAssetsService(root:root,postproduction:self).assets(id:id,editSnapshot:snapshot,publishedVideoPath:request.param("publishedVideoPath")?.string))
         case "layout.frames":
             let override:EditLayout?
             if let value=request.param("layout") { override=try JSONDecoder().decode(EditLayout.self,from:ControlWire.encoder.encode(value)) }

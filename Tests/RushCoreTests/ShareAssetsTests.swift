@@ -138,4 +138,32 @@ struct ShareAssetsTests {
         }
     }
 
+    @Test func lateMetadataUsesPublishedEditAndExactVideoAfterDraftChanges() async throws {
+        let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
+        let production=PostproductionService(root:fixture.root)
+        _=try await production.setEdit(id:fixture.package.id,edit:edited())
+        let service=ShareAssetsService(root:fixture.root,postproduction:production)
+        let published=try await service.assets(id:fixture.package.id)
+        let originalVideo=try Data(contentsOf:URL(fileURLWithPath:published.videoPath)),originalPoster=try Data(contentsOf:URL(fileURLWithPath:published.posterPath))
+        var current=EditDocument(durationMs:2000,title:"Current different draft")
+        current.layout.preset = .cameraOnly; current.clips=[EditClip(id:"new",sourceStartMs:0,sourceEndMs:1500)]
+        _=try await production.setEdit(id:fixture.package.id,edit:current)
+        try TranscriptFiles.write(transcript(),to:fixture.package.folderURL)
+        try MetadataService.write(.init(title:"Explicit user title",summary:"Explicit user summary",chapters:[.init(startMs:0,title:"Intro"),.init(startMs:1000,title:"Later section")],engine:"user"),to:fixture.package.folderURL)
+        let enriched=try await service.assets(id:fixture.package.id,editSnapshot:published.editSnapshot,publishedVideoPath:published.videoPath)
+        #expect(enriched.editSnapshot == published.editSnapshot && enriched.durationMs == 800)
+        #expect(enriched.title == "Explicit user title" && enriched.summary == "Explicit user summary")
+        #expect(try Data(contentsOf:URL(fileURLWithPath:enriched.videoPath)) == originalVideo)
+        #expect(try Data(contentsOf:URL(fileURLWithPath:enriched.posterPath)) == originalPoster)
+        let captions=try JSONDecoder().decode(TranscriptDocument.self,from:Data(contentsOf:URL(fileURLWithPath:try #require(enriched.transcriptPath))))
+        #expect(captions.words.map(\.text) == ["Later","Boundary","Faster"] && captions.durationMs == 800)
+        await #expect(throws:ControlFailure.self) { try await service.assets(id:fixture.package.id,editSnapshot:published.editSnapshot) }
+        let outside=fixture.root.appendingPathComponent("foreign.mp4")
+        try AtomicFileWriter.write(originalVideo,to:outside)
+        await #expect(throws:ControlFailure.self) { try await service.assets(id:fixture.package.id,editSnapshot:published.editSnapshot,publishedVideoPath:outside.path) }
+        let other=try await SyntheticExportFixture(); defer { other.cleanup() }
+        let otherAsset=try await ShareAssetsService(root:other.root).assets(id:other.package.id)
+        await #expect(throws:ControlFailure.self) { try await service.assets(id:fixture.package.id,editSnapshot:published.editSnapshot,publishedVideoPath:otherAsset.videoPath) }
+    }
+
 }
