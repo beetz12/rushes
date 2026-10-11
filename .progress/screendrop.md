@@ -11,10 +11,13 @@
 8. Write docs/research/screendrop.md and .json; run both checks; commit.
 
 ## Done
-- Read reader brief, sources.json, both checks.
-- Steps 1-7: all listed files read (see Inspected paths in the note).
-- Confirmed the Cloudflare Worker code is NOT in the clone (separate repo
-  fayazara/screendrop-worker); only the client upload code is here.
+- Steps 1-8 complete.
+- Cloudflare Worker and share viewer confirmed absent from the clone
+  (separate repo fayazara/screendrop-worker); client upload code documented.
+- check_research.py screendrop: "OK 1 notes, 15 ideas".
+- check_clean.py on both files: first line 0.
+- Own-words self-check (10-word runs vs the Screendrop clone itself): 0
+  after rephrasing one sentence.
 
 ## Unverified (reading only, nothing run)
 - Pause handling across tracks: screen writer derives pause length from
@@ -26,4 +29,4 @@
   and camera offset (cameraLeadIn nil).
 
 ## First unfinished step
-- Step 8: write the note and JSON, run checks, commit.
+- None. Goal complete; branch not merged, no PR (per contract).
