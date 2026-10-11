@@ -63,26 +63,35 @@ final class NativeRenderer: @unchecked Sendable {
         }
         deinit { reader.cancelReading() }
     }
-    /// One task owns audio reader/output/input operations. The video task owns
-    /// its distinct input; both share AVAssetWriter's supported multi-input
-    /// status/append flow. Finalize follows the task join; cancel joins it too.
+    /// One task owns audio writer input; its bounded decoder queue owns reads.
+    /// The video task owns its distinct input. Finalize follows the audio join;
+    /// cancellation rejects decoder results before cleaning staged output.
     private final class AudioPump: @unchecked Sendable {
+        private struct Sample:@unchecked Sendable { let buffer:CMSampleBuffer }
         let reader:AVAssetReader
         let output:AVAssetReaderAudioMixOutput
         let input:AVAssetWriterInput
         let writer:AVAssetWriter
         let renderer:NativeRenderer
+        private let samples:BoundedMediaRead<Sample>
         init(reader:AVAssetReader,output:AVAssetReaderAudioMixOutput,input:AVAssetWriterInput,writer:AVAssetWriter,renderer:NativeRenderer) {
             self.reader=reader; self.output=output; self.input=input; self.writer=writer; self.renderer=renderer
+            let backend=AudioReadBackend(reader:reader,output:output)
+            samples=BoundedMediaRead(copy:{ backend.output.copyNextSampleBuffer().map { Sample(buffer:$0) } },cancel:{ backend.reader.cancelReading() })
         }
+        private final class AudioReadBackend:@unchecked Sendable {
+            let reader:AVAssetReader; let output:AVAssetReaderAudioMixOutput
+            init(reader:AVAssetReader,output:AVAssetReaderAudioMixOutput) { self.reader=reader; self.output=output }
+        }
+        func cancel() { samples.cancel() }
         func run() async throws {
             defer { if writer.status == .writing { input.markAsFinished() } }
-            while let sample=output.copyNextSampleBuffer() {
+            while let sample=try await samples.read() {
                 try Task.checkCancellation()
                 try await renderer.wait(input,writer:writer)
-                guard input.append(sample) else { throw renderFailure(writer.error?.localizedDescription ?? "Audio append failed") }
+                guard input.append(sample.buffer) else { throw renderFailure(writer.error?.localizedDescription ?? "Audio append failed") }
             }
-            if reader.status == .failed { throw renderFailure(reader.error?.localizedDescription ?? "Audio decoding failed") }
+            guard reader.status == .completed else { throw renderFailure(reader.error?.localizedDescription ?? "Audio decoder did not reach the end of the edited timeline") }
         }
     }
     private func source(_ kind: TrackKind) async throws -> VideoSource? {
@@ -186,10 +195,12 @@ final class NativeRenderer: @unchecked Sendable {
         // readiness waits can deadlock the muxer when one input needs the other
         // to drain or signal its end of stream.
         let audioTask:Task<Void,Error>?
+        let audioPump:AudioPump?
         if let audio,let input=audioInput {
             let pump=AudioPump(reader:audio.0,output:audio.1,input:input,writer:writer,renderer:self)
+            audioPump=pump
             audioTask=Task { try await pump.run() }
-        } else { audioTask=nil }
+        } else { audioTask=nil; audioPump=nil }
         do {
             if let input=videoInput, let adaptor {
                 let screen=try await source(.screen), camera=try await source(.camera)
@@ -227,13 +238,13 @@ final class NativeRenderer: @unchecked Sendable {
                 }
                 input.markAsFinished()
             }
-            try await audioTask?.value
+            try await withTaskCancellationHandler(operation:{ try await audioTask?.value },onCancel:{ audioTask?.cancel(); audioPump?.cancel() })
             writer.endSession(atSourceTime:CMTime(seconds:edit.durationMs/1000,preferredTimescale:600_000))
             await writer.finishWriting()
             guard writer.status == .completed else { throw renderFailure(writer.error?.localizedDescription ?? "Writer failed during finalize") }
             try Task.checkCancellation()
         } catch {
-            audioTask?.cancel(); writer.cancelWriting(); audio?.0.cancelReading()
+            audioTask?.cancel(); audioPump?.cancel(); writer.cancelWriting()
             _=await audioTask?.result
             try? FileManager.default.removeItem(at:target); throw error
         }
