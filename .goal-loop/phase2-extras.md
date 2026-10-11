@@ -2,13 +2,17 @@
 
 Prerequisite: root integrates the verified core and native service contracts on main. This wave completes already-approved PLAN Phase6 local extras; it does not open SaaS or public distribution. Roots capture APIs may be finalized concurrently but parent owns callback/UI wiring.
 
-### Goal1: Native voice-following teleprompter and camera background blur helpers
+### Goal 1: Native voice-following teleprompter and camera background blur helpers
+**Suggested branch:** `codex/rushes-production-extras`
+**Suggested worktree:** `/Users/dave/Work/loom-clone-native-production-extras`
 **Parallelization:** Independent
 ```text
 Work only in runner worktree. Read docs/PLAN.md applicable recording/privacy/teleprompter and whole clean-room rules; read docs/design/transcription.md and current source. Own new Sources/RushCore/ProductionExtras/VoiceTeleprompter.swift and CameraBackgroundBlur.swift plus Tests/RushCoreTests/ProductionExtrasTests.swift and docs/design/production-extras.md. Implement real live on-device Apple recognition from tee'd captured PCM buffers, forward-only eight-word TeleprompterMatcher, bounded buffered/drop/cancel lifecycle, structured permissions/assets errors, progress callback to parent engine so excluded shell overlay scrolls with user's speech. No alternate microphone capture. Provide usable service contract and tests using actual synthesized PCM speech fixture on Apple API, not scripted recognition. Implement Apple Vision person segmentation/Core Image camera background blur processor accepted pixel buffers, preserves timestamps/dimensions, preview/record routing root/capture owns later. Real segmentation positive fixture and missing-person behavior; bounded compute so record path cannot be starved. No API secrets/network providers. Parent root owns existing Control/Capture/UI integration. Keep PROGRESS checkpoint (inside docs or module rather than conflicting root), commit only your paths, fulldeclarednative gate plus explicit source cleancheck. Report actual known limits.
 ```
 
-### Goal2: Native AppIntents discovery and Shortcuts packaging plus strict URL route
+### Goal 2: Native AppIntents discovery and Shortcuts packaging plus strict URL route
+**Suggested branch:** `codex/rushes-app-intents`
+**Suggested worktree:** `/Users/dave/Work/loom-clone-native-app-intents`
 **Parallelization:** Independent
 ```text
 Work only in runner worktree. Read docs/PLAN.md Phase6/platform/privacy/wholecleanroom; current Automation/RushURLRoute and ControlClient source. Own Sources/RushIntents/ (or another NEW Swift target, coordinated with parent Package.swift owner), scripts/app-intents/ and docs/design/app-intents.md plus NEW Tests. Implement real macOS AppIntents Start Recording with source/camera/mic options, Stop returning path, AppShortcutsProvider and compiled metadata packaging for Electron app nested Swift engine. Use installed Apple SDK declarations and current primary docs. Do not claim intent discovery from mere compile; use appintentsmetadataprocessor tooling and real local system discovery/Shortcuts actions on installed bundle if available without othercapture slot. Root owns final app bundling/signing and actual capture. Design intents to call same protected engine socket and preserve no-account local-first. No copyleft source; no modifying otheruser shortcuts. Provide integration scripts, compile/tests and exact local install steps. If macOSrequires explicit saved shortcuts, prepare scoped Rushes Start/Stop assets and list exact import step; don'tfake discovery. Parent owns Package.swift so send precise targetchange or create independently testable scripts initially. Keep module-specific PROGRESS/checkpoint commits. No public release/cloudwrites.

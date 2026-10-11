@@ -1,0 +1,20 @@
+{
+  "task": "Complete approved Rushes native production helpers",
+  "prompt": "Implement native voice following, optional camera blur and AppIntents packaging, verify actual framework behavior on existing captured/synthesized fixtures. Do not reopen webcam; root retains final assembly.",
+  "done_when": "Declared native/JS gates and focused native framework fixtures pass; helpers committed and actual packaging contracts verified",
+  "verify": [
+    {
+      "type": "command",
+      "cmd": "/bin/bash scripts/check.sh"
+    }
+  ],
+  "max_passes": 4,
+  "budget_seconds": 7200,
+  "archetype": "test-until-green",
+  "workdir": "/Users/dave/Work/loom-clone",
+  "assumptions": [
+    "Webcam remains closed per root commitment to user",
+    "Real camera soak postponed; stored images and synthesized PCM fixtures used for helpers",
+    "Root owns callback and UI wiring; no cloud actions by agents"
+  ]
+}
