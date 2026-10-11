@@ -4,16 +4,18 @@
 1. Read reader brief, sources.json, checks (done).
 2. Map the clone; read README and docs for feature claims (done).
 3. Read macOS capture path: native ScreenCaptureKit helper, cursor monitor, main-process recording glue, renderer recorder hook (done).
-4. Read editor: zoom, cursor smoothing, click effects, webcam bubble, timeline, project format (project format done; editor polish delegated to a read-only explore helper, results pending).
-5. Read export pipeline, captions/whisper, annotation (delegated to a read-only explore helper, pending).
-6. Read share service (MIT) and supabase folder (helper report received; key claims spot-checked in wrangler config, uploads, crypto, media, router, HOSTED.md, desktop upload constants).
-7. Write docs/research/recordly.md and .json; run both checks; commit.
+4. Editor polish: zoom, cursor smoothing, click effects, webcam bubble, timeline, project format (done; helper pass spot-checked).
+5. Export pipeline, captions/whisper, annotation (done; helper pass spot-checked).
+6. Share service (MIT) and supabase folder (done; helper pass spot-checked).
+7. Write docs/research/recordly.md and .json; run both checks; commit (done).
 
 ## Done
-- Steps 1-3; project session manifest, atomic save, media server, permission flow, HUD capture exclusion, packaging config, extension placeholder.
+- docs/research/recordly.md (about 4,650 words, 53 inspected paths) and docs/research/recordly.json (19 areas, 17 ideas, 10 weaknesses).
+- check_research.py recordly: OK 1 notes, 17 ideas. check_clean.py: 0 hits.
 
 ## Unverified
-- Editor polish, export, captions and share details until helper reports are spot-checked against the files.
+- Fine-grained editor and export constants (spring parameters, queue depths, CUDA/D3D11 internals) came from read-only helper passes; key constants were spot-checked, the CUDA compositor internals were inferred by the helper from includes and are labelled as such.
+- Popularity reasons are my inference; the shallow clone has no history or issue data.
 
 ## First unfinished step
-- Step 4 (await helper reports, spot-check key files).
+- None. Result JSON written outside the repo after commit.
