@@ -18,6 +18,7 @@ import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { z } from 'zod';
 import { bubbleForCapture } from '../shared/geometry';
@@ -62,6 +63,7 @@ let tray: Tray;
 let quitting = false;
 let state = 'idle';
 let currentId: string | undefined;
+let automationChild: ChildProcess | undefined;
 let engineReady = false;
 const pendingURLs: string[] = [];
 let promptScript = '';
@@ -150,6 +152,50 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
   const url = devURL ? `${devURL}/#${view}` : `${pathToFileURL(uiFile).toString()}#${view}`;
   void w.loadURL(url);
   return w;
+}
+function startAutomationHost() {
+  if (
+    !app.isPackaged ||
+    process.env.RUSHES_SMOKE === '1' ||
+    process.env.RUSHES_TEST_ENGINE_STUB === '1' ||
+    automationChild
+  )
+    return;
+  const executable = join(
+    process.resourcesPath,
+    '..',
+    'Helpers',
+    'RushesAutomation.app',
+    'Contents',
+    'MacOS',
+    'RushesAutomation',
+  );
+  const child = spawn(executable, [], { stdio: ['ignore', 'ignore', 'pipe'] });
+  automationChild = child;
+  let warned = false;
+  child.stderr?.on('data', () => {
+    if (!warned) {
+      warned = true;
+      console.warn('[Rushes] Automation helper reported a diagnostic.');
+    }
+  });
+  child.once('error', () => {
+    if (automationChild === child) automationChild = undefined;
+    broadcast({
+      event: 'warning',
+      code: 'automation-unavailable',
+      message: 'Shortcuts support could not start. Reopen Rushes to retry.',
+    });
+  });
+  child.once('exit', () => {
+    if (automationChild === child) automationChild = undefined;
+    if (!quitting)
+      broadcast({
+        event: 'warning',
+        code: 'automation-stopped',
+        message: 'Shortcuts support stopped. Reopen Rushes to reconnect.',
+      });
+  });
 }
 async function routeURL(url: string) {
   if (!engineReady) {
@@ -908,6 +954,7 @@ async function ready() {
   try {
     await supervisor.start();
     engineReady = true;
+    startAutomationHost();
     for (const url of pendingURLs.splice(0)) void routeURL(url);
     const live = await supervisor.client.request('status');
     state = live.state;
@@ -1135,6 +1182,8 @@ app.on('before-quit', (event) => {
         console.error('[Rushes] Could not save window positions', String(error)),
       );
       globalShortcut.unregisterAll();
+      automationChild?.kill('SIGTERM');
+      automationChild = undefined;
       app.quit();
     })
     .catch((error) => {
