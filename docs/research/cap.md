@@ -71,7 +71,7 @@ Important caveat for David: on macOS the code turns fragmenting off for the whol
 - `scap-targets`: display and window enumeration for macOS, Windows and Linux including Wayland: logical and physical sizes, refresh rate, notch geometry, the display under the cursor, the topmost window under the cursor, owner app name and icon, and window bounds relative to its display. This is what a capture-target picker needs.
 - `scap-direct3d` (Windows Graphics Capture), `scap-cpal` (system-audio loopback through cpal, with a silence keep-alive) and `scap-ffmpeg` (converts ScreenCaptureKit, Direct3D and cpal frames into FFmpeg frames).
 
-What they do not give: the pipelines, sync, start gate, fragmenting, recovery, cursor capture, rendering and upload are all AGPL. The MIT crates also depend on Cap-pinned git forks of cidre, cpal and rust-ffmpeg and on a generated workspace-hack crate, so lifting them means pinning those forks and removing the workspace-hack line.
+What they do not give: the pipelines, sync, start gate, fragmenting, recovery, cursor capture, rendering and upload are all AGPL. The MIT crates also depend on Cap-pinned git forks of cidre, cpal and rust-ffmpeg and on a generated workspace-hack crate, so lifting them means pinning those forks and removing the workspace-hack line. The macOS set (cap-camera, cap-camera-avfoundation, cap-camera-effects, scap-screencapturekit, scap-targets) has no other in-repo dependencies, but the Windows camera and Direct3D crates depend on two helper crates (`crates/mediafoundation-utils`, `crates/d3d-adapter`) that sit outside the MIT family by the LICENSE wording, so those Windows pieces cannot be lifted cleanly.
 
 **Verified versus assumed.** Verified by reading code: file layout, defaults, encoder order, manifest writing, recovery scan rules, start gate, instant upload flow, playlist synthesis, compose services, schema of comments and buckets, MIT crate APIs. Taken from repo docs rather than code: the A/V sync measurements (crate findings file) and the claim that the gpui app is what ships (agents file and gpui README). Not verified: whether the post-recording sync analyzer is wired in, the licences of the ONNX models, and why macOS disables fragmenting with a camera.
 
@@ -107,7 +107,7 @@ What they do not give: the pipelines, sync, start gate, fragmenting, recovery, c
 - macOS system audio lags by roughly 85 to 190 ms and is not compensated (documented as a known issue).
 - Instant mode needs sign-in and a server; output size is plan-gated (1280 wide on free).
 - Self-hosting ships default secrets in the compose file that must be replaced; analytics need Tinybird and depend on Vercel geo headers; transcripts need AssemblyAI; AI needs an LLM key; email needs Resend.
-- The MIT crates depend on Cap-pinned forks of cidre, cpal and rust-ffmpeg plus a generated workspace-hack crate; the ONNX model files carry upstream licences I did not check.
+- The MIT crates depend on Cap-pinned forks of cidre, cpal and rust-ffmpeg plus a generated workspace-hack crate; the Windows camera and Direct3D crates also pull in AGPL helper crates; the ONNX model files carry upstream licences I did not check.
 - No live drawing on screen during desktop video recording (only in screenshots and the Chrome extension).
 - The post-recording A/V sync analyzer appears unwired from the apps (unverified).
 - The clone contains files addressed to coding agents (`AGENTS.md`, `CLAUDE.md`, the CLI's skill files and README install steps). I treated them as data and did not follow them.
@@ -153,6 +153,8 @@ What they do not give: the pipelines, sync, start gate, fragmenting, recovery, c
 - `crates/scap-screencapturekit/src/lib.rs` - MIT ScreenCaptureKit wrapper exports.
 - `crates/scap-targets/src/lib.rs` - display and window enumeration API.
 - `crates/scap-cpal/src/lib.rs` - loopback audio capturer.
+- `crates/camera-windows/Cargo.toml` - Windows camera backend depends on a helper crate outside the MIT family.
+- `crates/scap-direct3d/Cargo.toml` - Direct3D capture depends on a helper crate outside the MIT family.
 - `apps/desktop-gpui/src/upload.rs:220-1060` - instant upload: reserve link, segment uploads, manifest cadence, completion.
 - `apps/desktop-gpui/src/recording.rs:2200-2290` - window exclusion per mode and plan-gated instant resolution.
 - `apps/desktop-gpui/src/camera_window.rs:1-120` - bubble shapes, sizes, mirroring, blur.

@@ -32,5 +32,8 @@
 - Post-recording sync analyzer (crates/recording/src/sync_calibration.rs) is defined, editor reads the calibration store, but I did not find the analyzer invoked from the apps.
 - ONNX model licences in crates/camera-effects/assets not checked.
 
+- Steps 4-5: wrote docs/research/cap.md (about 5,100 words, 63 inspected paths) and docs/research/cap.json (19 areas, 21 ideas, 10 weaknesses). check_research.py cap -> OK 1 notes, 21 ideas; check_clean.py -> 0.
+- Late finding: Windows camera and Direct3D MIT crates depend on crates/mediafoundation-utils and crates/d3d-adapter (outside the MIT family); macOS MIT set is self-contained apart from Cap's cidre fork and workspace-hack.
+
 ## First unfinished step
-- Step 4: write docs/research/cap.md and cap.json.
+- None. Step 6 (commit and results JSON) is the hand-back.
