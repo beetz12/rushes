@@ -108,6 +108,11 @@ export class EngineSupervisor {
   ) {
     this.client.on('event', (e) => {
       if (e.event === 'recording-started') this.active = true;
+      if (
+        e.event === 'state-changed' &&
+        ['preparing', 'armed', 'recording', 'paused', 'finishing'].includes(e.state)
+      )
+        this.active = true;
       if (e.event === 'recording-stopped') this.active = false;
     });
   }
@@ -186,6 +191,8 @@ export class EngineSupervisor {
   async quit() {
     this.closing = true;
     try {
+      const live = await this.client.request('status');
+      this.active = ['preparing', 'armed', 'recording', 'paused', 'finishing'].includes(live.state);
       if (this.active) await this.client.request('record.stop');
       this.client.close();
       this.child?.kill('SIGTERM');

@@ -125,14 +125,34 @@ describe('recording finalization on Quit', () => {
     const close = vi.spyOn(supervisor.client, 'close');
     const request = vi
       .spyOn(supervisor.client, 'request')
+      .mockResolvedValueOnce({ state: 'recording' })
       .mockRejectedValueOnce(new Error('Fixture finalization pending'));
     await expect(supervisor.quit()).rejects.toThrow('finalization pending');
     expect(kill).not.toHaveBeenCalled();
     expect(close).not.toHaveBeenCalled();
-    request.mockResolvedValueOnce({ stopped: true });
+    request.mockResolvedValueOnce({ state: 'recording' }).mockResolvedValueOnce({ stopped: true });
     await supervisor.quit();
-    expect(request).toHaveBeenCalledTimes(2);
+    expect(request).toHaveBeenCalledTimes(4);
     expect(close).toHaveBeenCalledOnce();
     expect(kill).toHaveBeenCalledWith('SIGTERM');
+  });
+  it('does not terminate a take still preparing before the recording-started event', async () => {
+    const supervisor = new EngineSupervisor(
+      '/fixture/engine',
+      '/fixture/socket',
+      '/fixture/takes',
+      '/fixture/index',
+    );
+    const kill = vi.fn();
+    supervisor.child = { kill } as unknown as import('node:child_process').ChildProcess;
+    vi.spyOn(supervisor.client, 'request').mockImplementation(async (cmd) => {
+      if (cmd === 'status') return { state: 'preparing' };
+      throw new Error('Fixture pipeline is still preparing');
+    });
+    expect(supervisor.active).toBe(false);
+    await expect(supervisor.quit()).rejects.toThrow('still preparing');
+    expect(kill).not.toHaveBeenCalled();
+    supervisor.client.ingest('{"event":"state-changed","state":"armed"}\n');
+    expect(supervisor.active).toBe(true);
   });
 });
