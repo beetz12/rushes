@@ -1,0 +1,398 @@
+{
+  "repo": "KartikLabhshetwar/better-shot",
+  "sha": "164d8b92b3ca",
+  "licence": "BSD-3-Clause",
+  "licence_caveat": "Four files declare AGPL-3.0-only (adapted from Cap: Recording3DShot, Recording3DInspector, Recording3DBlurRenderer, RecordingViewportTimeline) and three scroll-capture files say they are adapted from MacShot under GPLv3. Treat those as copyleft; build sessions should not open them.",
+  "lineage_note": "139 Swift file names are shared with the Screendrop clone, most 90-100% line-identical (recorder, camera, teleprompter, transcription, pointer capture, exporter). Direction of copying is not provable from the single-commit clones; better-shot is not credited as origin of that shared core.",
+  "features": {
+    "capture-screen": {
+      "present": true,
+      "quality": 4,
+      "summary": "ScreenCaptureKit display, window or dragged-area stream capped at 60 fps in BGRA. The OS cursor and the app's own windows are excluded. HEVC into a QuickTime master with 2-second movie fragments; bitrate is the larger of 20 Mbps or width x height x 4. Screenshots add region, window, full-screen, frozen-frame selection, scrolling capture (GPL-derived), OCR and a colour picker.",
+      "paths": [
+        "Sources/BetterShot/ScreenRecordingManager.swift:925-956",
+        "Sources/BetterShot/ScreenRecordingManager.swift:1034-1119",
+        "Sources/Capture/FrozenScreenCapture.swift",
+        "Sources/Capture/ScreencaptureRunner.swift"
+      ]
+    },
+    "capture-camera": {
+      "present": true,
+      "quality": 4,
+      "summary": "Shared with Screendrop (about 99% line-identical). AVCaptureSession at a 720p preset writes HEVC to its own camera.mov in the session folder. A 160-point circular preview panel floats on screen, excluded from capture. The camera lead-in against the screen movie comes from the shared host clock and is stored in the capture manifest.",
+      "paths": [
+        "Sources/BetterShot/CameraRecordingManager.swift:176-235",
+        "Sources/BetterShot/RecordingSession.swift:285-324"
+      ]
+    },
+    "capture-audio": {
+      "present": true,
+      "quality": 3,
+      "summary": "System audio via ScreenCaptureKit with the app's own audio excluded. Microphone also via ScreenCaptureKit, so only on macOS 15 or later. Each source goes to its own AAC 48 kHz track (stereo 192 kbps, mono 96 kbps) in the screen master. Missing or denied devices are switched off with a warning before capture. Studio can import a replacement soundtrack and export audio-only M4A or WAV.",
+      "paths": [
+        "Sources/BetterShot/ScreenRecordingManager.swift:530-568",
+        "Sources/BetterShot/ScreenRecordingManager.swift:1112-1119",
+        "Sources/BetterShot/RecordingAudioExport.swift:24-70"
+      ]
+    },
+    "recording-controls": {
+      "present": true,
+      "quality": 4,
+      "summary": "One floating capture bar with a Display/Window/Area plus Camera/Mic/Audio/Script picker strip and a countdown delay. While recording: Stop and timer, Pause, Restart, Discard, with native confirmation alerts. Global shortcuts for each action. Quitting finishes and saves an active recording.",
+      "paths": [
+        "Sources/BetterShot/RecordingBarPresenter.swift:58-140",
+        "Sources/BetterShot/RecordingPickerBar.swift:126-180",
+        "Sources/BetterShot/RecordingCaptureEntry.swift",
+        "Sources/Services/ShortcutCatalog.swift:33-60"
+      ]
+    },
+    "camera-overlay": {
+      "present": true,
+      "quality": 4,
+      "summary": "Six whole-video layouts: Bubble, Overlap, Side-by-Side, Presenter, Camera Only, Screen Only. Six camera aspect ratios independent of the canvas, plus size, roundness, position and a left/right mirror. One deterministic layout function serves preview and export, and falls back to screen only when no camera footage exists. Applied in post because the camera is a separate file.",
+      "paths": [
+        "Sources/BetterShot/RecordingStudioStyle.swift:14-63",
+        "Sources/BetterShot/RecordingStudioStyle.swift:432-576"
+      ]
+    },
+    "annotation": {
+      "present": true,
+      "quality": 4,
+      "summary": "Strong still-image annotation (arrows, shapes, text, numbered markers, highlight, blur, pixelate) that stays editable through crop, rotate and flip. For video only blur or pixelate masks and burned captions; no live drawing during a recording.",
+      "paths": [
+        "Sources/BetterShot/AnnotationTool.swift",
+        "Sources/BetterShot/AnnotationImageTransform.swift",
+        "Sources/BetterShot/RecordingVideoMask.swift"
+      ]
+    },
+    "compositing-render": {
+      "present": true,
+      "quality": 4,
+      "summary": "Core Image on Metal composites backgrounds, padding, rounded corners, shadows, restyled synthetic cursor, click ripples, keystroke captions, subtitles and masks into NV12 IOSurface buffers. An AGPL-derived 3D-shot perspective and depth-blur renderer sits on top.",
+      "paths": [
+        "Sources/BetterShot/RecordingStudioExporter.swift:1-40",
+        "Sources/BetterShot/RecordingStudioExporter.swift:240-375",
+        "docs/export-performance.md"
+      ]
+    },
+    "editing": {
+      "present": true,
+      "quality": 4,
+      "summary": "Non-destructive clip list over untouched sources, with per-clip speed from 0.25x to 8x. Automatic (from clicks) or manual zoom cues, crop, masks, transcript-driven cuts, undo and redo. A debounced draft autosave is kept separate from the explicit save.",
+      "paths": [
+        "Sources/BetterShot/RecordingClipTimeline.swift:1-45",
+        "Sources/BetterShot/RecordingTranscriptEditing.swift:13-40",
+        "Sources/BetterShot/RecordingStudioModel.swift:1366-1400"
+      ]
+    },
+    "transcription-captions": {
+      "present": true,
+      "quality": 3,
+      "summary": "On-device SpeechAnalyzer (macOS 26 only) with word timings. Cues capped at 42 characters and 4 seconds; optional karaoke word highlight; captions are burned into exports. No SRT or VTT file export.",
+      "paths": [
+        "Sources/BetterShot/RecordingTranscription.swift:311-337",
+        "Sources/BetterShot/RecordingTranscription.swift:152-230"
+      ]
+    },
+    "ai-features": {
+      "present": true,
+      "quality": 3,
+      "summary": "All on-device and no LLM: Vision OCR, smart redaction of secrets, speech transcription, teleprompter voice tracking, filler and silence cut suggestions, click-driven auto zoom and an automatic 3D scene sequence.",
+      "paths": [
+        "Sources/BetterShot/SmartRedactionRecognizer.swift:100-117",
+        "Sources/BetterShot/ImageTextRecognizer.swift",
+        "Sources/BetterShot/TeleprompterSpeechEngine.swift:64-128"
+      ]
+    },
+    "export-formats": {
+      "present": true,
+      "quality": 3,
+      "summary": "MP4 (default, fast-start) or MOV; H.264 or HEVC through the hardware encoder; 30 or 60 fps. Original, 1080p, 720p or 480p, three quality levels with bitrate factors. Aspect reframe presets with fill or fit. Audio-only M4A or WAV; stills PNG or JPEG. No GIF or WebM.",
+      "paths": [
+        "Sources/BetterShot/VideoCompressionModels.swift",
+        "Sources/BetterShot/RecordingExportReframe.swift:22-63",
+        "Sources/BetterShot/RecordingStudioExporter.swift:560-572"
+      ]
+    },
+    "project-format": {
+      "present": true,
+      "quality": 4,
+      "summary": "Each recording is a .bettershotrec folder in Application Support holding screen.mov, camera.mov, capture.json (sizes, camera lead-in), input.json (pointer, presses, shortcut chords, cursor artwork), edit.json, edit.draft.json, project.json, render.json (render stamp) and a poster. Deliverable names are rendered once and reused.",
+      "paths": [
+        "Sources/BetterShot/RecordingSession.swift:15-283",
+        "Sources/BetterShot/RecordingProject.swift",
+        "Sources/BetterShot/RecordingDeliverable.swift"
+      ]
+    },
+    "sharing-hosting": {
+      "present": true,
+      "quality": 4,
+      "summary": "Bring-your-own Cloudflare R2 bucket. Hand-written SigV4 with no SDK; Keychain secrets; EU and FedRAMP jurisdiction hosts. Uploads media, poster and a meta.json manifest under a per-share prefix. Viewer link or direct file link; deleting a share reads the manifest back. Upload needs an explicit consent toggle that a successful connection test switches on.",
+      "paths": [
+        "Sources/Sharing/R2Uploader.swift:10-117",
+        "Sources/Sharing/R2Uploader.swift:118-417",
+        "Sources/Sharing/R2CredentialStore.swift",
+        "Sources/Sharing/ShareManifest.swift"
+      ]
+    },
+    "viewer-web": {
+      "present": true,
+      "quality": 3,
+      "summary": "A Next.js route on the project's website reads the manifest from the user's bucket on the server, origin carried in a query value. SSRF guard: https only, private ranges blocked, 64 KB manifest cap, 6-second timeout. Renders Open Graph and Twitter player cards; a download route proxies the file. No comments, analytics, password or expiry.",
+      "paths": [
+        "bettershot-landing/lib/share.ts",
+        "bettershot-landing/app/s/[id]/page.tsx",
+        "bettershot-landing/app/s/[id]/download/route.ts"
+      ]
+    },
+    "teleprompter-scripts": {
+      "present": true,
+      "quality": 4,
+      "summary": "Shared with Screendrop (97-99% identical). A script composer persists the text. A notch-anchored (or pill) overlay, excluded from capture, scrolls by matching live on-device transcription of mic buffers teed from the recording stream. A greedy matcher with an 8-word lookahead keeps the position moving forward only. The speech model downloads when the feature is switched on.",
+      "paths": [
+        "Sources/BetterShot/TeleprompterController.swift",
+        "Sources/BetterShot/TeleprompterScript.swift:36-79",
+        "Sources/BetterShot/TeleprompterOverlayPresenter.swift:1-30",
+        "Sources/BetterShot/TeleprompterComposerPresenter.swift"
+      ]
+    },
+    "platform-packaging": {
+      "present": true,
+      "quality": 3,
+      "summary": "macOS 14+ menu-bar agent with hardened runtime and no sandbox. XcodeGen plus Make; signed, notarised DMGs for both architectures; Homebrew cask. A custom GitHub-release updater pins the Developer ID team before installing. CI only builds the release; it does not run the test suite.",
+      "paths": [
+        "project.yml",
+        "Makefile",
+        "Resources/BetterShot.entitlements",
+        "Sources/Services/AppUpdater.swift:240-262",
+        ".github/workflows/build.yml"
+      ]
+    },
+    "performance-reliability": {
+      "present": true,
+      "quality": 4,
+      "summary": "Fragmented masters survive crashes, and a launch-time recovery scan imports folders that lack a manifest. A stream error keeps the footage already on disk. Writer failure is detected on the write path. Synchronous backpressure prevents surface build-up; an activity assertion blocks App Nap and idle sleep. The export pipeline keeps three frames in flight, with measured speedups.",
+      "paths": [
+        "Sources/BetterShot/ScreenRecordingManager.swift:1-15",
+        "Sources/BetterShot/ScreenRecordingManager.swift:1139-1226",
+        "Sources/BetterShot/RecordingRecoveryCoordinator.swift",
+        "docs/export-performance.md"
+      ]
+    },
+    "extensibility-automation": {
+      "present": true,
+      "quality": 2,
+      "summary": "A bettershot:// URL scheme triggers screenshots, OCR, colour picker, settings and the recording picker. Routes are strictly parsed and queued until launch. There is no stop or status route, no CLI and no JSON output. The repo ships AGENTS.md rules and vendored generic agent skill packs.",
+      "paths": [
+        "Sources/App/CaptureURLAction.swift",
+        "Sources/App/BetterShotDelegate.swift:55-90",
+        "AGENTS.md",
+        "skills-lock.json"
+      ]
+    },
+    "privacy-security": {
+      "present": true,
+      "quality": 4,
+      "summary": "Local-first; plain typing is never recorded; app windows are kept out of captures; R2 secrets in the Keychain; uploads gated by an explicit toggle; on-device smart redaction; SSRF-guarded viewer. Weakness: shared links are public to anyone with the URL, with no expiry or password.",
+      "paths": [
+        "Sources/BetterShot/PreviewWindowCaptureExclusion.swift",
+        "Sources/BetterShot/RecordingKeystrokeCapture.swift:1-20",
+        "Sources/Sharing/R2CredentialStore.swift",
+        "bettershot-landing/lib/share.ts"
+      ]
+    }
+  },
+  "best_ideas": [
+    {
+      "id": "better-shot-own-bucket-stateless-viewer",
+      "title": "Own-bucket share links with a stateless hosted viewer",
+      "area": "sharing-hosting",
+      "what": "Upload media, a poster JPEG and a small JSON manifest under one prefix in the user's S3-compatible bucket, signed with dependency-free SigV4. The share link points at a viewer route and carries the bucket origin as a base64url query value. The viewer fetches the manifest on the server, with an SSRF guard, size cap and timeout. Deleting a share reads the manifest back to find all objects.",
+      "why": "Gives David share links on storage he controls with no database or server state of his own. The viewer route can be self-hosted, and the signing code is small and tested.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Sources/Sharing/R2Uploader.swift:10-117",
+        "Sources/Sharing/ShareManifest.swift",
+        "bettershot-landing/lib/share.ts",
+        "Tests/R2SigV4Check.swift"
+      ],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "better-shot-camera-layout-presets",
+      "title": "Six screen-and-camera layouts from one pure layout function",
+      "area": "camera-overlay",
+      "what": "Bubble, Overlap, Side-by-Side (camera half width), Presenter (camera about a third, padded screen card), Camera Only and Screen Only. Camera aspect ratio is independent of the canvas, there is a left/right mirror, and the layout falls back to screen only when camera footage is missing. The same function drives preview and export.",
+      "why": "Because the camera is recorded to its own file, layouts can be chosen after recording, which matches David's separate-track editing model. Shared maths keeps preview and export identical.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Sources/BetterShot/RecordingStudioStyle.swift:432-576",
+        "Sources/BetterShot/RecordingStudioStyle.swift:14-63"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "better-shot-render-stamp-cache",
+      "title": "Render stamp that proves a cached export is fresh",
+      "area": "performance-reliability",
+      "what": "Store, beside the flattened deliverable, the exact edit document that produced it. Share, Copy and Export reuse the file only when the current document matches. A container-only change converts the existing render instead of re-encoding.",
+      "why": "Makes repeat shares instant and stops stale edits from being uploaded. That matters for a fast-share Loom-style flow.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Sources/BetterShot/RecordingSession.swift:255-282",
+        "Sources/BetterShot/RecordingDeliverable.swift"
+      ],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "better-shot-fixed-clock-gpu-export",
+      "title": "Export on a fixed output clock with a bounded GPU pipeline",
+      "area": "export-formats",
+      "what": "Walk a fixed 30 or 60 fps output clock and re-render the newest source frame each tick, so animations continue through gaps where ScreenCaptureKit sent no new frame. Composite in Core Image straight into NV12 IOSurface buffers with three frames in flight and a hardware encoder. Tag colour explicitly, and use the fast-start index only for MP4.",
+      "why": "Smooth zooms over static screens, and a measured 3-4x faster effects export, without ffmpeg.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Sources/BetterShot/RecordingStudioExporter.swift:377-497",
+        "docs/export-performance.md"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "better-shot-voice-following-teleprompter",
+      "title": "Teleprompter that scrolls by following your voice",
+      "area": "teleprompter-scripts",
+      "what": "Tee mic buffers off the recording stream into streaming on-device recognition. Re-run a greedy matcher with an 8-word lookahead over the whole spoken history on each update, and only ever advance. Show the script in a capture-excluded overlay at the top of the screen. Download the speech model when the feature is switched on.",
+      "why": "Lets David read a script without visible eye drift or manual scrolling, and adds no second audio capture. The code is near-identical to Screendrop's CC0 copy, so copy it from there to avoid needing the BSD notice.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Sources/BetterShot/TeleprompterScript.swift:36-79",
+        "Sources/BetterShot/TeleprompterSpeechEngine.swift:64-167"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "better-shot-click-driven-auto-zoom",
+      "title": "Click-driven auto zoom with spring-smoothed viewports",
+      "area": "editing",
+      "what": "Turn each recorded mouse-down into an editable zoom cue with a short lead-in and a longer hold, and merge cues that fall close together. Drive magnification and centre with separate damped springs integrated at a fixed rate on the edited timeline, so cuts never interrupt a move and the frame never leaves the source.",
+      "why": "Auto zoom is a signature feature of modern recorders. The source file is tagged AGPL-3.0 (adapted from Cap), so the build team must re-implement from this description only.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "Sources/BetterShot/RecordingViewportTimeline.swift:1-30"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "better-shot-transcript-planned-cuts",
+      "title": "Transcript-planned cuts for words, fillers and pauses",
+      "area": "editing",
+      "what": "Convert word timings into source-time cut ranges for selected words, a deliberately conservative list of filler sounds, and pauses longer than about 1.1 seconds. Each cut bites slightly into the surrounding silence, keeps padding on both sides and skips very short cuts. The cuts are applied as clip-list removals, so media is never touched.",
+      "why": "Gives transcript-based editing with clean splices on top of David's non-destructive model.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Sources/BetterShot/RecordingTranscriptEditing.swift:13-40"
+      ],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "better-shot-adaptive-silence-detector",
+      "title": "Model-free silence detection that adapts to the speaker",
+      "area": "editing",
+      "what": "Measure 50 ms windows of the mixed-down audio. Take the 95th-percentile level as the speech level and call anything 25 dB below it silence. Ignore recordings whose loudest windows stay under -45 dB. Keep only gaps of at least 0.8 seconds, with 0.15 seconds of padding.",
+      "why": "Gives dead-air trimming on any macOS version without a speech model. Currently only a test calls it, so it is a ready-made but unproven component.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Sources/Services/SilenceDetector.swift",
+        "Tests/SilenceDetectorCheck.swift"
+      ],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "better-shot-private-staging-name-once",
+      "title": "Private staging and deliverable names rendered once",
+      "area": "project-format",
+      "what": "Stage every capture privately, and write to the user's folder only on an explicit save. Render the deliverable name once from a token template (date, time, counter, hex, uuid). Later saves overwrite the same exported file, found through a stored export path.",
+      "why": "Avoids cluttering the desktop, keeps names stable across re-exports, and makes 'save again' predictable.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Sources/BetterShot/ScreenshotFileNaming.swift",
+        "Sources/BetterShot/RecordingDeliverable.swift",
+        "Sources/Preview/DeckStaging.swift"
+      ],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "better-shot-smart-redaction-rules",
+      "title": "On-device smart redaction rules for secrets",
+      "area": "privacy-security",
+      "what": "Run OCR, then flag emails, URLs, IPv4 addresses, phone numbers, Luhn-checked card numbers, JWTs, well-known API-key prefixes, long opaque tokens and 'password: value' pairs as regions to blur.",
+      "why": "Could become a pre-share privacy check on recordings: sample frames, suggest blur masks. Useful because links are shared outside David's machine.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Sources/BetterShot/SmartRedactionRecognizer.swift:100-117"
+      ],
+      "effort": "M",
+      "priority": "could"
+    },
+    {
+      "id": "better-shot-strict-url-scheme",
+      "title": "Strictly parsed URL-scheme control surface",
+      "area": "extensibility-automation",
+      "what": "A closed set of routes whose parser rejects credentials, port, query and fragment. Actions that arrive before launch completes are queued. A record request during an active recording is ignored.",
+      "why": "A safe pattern for a Shortcuts or agent trigger. David's version should add stop and status routes and a JSON or CLI channel for results.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Sources/App/CaptureURLAction.swift",
+        "Sources/App/BetterShotDelegate.swift:55-90"
+      ],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "better-shot-screencapture-early-return",
+      "title": "Return as soon as the screenshot PNG is complete",
+      "area": "capture-screen",
+      "what": "When shelling out to the system screencapture tool, poll the output file and return once the PNG is complete, instead of waiting up to 10 seconds for the tool to exit after its Spotlight handshake. The exit status still decides cancellation.",
+      "why": "Makes still captures feel instant. Useful if David's recorder also takes thumbnail or still snapshots through the system tool.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Sources/Capture/ScreencaptureRunner.swift"
+      ],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "better-shot-updater-team-check",
+      "title": "Self-updater that pins the signing team",
+      "area": "platform-packaging",
+      "what": "Before installing a release downloaded from GitHub, validate the bundle against a code requirement that pins the developer's team identifier, checking all architectures and nested code.",
+      "why": "A cheap way to ship updates outside the App Store without trusting the download channel alone.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Sources/Services/AppUpdater.swift:240-262"
+      ],
+      "effort": "S",
+      "priority": "could"
+    }
+  ],
+  "weaknesses": [
+    "Licence contamination risk: Recording3DShot.swift, Recording3DInspector.swift, Recording3DBlurRenderer.swift and RecordingViewportTimeline.swift declare AGPL-3.0-only (adapted from Cap), and ScrollCaptureController.swift, ScrollFrameAnalyzer.swift and ScrollCapturePreviewPanel.swift say they are adapted from MacShot (GPLv3), despite the repo's BSD-3 classification. RecordingTimelineInteraction.swift and parts of RecordingStudioWindow.swift describe Cap-derived maths without a tag. Build sessions should not open these.",
+    "Most of the recording core is shared with Screendrop (139 shared file names, mostly 90-100% identical). Screendrop's zoom file is about 83% similar to better-shot's AGPL-tagged one but carries no AGPL header, so zoom provenance is ambiguous across both repos.",
+    "No microphone narration on macOS 14, because the only mic path is through ScreenCaptureKit. Transcription, captions and teleprompter tracking need macOS 26.",
+    "The camera is only composited at Studio render time, and there is no live drawing, so stop-then-share always pays a render.",
+    "Automation is thin: the record URL route only opens the picker; there is no stop, status, JSON or CLI.",
+    "The share viewer defaults to bettershot.site, and links are public to anyone holding them, with no expiry, password or view tracking.",
+    "Possible audio retiming issue, unverified: the writer retimes audio with one timing entry whose duration is the whole buffer, a pattern the voom repo documents as a bug.",
+    "Dead or stale code: the adaptive silence detector is only called by a test, and the plist mentions voice screenshots that I could not find.",
+    "In-repo instructions aimed at agents (push straight to main; run an npx skill installer) were treated as data and not followed. The vendored skill packs are generic design and Swift guidance with no recorder-specific content."
+  ]
+}
