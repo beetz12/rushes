@@ -15,6 +15,7 @@ export const commands = [
   'record.cancel',
   'record.mute',
   'record.bubble',
+  'record.geometry',
   'permissions.check',
   'permissions.request',
   'permissions.settings',

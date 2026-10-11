@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizedPointer } from '../src/shared/geometry';
+import { normalizedPointer, bubbleForCapture } from '../src/shared/geometry';
 import { countdownFromSelection } from '../src/shared/contracts';
 describe('composition pointer geometry', () => {
   it('uses actual parent bounds and clamps outside coordinates', () => {
@@ -26,5 +26,39 @@ describe('validated countdown choices', () => {
     expect(countdownFromSelection('')).toBeUndefined();
     expect(countdownFromSelection('05')).toBeUndefined();
     expect(countdownFromSelection('7')).toBeUndefined();
+  });
+});
+
+describe('capture-relative bubble geometry', () => {
+  it('preserves a 160pt bubble on a 3840pt display without a minimum fraction', () => {
+    const value = bubbleForCapture(
+      { x: 3400, y: 1700, size: 160 },
+      { x: 0, y: 0, width: 3840, height: 2160 },
+    );
+    expect(value?.sizeFraction).toBeCloseTo(160 / 3840, 12);
+    expect(value?.bounds.width).toBe(160);
+  });
+  it('uses cropped content and negative global display origins', () => {
+    const value = bubbleForCapture(
+      { x: -1550, y: 300, size: 200 },
+      { x: -1600, y: 200, width: 800, height: 600 },
+    );
+    expect(value?.center).toEqual([0.1875, 1 / 3]);
+    expect(value?.sizeFraction).toBe(0.25);
+    const resized = bubbleForCapture(
+      { x: 1000, y: 1000, size: 280 },
+      { x: 40, y: 20, width: 150, height: 100 },
+    );
+    expect(resized?.bounds).toEqual({ x: 90, y: 20, width: 100, height: 100 });
+    expect(resized?.sizeFraction).toBeCloseTo(2 / 3);
+  });
+  it('refuses missing, vanished and invalid capture rectangles', () => {
+    expect(bubbleForCapture({ x: 0, y: 0, size: 200 }, null)).toBeUndefined();
+    expect(
+      bubbleForCapture({ x: 0, y: 0, size: 200 }, { x: NaN, y: 0, width: 800, height: 600 }),
+    ).toBeUndefined();
+    expect(
+      bubbleForCapture({ x: 0, y: 0, size: 200 }, { x: 0, y: 0, width: 0, height: 600 }),
+    ).toBeUndefined();
   });
 });

@@ -20,7 +20,7 @@ import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { z } from 'zod';
-import { normalizedPointer } from '../shared/geometry';
+import { bubbleForCapture } from '../shared/geometry';
 import { EngineSupervisor } from './engine';
 import { SharingService } from './sharing';
 import { atomicJSON, atomicBytes } from './atomic';
@@ -103,8 +103,8 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
   const w = new BrowserWindow({
     width: view === 'bar' ? 800 : 1120,
     height: view === 'bar' ? 104 : 780,
-    minWidth: compact ? 100 : 800,
-    minHeight: compact ? 60 : 600,
+    minWidth: view === 'bubble' ? 1 : compact ? 100 : 800,
+    minHeight: view === 'bubble' ? 1 : compact ? 60 : 600,
     show: false,
     title: view === 'drawing' ? 'Rushes Drawing' : 'Rushes',
     backgroundColor: '#f7f8fa',
@@ -295,26 +295,31 @@ function placement(view: 'bubble' | 'bar', width: number, height: number) {
     y: Math.round(Math.max(bounds.y, Math.min(y, bounds.y + bounds.height - height))),
   };
 }
-function bubbleGeometry() {
+async function syncBubble() {
   const w = windows.get('bubble');
   if (!w || w.isDestroyed() || !supervisor.active) return;
-  const bounds = w.getBounds(),
-    d = screen.getDisplayMatching(bounds).bounds;
-  const center = normalizedPointer(
-    { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
-    { left: d.x, top: d.y, width: d.width, height: d.height },
+  const capture = await supervisor.client.request('record.geometry');
+  if (w.isDestroyed() || !supervisor.active) return;
+  const current = w.getBounds();
+  const geometry = bubbleForCapture(
+    { x: current.x, y: current.y, size: options.bubbleSize },
+    capture?.rect,
   );
-  if (!center) return;
-  return {
-    center,
+  if (!geometry) return;
+  if (
+    ['x', 'y', 'width', 'height'].some(
+      (key) =>
+        current[key as keyof typeof current] !==
+        geometry.bounds[key as keyof typeof geometry.bounds],
+    )
+  )
+    w.setBounds(geometry.bounds);
+  await supervisor.client.request('record.bubble', {
+    center: geometry.center,
     size: options.bubbleSize,
-    sizeFraction: Math.min(1, bounds.width / d.width),
+    sizeFraction: geometry.sizeFraction,
     visible: true,
-  };
-}
-async function syncBubble() {
-  const geometry = bubbleGeometry();
-  if (geometry) await supervisor.client.request('record.bubble', geometry);
+  });
 }
 function rememberPosition(view: 'bubble' | 'bar', w: BrowserWindow) {
   const bounds = w.getBounds(),
@@ -531,6 +536,19 @@ async function ready() {
       )
     )
       throw new Error('Use the native save dialog for file output');
+    if (request.cmd === 'camera.preview.start' && supervisor.active) {
+      const live = await supervisor.client.request('status');
+      const id = currentId ?? live.recording?.recordingID;
+      if (!id) throw new Error('The active take is not available for camera preview.');
+      const take = await supervisor.client.request('show', { id });
+      const camera = take.manifest.sources?.cameraId;
+      if (!camera) throw new Error('This take has no camera track.');
+      if (request.args.camera !== 'default' && request.args.camera !== camera)
+        throw new Error('Keep the active recording camera selected until this take finishes.');
+      const result = await supervisor.client.request('camera.preview.subscribe', { enabled: true });
+      bubble();
+      return result;
+    }
     if (request.cmd === 'record.stop') await syncBubble();
     if (request.cmd === 'camera.blur.set' && request.args.enabled === true)
       broadcast({ event: 'camera-preview-cleared' });
@@ -646,6 +664,7 @@ async function ready() {
         options = recordingOptionsSchema.parse({ ...options, bubbleSize: v.value });
         windows.get('bubble')?.setSize(options.bubbleSize, options.bubbleSize);
         await writeOptions();
+        if (supervisor.active) await syncBubble();
         return;
       case 'move-bubble': {
         const w = windows.get('bubble');

@@ -798,7 +798,11 @@ function Library({ run, setNote }: any) {
     return () => clearTimeout(timer);
   }, [undo]);
   const trashed = (result: any) => {
-    setUndo({ token: result.undoToken, expires: Date.now() + result.undoWindowMs });
+    const expires = Date.parse(result.undoExpiresAt);
+    setUndo({
+      token: result.undoToken,
+      expires: Number.isFinite(expires) ? expires : Date.now() + result.undoWindowMs,
+    });
     setSelected(null);
     void reload();
   };
