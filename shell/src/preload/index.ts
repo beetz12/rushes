@@ -21,6 +21,7 @@ const api: RushesAPI = {
   window: (action, value, x, y) => invoke('rushes:window', { action, value, x, y }),
   selectArea: (area) => invoke('rushes:select-area', area),
   exportFile: (id, preset, atMs) => invoke('rushes:export-file', { id, preset, atMs }),
+  previewFile: (id) => invoke('rushes:preview-file', id),
   media: (path) => invoke('rushes:media', path),
   reveal: (path) => invoke('rushes:reveal', path),
   confirm: (message) => invoke('rushes:confirm', message),

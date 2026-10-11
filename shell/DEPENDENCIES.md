@@ -4,6 +4,7 @@ All shell code is original. No reference repository code was copied. Versions ar
 
 | Package | Version | License | License file | Use |
 |---|---|---|---|---|
+| lucide-react | 1.55.0 | ISC | shell/licenses/lucide-react-1.55.0.txt | npm direct dependency; bundled when runtime |
 | react | 19.3.0 | MIT | shell/licenses/react-19.3.0.txt | npm direct dependency; bundled when runtime |
 | react-dom | 19.3.0 | MIT | shell/licenses/react-dom-19.3.0.txt | npm direct dependency; bundled when runtime |
 | zod | 4.6.6 | MIT | shell/licenses/zod-4.6.6.txt | npm direct dependency; bundled when runtime |

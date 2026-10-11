@@ -488,6 +488,19 @@ async function ready() {
         return;
     }
   });
+  handle('rushes:preview-file', async (value) => {
+    const id = z.string().min(1).max(200).parse(value);
+    const show = await supervisor.client.request('show', { id });
+    const path = join(show.packagePath, 'renders', 'preview.mp4');
+    await mkdir(dirname(path), { recursive: true });
+    const result = await supervisor.client.request(
+      'export',
+      { id, preset: 'share', path },
+      30 * 60 * 1000,
+    );
+    const url = await media.allowFile(path);
+    return { ...result, url, path };
+  });
   handle('rushes:export-file', async (value) => {
     const v = z
       .object({

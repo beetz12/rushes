@@ -1192,3 +1192,20 @@ hr {
   cursor: grab;
   touch-action: none;
 }
+.preview-mode-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  font-size: 10px;
+  color: #8b99a4;
+}
+.preview-mode-controls .secondary {
+  font-size: 10px;
+  padding: 7px 10px;
+  min-height: 30px;
+}
+.status-pill.offline i {
+  background: #de7060;
+}

@@ -1,98 +1,50 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { formatDuration, defaultOptions, type RecordingOptions } from '../shared/contracts';
+import {
+  CircleDot,
+  Monitor,
+  Camera,
+  Mic,
+  Grid2x2,
+  Settings as SettingsGlyph,
+  Pause,
+  Play,
+  Square,
+  RotateCw,
+  Trash2,
+  Link2,
+  Download,
+  ChevronRight,
+  Check,
+  FolderOpen,
+  SquarePen,
+  type LucideIcon,
+} from 'lucide-react';
 import './style.css';
 const api = window.rushes;
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
-  const paths: Record<string, React.ReactNode> = {
-    record: (
-      <>
-        <circle cx="12" cy="12" r="8" />
-        <circle cx="12" cy="12" r="3" fill="currentColor" />
-      </>
-    ),
-    screen: (
-      <>
-        <rect x="3" y="4" width="18" height="13" rx="2" />
-        <path d="M8 21h8m-4-4v4" />
-      </>
-    ),
-    camera: (
-      <>
-        <rect x="3" y="6" width="13" height="12" rx="3" />
-        <path d="m16 10 5-3v10l-5-3" />
-      </>
-    ),
-    mic: (
-      <>
-        <rect x="9" y="2" width="6" height="13" rx="3" />
-        <path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3m-4 0h8" />
-      </>
-    ),
-    library: (
-      <>
-        <rect x="3" y="3" width="7" height="7" rx="2" />
-        <rect x="14" y="3" width="7" height="7" rx="2" />
-        <rect x="3" y="14" width="7" height="7" rx="2" />
-        <rect x="14" y="14" width="7" height="7" rx="2" />
-      </>
-    ),
-    settings: (
-      <>
-        <circle cx="12" cy="12" r="3" />
-        <path d="m9 2-1 3-3 1-3 3 2 3-1 4 3 3 3-1 3 3 3-2 4 1 2-4-1-3 2-3-3-3-3 1-3-3Z" />
-      </>
-    ),
-    pause: (
-      <>
-        <path d="M8 5v14M16 5v14" />
-      </>
-    ),
-    play: <path d="m7 4 14 8-14 8Z" />,
-    stop: <rect x="6" y="6" width="12" height="12" rx="2" />,
-    refresh: (
-      <>
-        <path d="M20 8a8 8 0 1 0 0 8M20 3v5h-5" />
-      </>
-    ),
-    trash: (
-      <>
-        <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M9 10v7m6-7v7" />
-      </>
-    ),
-    link: (
-      <>
-        <path d="m10 8 2-2a5 5 0 0 1 7 7l-2 2M14 16l-2 2a5 5 0 0 1-7-7l2-2m2 6 6-6" />
-      </>
-    ),
-    download: (
-      <>
-        <path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5" />
-      </>
-    ),
-    arrow: <path d="m10 5 7 7-7 7" />,
-    check: <path d="m5 12 5 5L20 7" />,
-    folder: <path d="M3 7V4h7l2 3h9v13H3Z" />,
-    edit: (
-      <>
-        <path d="m4 20 1-5L17 3l4 4L9 19ZM14 6l4 4" />
-      </>
-    ),
+  const icons: Record<string, LucideIcon> = {
+    record: CircleDot,
+    screen: Monitor,
+    camera: Camera,
+    mic: Mic,
+    library: Grid2x2,
+    settings: SettingsGlyph,
+    pause: Pause,
+    play: Play,
+    stop: Square,
+    refresh: RotateCw,
+    trash: Trash2,
+    link: Link2,
+    download: Download,
+    arrow: ChevronRight,
+    check: Check,
+    folder: FolderOpen,
+    edit: SquarePen,
   };
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      {paths[name] ?? paths.record}
-    </svg>
-  );
+  const Glyph = icons[name] ?? CircleDot;
+  return <Glyph size={size} strokeWidth={1.7} aria-hidden="true" />;
 }
 function App() {
   const view = location.hash.slice(1) || 'recorder';
@@ -898,7 +850,11 @@ function Review({ id, back, run, setNote }: any) {
     [speed, setSpeed] = useState(1),
     [playing, setPlaying] = useState(false),
     [link, setLink] = useState(''),
-    [exportBusy, setExportBusy] = useState(false);
+    [exportBusy, setExportBusy] = useState(false),
+    [renderedPreview, setRenderedPreview] = useState<{ url: string; durationMs: number } | null>(
+      null,
+    ),
+    [previewLoading, setPreviewLoading] = useState(false);
   const screenRef = useRef<HTMLVideoElement>(null),
     cameraRef = useRef<HTMLVideoElement>(null),
     micRef = useRef<HTMLAudioElement>(null),
@@ -1032,62 +988,54 @@ function Review({ id, back, run, setNote }: any) {
   const applyTrim = () =>
     run(async () => {
       if (!edit) throw new Error('Open an edit document first.');
-      const clips = edit.clips
-        .map((clip: any) => ({
-          ...clip,
-          sourceStartMs: Math.max(clip.sourceStartMs, start * 1000),
-          sourceEndMs: Math.min(clip.sourceEndMs, end * 1000),
-        }))
-        .filter((clip: any) => clip.sourceEndMs > clip.sourceStartMs);
-      if (!clips.length) throw new Error('The trim must retain some video.');
-      await fullEdit({ ...edit, clips });
+      const cuts = [
+        { sourceStartMs: 0, sourceEndMs: Math.round(start * 1000), reason: 'trim', wordIds: [] },
+        {
+          sourceStartMs: Math.round(end * 1000),
+          sourceEndMs: duration,
+          reason: 'trim',
+          wordIds: [],
+        },
+      ].filter((c) => c.sourceEndMs > c.sourceStartMs);
+      if (!cuts.length) return;
+      setEdit(await api.request('edit.cut', { id, cuts }));
     });
   const fullEdit = async (next: any) => {
-    await api.request('edit.set', { id, edit: next });
-    setEdit(await api.request('edit.get', { id }));
+    const valid = next.clips.map((clip: any) => clip.id);
+    const document = {
+      ...next,
+      zoomCues: (next.zoomCues ?? []).filter((cue: any) => valid.includes(cue.clipId)),
+    };
+    setEdit(await api.request('edit.set', { id, edit: document }));
   };
   const split = () =>
     run(async () => {
+      if (renderedPreview)
+        throw new Error('Switch to original tracks before splitting a source clip.');
       if (!edit) throw new Error('Open an edit document first.');
-      const t = currentTime * 1000;
-      const index = edit.clips.findIndex((c: any) => c.sourceStartMs < t && c.sourceEndMs > t);
-      if (index < 0) throw new Error('Place the playhead inside a clip to split it.');
-      const clips = [...edit.clips],
-        clip = clips[index];
-      clips.splice(
-        index,
-        1,
-        { ...clip, sourceEndMs: t },
-        { ...clip, id: `c-${Date.now()}`, sourceStartMs: t },
-      );
-      await fullEdit({ ...edit, clips });
+      const atMs = currentTime * 1000,
+        clip = edit.clips.find((c: any) => c.sourceStartMs < atMs && c.sourceEndMs > atMs);
+      if (!clip) throw new Error('Place the playhead inside a clip to split it.');
+      setEdit(await api.request('edit.split', { id, clipId: clip.id, atMs }));
     });
   const wordCut = () =>
     run(async () => {
       if (!selectedWords.length) throw new Error('Select transcript words to remove.');
-      const ranges = await api.request('transcript.edit-plan', { id, wordIds: selectedWords });
-      await fullEdit({
-        ...edit,
-        clips: subtractRanges(edit.clips, ranges),
-        cuts: [...(edit.cuts ?? []), ...ranges],
-      });
+      const cuts = await api.request('transcript.edit-plan', { id, wordIds: selectedWords });
+      setEdit(await api.request('edit.cut', { id, cuts }));
       setSelectedWords([]);
       setNote('Selected words removed from the edit. Your transcript and originals are kept.');
     });
   const automatedCut = (type: string) =>
     run(async () => {
-      const ranges = await api.request('transcript.edit-plan', {
+      const cuts = await api.request('transcript.edit-plan', {
         id,
         removeFillers: type === 'fillers',
         removeSilence: type === 'silence',
         wordIds: [],
       });
-      await fullEdit({
-        ...edit,
-        clips: subtractRanges(edit.clips, ranges),
-        cuts: [...(edit.cuts ?? []), ...ranges],
-      });
-      setNote(`${ranges.length} suggested cuts applied.`);
+      setEdit(await api.request('edit.cut', { id, cuts }));
+      setNote(`${cuts.length} suggested cuts applied.`);
     });
   const doExport = () =>
     run(async () => {
@@ -1174,12 +1122,12 @@ function Review({ id, back, run, setNote }: any) {
       <div className="review-grid">
         <div className="review-main">
           <div className="player" style={{ aspectRatio: canvasAspect }}>
-            {urls.screen && layout !== 'camera-only' && (
+            {(renderedPreview || (urls.screen && (layout !== 'camera-only' || !urls.camera))) && (
               <video
                 ref={screenRef}
-                src={urls.screen}
+                src={renderedPreview?.url ?? urls.screen}
                 style={
-                  frames?.screen
+                  !renderedPreview && frames?.screen
                     ? {
                         position: 'absolute',
                         left: `${frames.screen.x * 100}%`,
@@ -1193,7 +1141,7 @@ function Review({ id, back, run, setNote }: any) {
                 onTimeUpdate={(e) => {
                   const t = e.currentTarget.currentTime;
                   setCurrentTime(t);
-                  if (playing && edit?.clips?.length) {
+                  if (playing && !renderedPreview && edit?.clips?.length) {
                     const current = edit.clips.find(
                       (c: any) => t * 1000 >= c.sourceStartMs && t * 1000 < c.sourceEndMs,
                     );
@@ -1233,7 +1181,7 @@ function Review({ id, back, run, setNote }: any) {
                 }
               />
             )}
-            {urls.camera && layout !== 'screen-only' && bubbleVisible && (
+            {!renderedPreview && urls.camera && layout !== 'screen-only' && bubbleVisible && (
               <video
                 ref={cameraRef}
                 src={urls.camera}
@@ -1261,12 +1209,12 @@ function Review({ id, back, run, setNote }: any) {
                   ]);
                 }}
                 onTimeUpdate={(e) => {
-                  if (!urls.screen) setCurrentTime(e.currentTarget.currentTime);
+                  if (!screenRef.current) setCurrentTime(e.currentTarget.currentTime);
                 }}
               />
             )}
-            {urls.mic && <audio ref={micRef} src={urls.mic} />}{' '}
-            {urls.system && <audio ref={systemRef} src={urls.system} />}
+            {!renderedPreview && urls.mic && <audio ref={micRef} src={urls.mic} />}{' '}
+            {!renderedPreview && urls.system && <audio ref={systemRef} src={urls.system} />}
             {!urls.screen && !urls.camera && (
               <div className="audio-preview">
                 <Icon name="mic" size={56} />
@@ -1274,7 +1222,7 @@ function Review({ id, back, run, setNote }: any) {
                 <audio controls src={urls.mic ?? urls.system} />
               </div>
             )}
-            {burnIn && transcript?.cues && (
+            {!renderedPreview && burnIn && transcript?.cues && (
               <div className="preview-caption">
                 {
                   transcript.cues.find(
@@ -1292,6 +1240,69 @@ function Review({ id, back, run, setNote }: any) {
               <Icon name={playing ? 'pause' : 'play'} size={24} />
             </button>
           </div>
+          <div className="preview-mode-controls">
+            <span>
+              {renderedPreview
+                ? 'Final video · native rendered edits'
+                : 'Original tracks · edit your composition'}
+            </span>
+            {renderedPreview ? (
+              <button
+                className="secondary"
+                onClick={() => {
+                  [screenRef.current, cameraRef.current, micRef.current, systemRef.current].forEach(
+                    (el) => el?.pause(),
+                  );
+                  setPlaying(false);
+                  setRenderedPreview(null);
+                  setCurrentTime(0);
+                }}
+              >
+                Original tracks
+              </button>
+            ) : (
+              <button
+                className="secondary"
+                disabled={previewLoading}
+                onClick={() =>
+                  run(async () => {
+                    setPreviewLoading(true);
+                    try {
+                      [
+                        screenRef.current,
+                        cameraRef.current,
+                        micRef.current,
+                        systemRef.current,
+                      ].forEach((el) => el?.pause());
+                      setPlaying(false);
+                      await api.request('edit.set', {
+                        id,
+                        layout,
+                        bubbleSize,
+                        bubbleX: bubbleCenter[0],
+                        bubbleY: bubbleCenter[1],
+                        bubbleVisible,
+                        shape: bubbleShape,
+                        mirror,
+                        micGain,
+                        systemGain,
+                        title,
+                        burnIn,
+                      });
+                      await api.request('edit.save', { id });
+                      const preview = await api.previewFile(id);
+                      setRenderedPreview(preview);
+                      setCurrentTime(0);
+                    } finally {
+                      setPreviewLoading(false);
+                    }
+                  })
+                }
+              >
+                {previewLoading ? 'Rendering preview…' : 'Preview final video'}
+              </button>
+            )}
+          </div>
           <div className="player-controls">
             <button className="icon-button" onClick={togglePlay} aria-label="Play or pause">
               <Icon name={playing ? 'pause' : 'play'} />
@@ -1301,12 +1312,12 @@ function Review({ id, back, run, setNote }: any) {
               aria-label="Playhead"
               type="range"
               min="0"
-              max={duration / 1000 || 1}
+              max={(renderedPreview?.durationMs ?? duration) / 1000 || 1}
               step=".01"
               value={currentTime}
               onChange={(e) => seek(Number(e.target.value))}
             />
-            <span>{formatDuration(duration)}</span>
+            <span>{formatDuration(renderedPreview?.durationMs ?? duration)}</span>
             <select
               aria-label="Preview speed"
               value={speed}
@@ -1747,23 +1758,6 @@ function Review({ id, back, run, setNote }: any) {
       </div>
     </>
   );
-}
-export function subtractRanges(clips: any[], ranges: any[]) {
-  let result = clips.map((c) => ({ ...c }));
-  for (const r of ranges) {
-    const next: any[] = [];
-    for (const c of result) {
-      if (r.sourceEndMs <= c.sourceStartMs || r.sourceStartMs >= c.sourceEndMs) {
-        next.push(c);
-        continue;
-      }
-      if (r.sourceStartMs > c.sourceStartMs) next.push({ ...c, sourceEndMs: r.sourceStartMs });
-      if (r.sourceEndMs < c.sourceEndMs)
-        next.push({ ...c, id: `${c.id}-${r.sourceEndMs}`, sourceStartMs: r.sourceEndMs });
-    }
-    result = next;
-  }
-  return result;
 }
 function Settings({ permissions, refresh, run, options, updateOptions }: any) {
   const [cloud, setCloud] = useState<any>({ provider: 'none', configured: false }),

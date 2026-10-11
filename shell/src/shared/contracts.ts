@@ -26,6 +26,8 @@ export const commands = [
   'layout.frames',
   'edit.get',
   'edit.set',
+  'edit.cut',
+  'edit.split',
   'edit.undo',
   'edit.redo',
   'edit.save',
@@ -129,6 +131,7 @@ export interface RushesAPI {
   onEvent(listener: (event: EngineEvent) => void): () => void;
   window(action: string, value?: number, x?: number, y?: number): Promise<any>;
   exportFile(id: string, preset: string, atMs?: number): Promise<any>;
+  previewFile(id: string): Promise<{ url: string; path: string; durationMs: number }>;
   media(path: string): Promise<string>;
   selectArea(area: { x: number; y: number; width: number; height: number }): Promise<void>;
   reveal(path: string): Promise<void>;
