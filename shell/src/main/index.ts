@@ -21,7 +21,7 @@ import { createReadStream } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { Readable } from 'node:stream';
 import { z } from 'zod';
-import { bubbleForCapture } from '../shared/geometry';
+import { bubbleForCapture, globalCaptureArea } from '../shared/geometry';
 import { EngineSupervisor } from './engine';
 import { SharingService } from './sharing';
 import { atomicJSON, atomicBytes } from './atomic';
@@ -648,18 +648,25 @@ async function ready() {
     await writeOptions();
   });
   handle('rushes:select-area', async (value) => {
-    const area = z
+    const local = z
       .object({
-        x: z.number().nonnegative(),
-        y: z.number().nonnegative(),
+        x: z.number().finite(),
+        y: z.number().finite(),
         width: z.number().positive(),
         height: z.number().positive(),
       })
+      .strict()
       .parse(value);
-    options = { ...options, mode: 'area', area };
+    const selector = windows.get('area');
+    if (!selector || selector.isDestroyed()) throw new Error('Open the area selector first.');
+    const bounds = selector.getContentBounds();
+    const area = globalCaptureArea(local, bounds);
+    if (!area) throw new Error('Select an area inside the display.');
+    const source = `display-${screen.getDisplayMatching(bounds).id}`;
+    options = { ...options, mode: 'area', source, area };
     await writeOptions();
-    broadcast({ event: 'area-selected', area });
-    windows.get('area')?.close();
+    broadcast({ event: 'area-selected', area, source });
+    selector.close();
   });
   handle('rushes:media', async (value) => media.allowFile(z.string().max(4000).parse(value)));
   handle('rushes:reveal', async (value) => {

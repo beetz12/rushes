@@ -56,3 +56,31 @@ export function bubbleForCapture(
   if (!center) return;
   return { bounds, center, sizeFraction: size / capture.width };
 }
+export function globalCaptureArea(
+  local: CaptureRectangle,
+  content: CaptureRectangle,
+): CaptureRectangle | undefined {
+  if (
+    ![
+      local.x,
+      local.y,
+      local.width,
+      local.height,
+      content.x,
+      content.y,
+      content.width,
+      content.height,
+    ].every(Number.isFinite) ||
+    local.width <= 0 ||
+    local.height <= 0 ||
+    content.width <= 0 ||
+    content.height <= 0
+  )
+    return;
+  const left = Math.max(0, local.x),
+    top = Math.max(0, local.y);
+  const right = Math.min(content.width, local.x + local.width),
+    bottom = Math.min(content.height, local.y + local.height);
+  if (right <= left || bottom <= top) return;
+  return { x: content.x + left, y: content.y + top, width: right - left, height: bottom - top };
+}

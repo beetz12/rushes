@@ -144,7 +144,12 @@ function App() {
           [e.view === 'bubble' ? 'bubbleAnchor' : 'barAnchor']: e.anchor,
         }));
       if (e.event === 'area-selected') {
-        setOptions((o) => ({ ...o, mode: 'area', area: e.area as any }));
+        setOptions((o) => ({
+          ...o,
+          mode: 'area',
+          source: typeof e.source === 'string' ? e.source : o.source,
+          area: e.area as any,
+        }));
         setNote('Area selected. Ready to record.');
       }
     });

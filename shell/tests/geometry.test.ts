@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizedPointer, bubbleForCapture } from '../src/shared/geometry';
+import { normalizedPointer, bubbleForCapture, globalCaptureArea } from '../src/shared/geometry';
 import { countdownFromSelection } from '../src/shared/contracts';
 describe('composition pointer geometry', () => {
   it('uses actual parent bounds and clamps outside coordinates', () => {
@@ -60,5 +60,24 @@ describe('capture-relative bubble geometry', () => {
     expect(
       bubbleForCapture({ x: 0, y: 0, size: 200 }, { x: 0, y: 0, width: 0, height: 600 }),
     ).toBeUndefined();
+  });
+});
+
+describe('area selector screen coordinates', () => {
+  it('converts local pointer selections to negative secondary-display coordinates and clips edges', () => {
+    const display = { x: -1728, y: -100, width: 1728, height: 1117 };
+    expect(globalCaptureArea({ x: 40, y: 80, width: 600, height: 400 }, display)).toEqual({
+      x: -1688,
+      y: -20,
+      width: 600,
+      height: 400,
+    });
+    expect(globalCaptureArea({ x: -20, y: 1000, width: 500, height: 400 }, display)).toEqual({
+      x: -1728,
+      y: 900,
+      width: 480,
+      height: 117,
+    });
+    expect(globalCaptureArea({ x: 1800, y: 80, width: 600, height: 400 }, display)).toBeUndefined();
   });
 });
