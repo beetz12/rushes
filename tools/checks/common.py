@@ -32,9 +32,12 @@ def path_exists(slug: str, path: str) -> bool:
 
 def is_permissive_path(slug: str, path: str) -> bool:
     src = SOURCES[slug]
+    rel = strip_suffix(path)
+    for pat in src.get("copyleft_paths", []):
+        if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(rel, pat + "/*"):
+            return False
     if src["class"] == "permissive":
         return True
-    rel = strip_suffix(path)
     for pat in src["permissive_paths"]:
         if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(rel, pat + "/*"):
             return True

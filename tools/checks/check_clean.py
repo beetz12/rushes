@@ -2,7 +2,7 @@
 """Clean-room contamination check.
 
 Counts runs of K consecutive word tokens in our docs that also appear in a
-copyleft source file (AGPL/GPL parts of Cap, Recordly, Screenity) and do NOT
+copyleft source file (AGPL/GPL parts of Cap, Recordly, Screenity, and better-shot's copyleft_paths) and do NOT
 appear in any permissive source (so shared public-API boilerplate is ignored).
 
 Usage: check_clean.py [--k 12] PATH [PATH ...]   (files or directories)
@@ -95,7 +95,7 @@ def main() -> int:
 
     hits: dict = {}
     for slug, src in SOURCES.items():
-        if src["class"] != "copyleft":
+        if src["class"] != "copyleft" and not src.get("copyleft_paths"):
             continue
         for rel, text in source_files(slug, want_permissive=False):
             for key in scan(text, k, doc_keys, firsts):

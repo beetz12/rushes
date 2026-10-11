@@ -1,5 +1,5 @@
 {
-  "_comment": "Reference repos studied for the Loom-clone plan. Clones live on the reader side and are never opened by build sessions when class is copyleft. Licences read from each clone's LICENSE file at the pinned SHA on 2026-10-10.",
+  "_comment": "Reference repos studied for the Loom-clone plan. Clones live on the reader side and are never opened by build sessions when class is copyleft. Licences read from each clone's LICENSE file at the pinned SHA on 2026-10-10. copyleft_paths: files inside a permissive repo that carry a copyleft licence (treated as copyleft by every check). caution_paths: permissive files with an unresolved provenance question.",
   "reference_root": "~/Work/reference-repos/loom",
   "feature_areas": [
     "capture-screen",
@@ -23,14 +23,127 @@
     "privacy-security"
   ],
   "sources": [
-    {"slug": "screendrop", "repo": "fayazara/Screendrop", "dir": "fayazara__Screendrop", "sha": "062a9787d05f", "stars": 2160, "licence": "CC0-1.0", "class": "permissive", "permissive_paths": [], "min_ideas": 6},
-    {"slug": "better-shot", "repo": "KartikLabhshetwar/better-shot", "dir": "KartikLabhshetwar__better-shot", "sha": "164d8b92b3ca", "stars": 2378, "licence": "BSD-3-Clause", "class": "permissive", "permissive_paths": [], "min_ideas": 5},
-    {"slug": "voom", "repo": "aritropaul/voom", "dir": "aritropaul__voom", "sha": "410fb860b666", "stars": 12, "licence": "MIT", "class": "permissive", "permissive_paths": [], "min_ideas": 3},
-    {"slug": "openscreen", "repo": "getopenscreen/openscreen", "dir": "getopenscreen__openscreen", "sha": "2896c1f7b9ad", "stars": 3984, "licence": "MIT", "class": "permissive", "permissive_paths": [], "min_ideas": 6},
-    {"slug": "cap", "repo": "CapSoftware/Cap", "dir": "CapSoftware__Cap", "sha": "a32e4806b300", "stars": 23199, "licence": "AGPL-3.0 (MIT: cap-camera* and scap-* crates)", "class": "copyleft", "permissive_paths": ["crates/camera*", "crates/scap-*", "vendor/*", "licenses/*"], "min_ideas": 8},
-    {"slug": "recordly", "repo": "webadderallorg/Recordly", "dir": "webadderallorg__Recordly", "sha": "535d1cfafa87", "stars": 33075, "licence": "AGPL-3.0 (MIT: services/recordly-share)", "class": "copyleft", "permissive_paths": ["services/recordly-share"], "min_ideas": 6},
-    {"slug": "screenity", "repo": "alyssaxuu/screenity", "dir": "alyssaxuu__screenity", "sha": "dddeeb668ad2", "stars": 18770, "licence": "GPL-3.0", "class": "copyleft", "permissive_paths": [], "min_ideas": 5},
-    {"slug": "kap", "repo": "wulkano/Kap", "dir": "wulkano__Kap", "sha": "c42692fa63ac", "stars": 19392, "licence": "MIT", "class": "permissive", "permissive_paths": [], "min_ideas": 4},
-    {"slug": "bloom", "repo": "video-db/bloom", "dir": "video-db__bloom", "sha": "65aa9bf555d2", "stars": 235, "licence": "MIT", "class": "permissive", "permissive_paths": [], "min_ideas": 3}
+    {
+      "slug": "screendrop",
+      "repo": "fayazara/Screendrop",
+      "dir": "fayazara__Screendrop",
+      "sha": "062a9787d05f",
+      "stars": 2160,
+      "licence": "CC0-1.0",
+      "class": "permissive",
+      "permissive_paths": [],
+      "min_ideas": 6,
+      "caution_paths": [
+        {
+          "path": "Screendrop/RecordingViewportTimeline.swift",
+          "why": "83% line-similar to better-shot's AGPL-tagged copy. GitHub history: Screendrop added it 2026-08-04; better-shot copied it 2026-08-25 and mixed in Cap's zoom code 2026-09-25 (commit 8a71ec68). So Screendrop's version predates the Cap adaptation and is very probably original CC0, but independence from Cap is not proven. Prefer re-implementing this file; if copied, record this provenance note."
+        }
+      ]
+    },
+    {
+      "slug": "better-shot",
+      "repo": "KartikLabhshetwar/better-shot",
+      "dir": "KartikLabhshetwar__better-shot",
+      "sha": "164d8b92b3ca",
+      "stars": 2378,
+      "licence": "BSD-3-Clause",
+      "class": "permissive",
+      "permissive_paths": [],
+      "min_ideas": 5,
+      "copyleft_paths": [
+        "Sources/BetterShot/Recording3DBlurRenderer.swift",
+        "Sources/BetterShot/Recording3DInspector.swift",
+        "Sources/BetterShot/Recording3DShot.swift",
+        "Sources/BetterShot/RecordingViewportTimeline.swift",
+        "Sources/Capture/ScrollCaptureController.swift",
+        "Sources/Capture/ScrollCapturePreviewPanel.swift",
+        "Sources/Capture/ScrollFrameAnalyzer.swift"
+      ],
+      "licence_exceptions": "Repo is BSD-3-Clause, but 4 files carry AGPL-3.0-only headers (adapted from Cap; see Resources/Licenses/Cap.txt) and 3 scroll-capture files carry GPLv3 headers (adapted from MacShot). Treat those 7 files as copyleft: never open them from a build session. Found by reader goal 2, confirmed by header scan 2026-10-11."
+    },
+    {
+      "slug": "voom",
+      "repo": "aritropaul/voom",
+      "dir": "aritropaul__voom",
+      "sha": "410fb860b666",
+      "stars": 12,
+      "licence": "MIT",
+      "class": "permissive",
+      "permissive_paths": [],
+      "min_ideas": 3
+    },
+    {
+      "slug": "openscreen",
+      "repo": "getopenscreen/openscreen",
+      "dir": "getopenscreen__openscreen",
+      "sha": "2896c1f7b9ad",
+      "stars": 3984,
+      "licence": "MIT",
+      "class": "permissive",
+      "permissive_paths": [],
+      "min_ideas": 6
+    },
+    {
+      "slug": "cap",
+      "repo": "CapSoftware/Cap",
+      "dir": "CapSoftware__Cap",
+      "sha": "a32e4806b300",
+      "stars": 23199,
+      "licence": "AGPL-3.0 (MIT: cap-camera* and scap-* crates)",
+      "class": "copyleft",
+      "permissive_paths": [
+        "crates/camera*",
+        "crates/scap-*",
+        "vendor/*",
+        "licenses/*"
+      ],
+      "min_ideas": 8
+    },
+    {
+      "slug": "recordly",
+      "repo": "webadderallorg/Recordly",
+      "dir": "webadderallorg__Recordly",
+      "sha": "535d1cfafa87",
+      "stars": 33075,
+      "licence": "AGPL-3.0 (MIT: services/recordly-share)",
+      "class": "copyleft",
+      "permissive_paths": [
+        "services/recordly-share"
+      ],
+      "min_ideas": 6
+    },
+    {
+      "slug": "screenity",
+      "repo": "alyssaxuu/screenity",
+      "dir": "alyssaxuu__screenity",
+      "sha": "dddeeb668ad2",
+      "stars": 18770,
+      "licence": "GPL-3.0",
+      "class": "copyleft",
+      "permissive_paths": [],
+      "min_ideas": 5
+    },
+    {
+      "slug": "kap",
+      "repo": "wulkano/Kap",
+      "dir": "wulkano__Kap",
+      "sha": "c42692fa63ac",
+      "stars": 19392,
+      "licence": "MIT",
+      "class": "permissive",
+      "permissive_paths": [],
+      "min_ideas": 4
+    },
+    {
+      "slug": "bloom",
+      "repo": "video-db/bloom",
+      "dir": "video-db__bloom",
+      "sha": "65aa9bf555d2",
+      "stars": 235,
+      "licence": "MIT",
+      "class": "permissive",
+      "permissive_paths": [],
+      "min_ideas": 3
+    }
   ]
 }

@@ -12,4 +12,5 @@ David's own Loom-style screen and camera recorder. No app code yet.
 Build sessions read `docs/` and may open the permissive reference clones
 (see `tools/checks/sources.json`, class `permissive`, plus the listed
 permissive sub-paths). They never open the copyleft clones (Cap outside its
-MIT crates, Recordly outside `services/recordly-share`, Screenity).
+MIT crates, Recordly outside `services/recordly-share`, Screenity), and never
+open the `copyleft_paths` files inside permissive repos (7 files in better-shot).
