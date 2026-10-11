@@ -569,7 +569,8 @@ public struct BubbleMetadata: Codable, Equatable, Sendable {
     public var center: [Double]
     public var size: Int
     public var visible: Bool
-    public init(center: [Double], size: Int = 200, visible: Bool = true) {
-        self.center = center; self.size = size; self.visible = visible
+    public var sizeFraction: Double?
+    public init(center: [Double], size: Int = 200, visible: Bool = true, sizeFraction: Double? = nil) {
+        self.center = center; self.size = size; self.visible = visible; self.sizeFraction = sizeFraction
     }
 }

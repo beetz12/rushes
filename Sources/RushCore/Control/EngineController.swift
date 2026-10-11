@@ -285,11 +285,20 @@ public actor EngineController: ControlHandling {
             return .success(id: request.id, result: .object(["track": .string(track), "muted": .bool(muted)]))
         case "record.bubble":
             let recording = try requireActive()
-            guard let center = request.param("center")?.array?.compactMap(\.double), center.count == 2,
-                  center.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }) else { throw ControlFailure(code: "invalid-params", message: "bubble center needs two fractions between 0 and 1") }
+            guard let coordinates = request.param("center")?.array, coordinates.count == 2,
+                  let x = coordinates[0].double, let y = coordinates[1].double,
+                  [x,y].allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }) else { throw ControlFailure(code: "invalid-params", message: "bubble center needs two fractions between 0 and 1") }
+            let center = [x,y]
             let size = Int(request.param("size")?.int ?? 200)
             guard [160, 200, 280].contains(size) else { throw ControlFailure(code: "invalid-params", message: "bubble size must be 160, 200 or 280") }
-            try await recording.session.setBubble(BubbleMetadata(center: center, size: size, visible: request.param("visible")?.bool ?? true))
+            var fraction: Double?
+            if let raw = request.param("sizeFraction") {
+                guard let value = raw.double, value.isFinite, value > 0, value <= 1 else {
+                    throw ControlFailure(code: "invalid-params", message: "bubble sizeFraction must be greater than zero and at most one")
+                }
+                fraction = value
+            }
+            try await recording.session.setBubble(BubbleMetadata(center: center, size: size, visible: request.param("visible")?.bool ?? true, sizeFraction: fraction))
             return .success(id: request.id)
         case "record.cancel":
             startGeneration = UUID()

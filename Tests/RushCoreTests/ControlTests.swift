@@ -511,6 +511,17 @@ struct EngineControllerTests {
         #expect(FileManager.default.fileExists(atPath: stoppedPackage.inputURL.path))
     }
 
+    @Test("Screen request history is scoped to app identity, separate from bare engine QA")
+    func permissionMarkerIdentity() {
+        let first = SystemPermissions.markerKey(bundleID: "ai.rushes.app", executablePath: "/tmp/one/engine")
+        let relocated = SystemPermissions.markerKey(bundleID: "ai.rushes.app", executablePath: "/Applications/Rushes.app/engine")
+        let otherApp = SystemPermissions.markerKey(bundleID: "another.app", executablePath: "/tmp/one/engine")
+        let bare = SystemPermissions.markerKey(bundleID: nil, executablePath: "/tmp/one/engine")
+        #expect(first == relocated)
+        #expect(first != otherApp)
+        #expect(first != bare)
+    }
+
     @Test("Unasked screen permission never calls the shareable-content catalog")
     func noImplicitScreenPrompt() async throws {
         let scratch = try tempDirectory("permission-catalog")
@@ -582,9 +593,14 @@ struct EngineControllerTests {
         let first = try #require(exchange.lastResponse?.result?["id"]?.string)
         await controller.handle(ControlRequest(id: "mute", cmd: "record.mute", args: .object(["track": .string("microphone"), "muted": .bool(true)])), context: exchange.context)
         #expect(exchange.lastResponse?.ok == true)
-        await controller.handle(ControlRequest(id: "bubble", cmd: "record.bubble", args: .object(["center": .array([.double(0.1), .double(0.2)]), "size": .int(160)])), context: exchange.context)
+        await controller.handle(ControlRequest(id: "bubble", cmd: "record.bubble", args: .object(["center": .array([.double(0.1), .double(0.2)]), "size": .int(160), "sizeFraction": .double(0.125)])), context: exchange.context)
         let package = try #require(RecordingPackage.resolve(root: root, id: first))
         #expect(try package.readManifest().bubble?.center == [0.1,0.2])
+        #expect(try package.readManifest().bubble?.sizeFraction == 0.125)
+        for value in [JSONValue.double(0), .double(1.1), .double(-0.5), .null, .string("bad")] {
+            await controller.handle(ControlRequest(id: "bad-fraction", cmd: "record.bubble", args: .object(["center": .array([.double(0.1), .double(0.2)]), "sizeFraction": value])), context: exchange.context)
+            #expect(exchange.lastResponse?.error?.code == "invalid-params")
+        }
         try await Task.sleep(nanoseconds: 250_000_000)
         await controller.handle(ControlRequest(id: "restart", cmd: "record.restart"), context: exchange.context)
         #expect(exchange.lastResponse?.ok == true)

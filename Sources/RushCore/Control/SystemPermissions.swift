@@ -7,7 +7,19 @@ import Foundation
 /// start a stream or prompt. Screen Recording exposes only a Boolean API, so our
 /// own persisted request marker distinguishes unasked from denied.
 public enum SystemPermissions {
-    private static let screenAskedKey = "rushes.permissions.screenAsked"
+    private static var screenAskedKey: String {
+        let arguments = ProcessInfo.processInfo.arguments
+        var bundleID = Bundle.main.bundleIdentifier
+        if let flag = arguments.firstIndex(of: "--shell-bundle-id"), arguments.indices.contains(flag + 1) {
+            bundleID = arguments[flag + 1]
+        }
+        return markerKey(bundleID: bundleID, executablePath: Bundle.main.executableURL?.resolvingSymlinksInPath().path ?? "rushcore-engine")
+    }
+
+    internal static func markerKey(bundleID: String?, executablePath: String) -> String {
+        let identity = bundleID.map { "bundle:\($0)" } ?? "executable:\(executablePath)"
+        return "rushes.permissions.screenAsked.\(identity)"
+    }
 
     public static func check(_ kind: PermissionKind) -> PermissionStatus {
         let state: PermissionStatus.State
