@@ -19,3 +19,13 @@ Tests generate synthetic screen, camera and audio media with native writers, the
 The command facade blocks until the finished artifact exists. The typed `export` API accepts a frame-progress callback and observes task cancellation. Root integration owns asynchronous job scheduling and socket progress events. UI draft requests coalesce over 250 milliseconds; the newest request's completion confirms the atomic draft write. Save and discard invalidate pending autosaves using unique generation tokens.
 
 The full preset reuses an existing compatible render for a container-only MP4/MOV remux via native passthrough. Clip entry uses a decoded preceding frame seed so an off-grid trim or a static capture does not produce a black first frame. A shorter camera master holds its last image in later clips.
+
+## Retry verification fixes
+
+The independent checker proved that hidden-cursor zoom still consumes pointer samples for panning. Video cache identity now includes optional input-file presence and content independently of cursor visibility. Missing, newly created and mutated timelines each have distinct identities. Audio-only and raw editor-track exports do not consume that timeline.
+
+Managed render directories must resolve to their exact canonical location inside the recording package. The same rule covers cache videos, stamps, unique staging files, remux siblings and thumbnail intermediates; linked directories or linked cache entries are rejected before reads or writes. Finalization and cleanup revalidate the managed directory. Cleanup targets only a validated unique staging prefix.
+
+The added full-take media regressions also exposed a writer readiness deadlock with mixed audio. Audio now has a separate owner task that pumps its reader/output/input and signals completion independently of the fixed-clock video input. Finalize joins that task; failure or cancellation cancels and joins it before removing staging files. The 30-second readiness bound remains unchanged.
+
+Regression oracles decode spatially distinct synthetic pixels, require cache-key changes when input changes, and compare unchanged-cache and forced-fresh controls. Separate H264 encodes can have small edge quantization differences: the fresh control requires exact center color plus a whole-frame average under one 8-bit intensity step. The checker's original independent tests were run unchanged.

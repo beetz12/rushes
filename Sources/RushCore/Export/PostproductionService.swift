@@ -108,29 +108,34 @@ public actor PostproductionService {
         guard activeExports.insert(key).inserted else { throw ControlFailure(code:"render-in-progress",message:"This export is already running") }
         defer { activeExports.remove(key) }
         if options.preset == .editorTracks { return try editorTracks(package:package,manifest:manifest,edit:edit,key:key,to:output) }
-        let renders=package.folderURL.appendingPathComponent("renders",isDirectory:true)
-        try FileManager.default.createDirectory(at:renders,withIntermediateDirectories:true)
-        let cache=renders.appendingPathComponent("\(key).\(options.container)"),stamp=renders.appendingPathComponent("\(key).json")
+        let renders=try PostproductionPaths.managedDirectory("renders",in:package.folderURL,create:true)
+        let cache=try PostproductionPaths.managedFile("\(key).\(options.container)",in:renders)
+        let stamp=try PostproductionPaths.managedFile("\(key).json",in:renders)
         if let data=try? Data(contentsOf:stamp),var result=try? JSONDecoder().decode(ExportResult.self,from:data),
            FileManager.default.fileExists(atPath:cache.path) {
             try Task.checkCancellation(); try install(cache,to:output)
             result.path=output.path; result.cached=true; return result
         }
-        let partial=renders.appendingPathComponent(".partial-\(UUID().uuidString).\(options.container)")
+        let partial=try PostproductionPaths.managedFile(".partial-\(UUID().uuidString).\(options.container)",in:renders)
         defer {
-            try? FileManager.default.removeItem(at:partial)
+            if (try? PostproductionPaths.managedDirectory("renders",in:package.folderURL)) != nil,
+               let ownPartial=try? PostproductionPaths.managedFile(partial.lastPathComponent,in:renders) { try? FileManager.default.removeItem(at:ownPartial) }
             // AVFoundation fast-start rewriting may allocate a same-directory
             // sidecar named after our unique staging file. Remove only our prefix.
-            if let files=try? FileManager.default.contentsOfDirectory(at:renders,includingPropertiesForKeys:nil) {
-                for file in files where file.lastPathComponent.hasPrefix(partial.lastPathComponent+".") { try? FileManager.default.removeItem(at:file) }
+            if (try? PostproductionPaths.managedDirectory("renders",in:package.folderURL)) != nil,
+               let files=try? FileManager.default.contentsOfDirectory(at:renders,includingPropertiesForKeys:nil) {
+                for file in files where file.lastPathComponent.hasPrefix(partial.lastPathComponent+".") {
+                    if let ownSidecar=try? PostproductionPaths.managedFile(file.lastPathComponent,in:renders) { try? FileManager.default.removeItem(at:ownSidecar) }
+                }
             }
         }
         let dimensions:(Int,Int)
         if options.preset == .full {
             var siblingOptions=options; siblingOptions.container=options.container == "mov" ? "mp4" : "mov"
             let siblingKey=try cacheKey(package:package,manifest:manifest,edit:edit,options:siblingOptions)
-            let sibling=renders.appendingPathComponent("\(siblingKey).\(siblingOptions.container)")
-            if let data=try? Data(contentsOf:renders.appendingPathComponent("\(siblingKey).json")),
+            let sibling=try PostproductionPaths.managedFile("\(siblingKey).\(siblingOptions.container)",in:renders)
+            let siblingStamp=try PostproductionPaths.managedFile("\(siblingKey).json",in:renders)
+            if let data=try? Data(contentsOf:siblingStamp),
                let prior=try? JSONDecoder().decode(ExportResult.self,from:data),FileManager.default.fileExists(atPath:sibling.path) {
                 guard let session=AVAssetExportSession(asset:AVURLAsset(url:sibling),presetName:AVAssetExportPresetPassthrough) else { throw renderFailure("Cannot create container remux") }
                 session.shouldOptimizeForNetworkUse=true
@@ -139,8 +144,12 @@ public actor PostproductionService {
             } else { dimensions=try await renderer.render(to:partial,progress:progress) }
         } else { dimensions=try await renderer.render(to:partial,progress:progress) }
         try Task.checkCancellation()
+        _=try PostproductionPaths.managedDirectory("renders",in:package.folderURL)
+        _=try PostproductionPaths.managedFile(partial.lastPathComponent,in:renders)
+        _=try PostproductionPaths.managedFile(cache.lastPathComponent,in:renders)
         try AtomicFileWriter.posixRename(from:partial,to:cache)
         let result=ExportResult(id:id,path:output.path,preset:options.preset.rawValue,cacheKey:key,cached:false,durationMs:edit.durationMs,width:dimensions.0,height:dimensions.1,fps:options.preset == .audio ? 0 : options.fps)
+        _=try PostproductionPaths.managedFile(stamp.lastPathComponent,in:renders)
         try AtomicFileWriter.writeEncodable(result,to:stamp,encoder:ControlWire.encoder)
         try install(cache,to:output); return result
     }
@@ -155,7 +164,15 @@ public actor PostproductionService {
             while let bytes=try file.read(upToCount:1_048_576),!bytes.isEmpty { hasher.update(data:bytes) }
         }
         if edit.captions.burnIn { hasher.update(data:try Data(contentsOf:PostproductionPaths.file("transcript.json",in:package.folderURL))) }
-        if edit.drawCursor { hasher.update(data:try Data(contentsOf:PostproductionPaths.file(manifest.input?.file ?? "input.ndjson",in:package.folderURL))) }
+        // Video rendering always reads the pointer timeline. It controls zoom
+        // safe-zone panning even when the visible cursor remains baked in.
+        if options.preset != .audio && options.preset != .editorTracks {
+            let input=try PostproductionPaths.file(manifest.input?.file ?? "input.ndjson",in:package.folderURL,requireExists:false)
+            hasher.update(data:Data("pointer-timeline".utf8))
+            if FileManager.default.fileExists(atPath:input.path) {
+                hasher.update(data:Data([1])); hasher.update(data:try Data(contentsOf:input))
+            } else { hasher.update(data:Data([0])) }
+        }
         return hasher.finalize().map { String(format:"%02x",$0) }.joined()
     }
     private func protect(_ output:URL,package:RecordingPackage,manifest:RecordingManifest) throws {
@@ -230,7 +247,8 @@ public actor PostproductionService {
         let package=try package(id),manifest=try package.readManifest(); try protect(output,package:package,manifest:manifest)
         let edit=try await getEdit(id:id)
         guard atMs < edit.durationMs else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"Thumbnail time lies beyond the edit") }
-        let preview=package.folderURL.appendingPathComponent("renders/thumbnail-source.mp4")
+        let renders=try PostproductionPaths.managedDirectory("renders",in:package.folderURL,create:true)
+        let preview=try PostproductionPaths.managedFile("thumbnail-source.mp4",in:renders)
         _=try await export(id:id,to:preview)
         let generator=AVAssetImageGenerator(asset:AVURLAsset(url:preview)); generator.appliesPreferredTrackTransform=true
         generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = CMTime(value:1,timescale:30)

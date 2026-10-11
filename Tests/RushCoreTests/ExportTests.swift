@@ -25,7 +25,7 @@ struct SyntheticExportFixture {
         ]))
     }
     func cleanup() { try? FileManager.default.removeItem(at:root) }
-    static func video(to url:URL,camera:Bool,allGreen:Bool = false,frameCount:Int = 60) async throws {
+    static func video(to url:URL,camera:Bool,allGreen:Bool = false,frameCount:Int = 60,spatialHalves:Bool = false) async throws {
         let width=camera ? 160 : 320,height=camera ? 160 : 180
         let writer=try AVAssetWriter(outputURL:url,fileType:.mov)
         let input=AVAssetWriterInput(mediaType:.video,outputSettings:[AVVideoCodecKey:AVVideoCodecType.h264,AVVideoWidthKey:width,AVVideoHeightKey:height])
@@ -39,7 +39,11 @@ struct SyntheticExportFixture {
             let memory=CVPixelBufferGetBaseAddress(pixel)!,rowBytes=CVPixelBufferGetBytesPerRow(pixel)
             let pixelWord:UInt32 = camera ? 0xFFDC0000 : frame>=30 || allGreen ? 0xFF00DC00 : 0xFF0000DC
             for row in 0..<height {
-                memory.advanced(by:row*rowBytes).assumingMemoryBound(to:UInt32.self).initialize(repeating:pixelWord,count:width)
+                let pixels=memory.advanced(by:row*rowBytes).assumingMemoryBound(to:UInt32.self)
+                if spatialHalves {
+                    pixels.initialize(repeating:0xFF0000DC,count:width/2)
+                    pixels.advanced(by:width/2).initialize(repeating:0xFF00DC00,count:width-width/2)
+                } else { pixels.initialize(repeating:pixelWord,count:width) }
             }
             CVPixelBufferUnlockBaseAddress(pixel,[])
             guard adaptor.append(pixel,withPresentationTime:CMTime(value:Int64(frame),timescale:30)) else { throw renderFailure("Fixture append") }
@@ -311,6 +315,88 @@ struct ExportTests {
         let pixels=try await SyntheticExportFixture.pixels(output,at:0)
         #expect(pixels.data[(90*320+240)*4]>170)
         #expect(pixels.data[(90*320+30)*4+1]>170)
+    }
+
+    @Test func inputTelemetryChangesZoomCacheWithBakedCursor() async throws {
+        let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
+        try FileManager.default.removeItem(at:fixture.package.trackURL(for:.screen))
+        try await SyntheticExportFixture.video(to:fixture.package.trackURL(for:.screen),camera:false,spatialHalves:true)
+        let service=PostproductionService(root:fixture.root)
+        var edit=try await service.getEdit(id:fixture.package.id)
+        edit.layout.preset = .screenOnly; edit.drawCursor=false
+        edit.zoomCues=[ZoomCue(clipId:"c1",sourceStartMs:0,sourceEndMs:2000,scale:2,focus:[0.25,0.5],origin:"manual")]
+        _=try await service.setEdit(id:fixture.package.id,edit:edit)
+        let first=fixture.root.appendingPathComponent("no-pointer.mp4")
+        let initial=try await service.export(id:fixture.package.id,to:first)
+        let left=try await SyntheticExportFixture.pixels(first,at:0.7),center=(90*320+160)*4
+        #expect(left.data[center+2]>left.data[center+1]+100)
+        // Presence is a cache input as well as bytes: manual cues work before
+        // the optional input file exists.
+        try AtomicFileWriter.write(Data("{\"t\":0,\"k\":\"move\",\"x\":0.75,\"y\":0.5}\n".utf8),to:fixture.package.inputURL)
+        let second=fixture.root.appendingPathComponent("new-pointer.mp4")
+        let changed=try await service.export(id:fixture.package.id,to:second)
+        let right=try await SyntheticExportFixture.pixels(second,at:0.7)
+        #expect(changed.cacheKey != initial.cacheKey && !changed.cached)
+        #expect(Int(right.data[center+1])>Int(right.data[center+2])+100)
+        let unchanged=try await service.export(id:fixture.package.id,to:fixture.root.appendingPathComponent("unchanged.mp4"))
+        #expect(unchanged.cached && unchanged.cacheKey == changed.cacheKey)
+        try AtomicFileWriter.write(Data("{\"t\":0,\"k\":\"move\",\"x\":0.25,\"y\":0.5}\n".utf8),to:fixture.package.inputURL)
+        let third=fixture.root.appendingPathComponent("mutated-pointer.mp4")
+        let mutated=try await service.export(id:fixture.package.id,to:third)
+        let back=try await SyntheticExportFixture.pixels(third,at:0.7)
+        #expect(!mutated.cached && mutated.cacheKey != changed.cacheKey)
+        #expect(Int(back.data[center+2])>Int(back.data[center+1])+100)
+        edit.meta.title="Equivalent fresh-render control"
+        _=try await service.setEdit(id:fixture.package.id,edit:edit)
+        let control=fixture.root.appendingPathComponent("forced-fresh.mp4")
+        _=try await service.export(id:fixture.package.id,to:control)
+        let fresh=try await SyntheticExportFixture.pixels(control,at:0.7)
+        let deltas=zip(fresh.data,back.data).map { abs(Int($0)-Int($1)) }
+        let meanDifference=Double(deltas.reduce(0,+))/Double(deltas.count)
+        // Separate H264 encodes have small edge quantization differences. The
+        // spatial pan oracle is exact at the flat-color center, while an average
+        // below one intensity step checks the complete decoded composition.
+        let sameCenter=Array(fresh.data[center..<center+4]) == Array(back.data[center..<center+4])
+        #expect(sameCenter)
+        #expect(meanDifference<1)
+
+    }
+    @Test func managedRenderDirectoriesStampsAndRemuxRejectSymlinkEscapes() async throws {
+        let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
+        let outside=fixture.root.appendingPathComponent("outside-package",isDirectory:true)
+        try FileManager.default.createDirectory(at:outside,withIntermediateDirectories:false)
+        let marker=outside.appendingPathComponent("marker.txt")
+        try AtomicFileWriter.write(Data("outside negative control".utf8),to:marker)
+        let service=PostproductionService(root:fixture.root),renders=fixture.package.rendersDirectory
+        try FileManager.default.createSymbolicLink(at:renders,withDestinationURL:outside)
+        let output=fixture.root.appendingPathComponent("refused.mp4")
+        await #expect(throws:ControlFailure.self) { try await service.export(id:fixture.package.id,to:output) }
+        await #expect(throws:ControlFailure.self) { try await service.thumbnail(id:fixture.package.id,to:fixture.root.appendingPathComponent("refused.png")) }
+        #expect(try FileManager.default.contentsOfDirectory(atPath:outside.path) == ["marker.txt"])
+        #expect(try String(contentsOf:marker,encoding:.utf8) == "outside negative control")
+        #expect(!FileManager.default.fileExists(atPath:output.path))
+        try FileManager.default.removeItem(at:renders)
+        let good=try await service.export(id:fixture.package.id,options:ExportOptions(preset:.full),to:fixture.root.appendingPathComponent("positive.mp4"))
+        #expect(!good.cached && FileManager.default.fileExists(atPath:fixture.root.appendingPathComponent("positive.mp4").path))
+        let cache=renders.appendingPathComponent(good.cacheKey+".mp4"),stamp=renders.appendingPathComponent(good.cacheKey+".json")
+        let originalStamp=try Data(contentsOf:stamp),originalCache=try Data(contentsOf:cache)
+        let outsideStamp=outside.appendingPathComponent("outside.json")
+        try AtomicFileWriter.write(originalStamp,to:outsideStamp)
+        try FileManager.default.removeItem(at:stamp)
+        try FileManager.default.createSymbolicLink(at:stamp,withDestinationURL:outsideStamp)
+        await #expect(throws:ControlFailure.self) { try await service.export(id:fixture.package.id,options:ExportOptions(preset:.full),to:output) }
+        // A MOV cache miss must validate the sibling MP4 stamp before remux.
+        await #expect(throws:ControlFailure.self) { try await service.export(id:fixture.package.id,options:ExportOptions(preset:.full,container:"mov"),to:fixture.root.appendingPathComponent("refused.mov")) }
+        #expect(try Data(contentsOf:outsideStamp) == originalStamp)
+        try FileManager.default.removeItem(at:stamp); try AtomicFileWriter.write(originalStamp,to:stamp)
+        let outsideVideo=outside.appendingPathComponent("outside.mp4")
+        try AtomicFileWriter.write(originalCache,to:outsideVideo)
+        try FileManager.default.removeItem(at:cache)
+        try FileManager.default.createSymbolicLink(at:cache,withDestinationURL:outsideVideo)
+        await #expect(throws:ControlFailure.self) { try await service.export(id:fixture.package.id,options:ExportOptions(preset:.full),to:output) }
+        #expect(try Data(contentsOf:outsideVideo) == originalCache)
+        #expect(!(try FileManager.default.contentsOfDirectory(atPath:outside.path)).contains(where:{$0.hasPrefix(".partial-")}))
+        #expect(!(try FileManager.default.contentsOfDirectory(atPath:renders.path)).contains(where:{$0.hasPrefix(".partial-")}))
     }
 
 }

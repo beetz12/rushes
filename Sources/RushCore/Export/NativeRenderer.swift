@@ -61,6 +61,28 @@ final class NativeRenderer: @unchecked Sendable {
         }
         deinit { reader.cancelReading() }
     }
+    /// One task owns audio reader/output/input operations. The video task owns
+    /// its distinct input; both share AVAssetWriter's supported multi-input
+    /// status/append flow. Finalize follows the task join; cancel joins it too.
+    private final class AudioPump: @unchecked Sendable {
+        let reader:AVAssetReader
+        let output:AVAssetReaderAudioMixOutput
+        let input:AVAssetWriterInput
+        let writer:AVAssetWriter
+        let renderer:NativeRenderer
+        init(reader:AVAssetReader,output:AVAssetReaderAudioMixOutput,input:AVAssetWriterInput,writer:AVAssetWriter,renderer:NativeRenderer) {
+            self.reader=reader; self.output=output; self.input=input; self.writer=writer; self.renderer=renderer
+        }
+        func run() async throws {
+            defer { if writer.status == .writing { input.markAsFinished() } }
+            while let sample=output.copyNextSampleBuffer() {
+                try Task.checkCancellation()
+                try await renderer.wait(input,writer:writer)
+                guard input.append(sample) else { throw renderFailure(writer.error?.localizedDescription ?? "Audio append failed") }
+            }
+            if reader.status == .failed { throw renderFailure(reader.error?.localizedDescription ?? "Audio decoding failed") }
+        }
+    }
     private func source(_ kind: TrackKind) async throws -> VideoSource? {
         guard let track=manifest.tracks.first(where:{$0.kind == kind && $0.present}) else { return nil }
         let url=try safeTrackURL(track.file)
@@ -153,17 +175,15 @@ final class NativeRenderer: @unchecked Sendable {
         } else if audioOnly { throw renderFailure("The recording has no audio track") }
         guard writer.startWriting() else { throw renderFailure(writer.error?.localizedDescription ?? "Writer could not start") }
         writer.startSession(atSourceTime:.zero)
+        // Each writer input must make independent progress. Serial audio/video
+        // readiness waits can deadlock the muxer when one input needs the other
+        // to drain or signal its end of stream.
+        let audioTask:Task<Void,Error>?
+        if let audio,let input=audioInput {
+            let pump=AudioPump(reader:audio.0,output:audio.1,input:input,writer:writer,renderer:self)
+            audioTask=Task { try await pump.run() }
+        } else { audioTask=nil }
         do {
-            var nextAudio=audio?.1.copyNextSampleBuffer()
-            func appendAudio(until seconds: Double) async throws {
-                guard let input=audioInput else { return }
-                while let sample=nextAudio, sample.presentationTimeStamp.seconds <= seconds {
-                    try await wait(input,writer:writer)
-                    guard input.append(sample) else { throw renderFailure(writer.error?.localizedDescription ?? "Audio append failed") }
-                    nextAudio=audio?.1.copyNextSampleBuffer()
-                }
-                if audio?.0.status == .failed { throw renderFailure(audio?.0.error?.localizedDescription ?? "Audio decoding failed") }
-            }
             if let input=videoInput, let adaptor {
                 let screen=try await source(.screen), camera=try await source(.camera)
                 let pointers=try readPointers()
@@ -190,7 +210,6 @@ final class NativeRenderer: @unchecked Sendable {
                     let state=viewport.tick(clip:mapped.clip,sourceMs:mapped.sourceMs,cues:edit.zoomCues,pointer:pointer,dt:1/Double(options.fps))
                     let composite=try compose(screen:screenReader?.image(at:mapped.sourceMs),camera:cameraReader?.image(at:mapped.sourceMs),viewport:state,pointer:edit.drawCursor ? pointer : nil,width:dimensions.0,height:dimensions.1)
                     let image=captions.image(at:mapped.sourceMs)?.composited(over:composite) ?? composite
-                    try await appendAudio(until:Double(frame+1)/Double(options.fps))
                     try await wait(input,writer:writer)
                     guard let pool=adaptor.pixelBufferPool else { throw renderFailure("Missing render buffer pool") }
                     var buffer:CVPixelBuffer?
@@ -201,14 +220,15 @@ final class NativeRenderer: @unchecked Sendable {
                 }
                 input.markAsFinished()
             }
-            try await appendAudio(until:Double.infinity)
-            audioInput?.markAsFinished()
+            try await audioTask?.value
             writer.endSession(atSourceTime:CMTime(seconds:edit.durationMs/1000,preferredTimescale:600_000))
             await writer.finishWriting()
             guard writer.status == .completed else { throw renderFailure(writer.error?.localizedDescription ?? "Writer failed during finalize") }
             try Task.checkCancellation()
         } catch {
-            writer.cancelWriting(); audio?.0.cancelReading(); try? FileManager.default.removeItem(at:target); throw error
+            audioTask?.cancel(); writer.cancelWriting(); audio?.0.cancelReading()
+            _=await audioTask?.result
+            try? FileManager.default.removeItem(at:target); throw error
         }
         return dimensions
     }
@@ -217,7 +237,7 @@ final class NativeRenderer: @unchecked Sendable {
         while !input.isReadyForMoreMediaData {
             try Task.checkCancellation()
             guard writer.status == .writing else { throw renderFailure(writer.error?.localizedDescription ?? "Encoder stopped") }
-            guard ContinuousClock.now < deadline else { throw renderFailure("Encoder stalled for 30 seconds") }
+            guard ContinuousClock.now < deadline else { throw renderFailure("\(input.mediaType.rawValue) encoder stalled for 30 seconds") }
             try await Task.sleep(for:.milliseconds(2))
         }
     }
