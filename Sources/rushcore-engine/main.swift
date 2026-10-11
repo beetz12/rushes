@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import RushCore
 
@@ -21,6 +22,7 @@ struct EngineFlags {
     /// Diagnostic mode: synthetic capture instead of ScreenCaptureKit,
     /// camera and event tap, so headless test runs need no permissions.
     var captureStub = false
+    var shellBundleID: String?
     /// Reserved for Phase 1 item 9's `selftest sync` passthrough: accepted,
     /// never refused, no behaviour yet.
     var selftestPassthrough: [String] = []
@@ -56,6 +58,9 @@ func parseEngineFlags(_ arguments: [String]) -> EngineFlags {
                 fileURLWithPath: nextValue(arg), isDirectory: true)
         case "--index-path":
             flags.indexPath = URL(fileURLWithPath: nextValue(arg))
+        case "--shell-bundle-id":
+            flags.shellBundleID = nextValue(arg)
+        case "serve": break
         case "--capture-stub":
             flags.captureStub = true
         case "--selftest":
@@ -87,6 +92,10 @@ do {
     controller = try EngineController(config: EngineControllerConfig(
         recordingsRoot: flags.recordingsRoot,
         indexDatabaseURL: flags.indexPath,
+        catalog: flags.captureStub ? DiagnosticSourceCatalog() : SystemSourceCatalog(),
+        permissionAdvisor: flags.captureStub ? .allAllowed : SystemPermissions.advisor,
+        permissionRequester: { kind in await SystemPermissions.request(kind) },
+        shellBundleID: flags.shellBundleID,
         captureRigs: flags.captureStub
             ? StubCaptureRigFactory()
             : ProductionCaptureRigFactory(),
@@ -160,4 +169,5 @@ func installTerminationHandling(controller: EngineController, server: ControlSer
 
 installTerminationHandling(controller: controller, server: server)
 
-dispatchMain()
+NSApplication.shared.setActivationPolicy(.prohibited)
+NSApplication.shared.run()

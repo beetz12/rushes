@@ -75,7 +75,7 @@ public struct PackageVerifier: Sendable {
         var checks: [Report.TrackCheck] = []
         for track in manifest.tracks {
             checks.append(
-                await checkTrack(track, in: package, manifestDuration: manifestDurationSeconds))
+                await checkTrack(track, in: package, manifestDuration: manifestDurationSeconds, cameraLost: manifest.warnings.contains { $0.code == "camera-lost" }))
         }
 
         let allTracksOK = checks.allSatisfy(\.ok)
@@ -89,7 +89,8 @@ public struct PackageVerifier: Sendable {
     private func checkTrack(
         _ track: RecordingManifest.RecordingTrack,
         in package: RecordingPackage,
-        manifestDuration: Double?
+        manifestDuration: Double?,
+        cameraLost: Bool
     ) async -> Report.TrackCheck {
         let url: URL
         do {
@@ -103,6 +104,16 @@ public struct PackageVerifier: Sendable {
         }
 
         var issues: [String] = []
+        var expectedDuration = manifestDuration
+        if let durationNs = track.durationNs {
+            let duration = Double(durationNs) / 1e9
+            if track.kind == .camera, cameraLost, durationNs > 0,
+               let manifestDuration, duration <= manifestDuration {
+                expectedDuration = duration
+            } else {
+                issues.append("\(track.file): custom duration requires a lost camera within the take")
+            }
+        }
 
         guard FileManager.default.fileExists(atPath: url.path) else {
             issues.append("\(track.file): file missing")
@@ -127,7 +138,7 @@ public struct PackageVerifier: Sendable {
             issues.append("\(track.file): no audio track")
         }
 
-        if let manifestDuration, let trackDuration = probe.durationSeconds {
+        if let manifestDuration = expectedDuration, let trackDuration = probe.durationSeconds {
             let deviationMs = abs(trackDuration - manifestDuration) * 1_000
             if deviationMs > toleranceMs {
                 issues.append(

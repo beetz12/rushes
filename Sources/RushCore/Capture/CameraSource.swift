@@ -264,7 +264,7 @@ public final class CameraSource: @unchecked Sendable {
     private let session: any CameraSessionDriving
     private let previewEncoder: any PreviewFrameEncoding
     private let makeVideoOutput: @Sendable () -> AVCaptureVideoDataOutput
-    private let onCameraLost: @Sendable (String) -> Void
+    private var onCameraLost: @Sendable (String) -> Void
 
     /// Session mutation queue: every AVCaptureSession change happens here.
     private let sessionQueue = DispatchQueue(label: "rush.rushcore.camera.session", qos: .userInitiated)
@@ -272,6 +272,11 @@ public final class CameraSource: @unchecked Sendable {
     /// never leaves it.
     private let frameQueue = DispatchQueue(label: "rush.rushcore.camera.frames", qos: .userInitiated)
     private let lock = NSLock()
+    private let previewQueue = DispatchQueue(label: "rush.camera.preview")
+    private var previewBusy = false
+    private var receivedFrame = false
+    private var observer: NSObjectProtocol?
+    private var previewSink: (@Sendable (Data) -> Void)?
 
     // Lock-confined (both queues and callers touch these).
     private var throttle = PreviewThrottle()
@@ -286,7 +291,10 @@ public final class CameraSource: @unchecked Sendable {
 
     /// Where preview JPEGs are published. The engine connects this to the
     /// control socket; tests collect frames here. Called on the frame queue.
-    public var previewHandler: (@Sendable (Data) -> Void)?
+    public var previewHandler: (@Sendable (Data) -> Void)? {
+        get { lock.withLock { previewSink } }
+        set { lock.withLock { previewSink = newValue } }
+    }
 
     /// Public entry point with the production seams.
     public convenience init(onCameraLost: @escaping @Sendable (String) -> Void) {
@@ -320,6 +328,24 @@ public final class CameraSource: @unchecked Sendable {
         self.previewEncoder = previewEncoder
         self.makeVideoOutput = makeVideoOutput
         self.onCameraLost = onCameraLost
+        observer = NotificationCenter.default.addObserver(forName: AVCaptureDevice.wasDisconnectedNotification,
+                                                         object: nil, queue: nil) { [weak self] note in
+            guard let device = note.object as? AVCaptureDevice else { return }
+            self?.deviceDisconnected(id: device.uniqueID)
+        }
+    }
+
+    deinit {
+        if let observer { NotificationCenter.default.removeObserver(observer) }
+    }
+
+    private func deviceDisconnected(id: String) {
+        sessionQueue.async { [self] in
+            guard activeIdentity?.uniqueID == id else { return }
+            detachWriter()
+            let handler = lock.withLock { onCameraLost }
+            handler(activeIdentity?.localizedName ?? id)
+        }
     }
 
     /// Warms the camera: resolves the device, picks the format, pins the
@@ -335,7 +361,7 @@ public final class CameraSource: @unchecked Sendable {
     ///   recording still starts).
     @discardableResult
     public func warmUp(deviceID: String?) async -> (identity: CameraDeviceIdentity?, failure: String?) {
-        await withCheckedContinuation { (continuation: CheckedContinuation<
+        let configured = await withCheckedContinuation { (continuation: CheckedContinuation<
             (identity: CameraDeviceIdentity?, failure: String?), Never
         >) in
             sessionQueue.async { [self] in
@@ -343,6 +369,16 @@ public final class CameraSource: @unchecked Sendable {
                 continuation.resume(returning: outcome)
             }
         }
+        guard configured.identity != nil else { return configured }
+        let deadline = DispatchTime.now().uptimeNanoseconds + 3_000_000_000
+        while !lock.withLock({ receivedFrame }), DispatchTime.now().uptimeNanoseconds < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        guard lock.withLock({ receivedFrame }) else {
+            stop()
+            return (nil, "camera did not deliver a frame within three seconds")
+        }
+        return configured
     }
 
     /// Session-queue-confined warm-up body.
@@ -385,10 +421,11 @@ public final class CameraSource: @unchecked Sendable {
         }
         session.commitConfiguration()
         Self.pinFrameDuration(to: device)
-        session.startRunning()
-
-        let forwarder = CameraFrameForwarder(owner: self, converter: session.makeClockConverter())
+        let forwarder = CameraFrameForwarder(owner: self, converter: nil)
         output.setSampleBufferDelegate(forwarder, queue: frameQueue)
+        session.startRunning()
+        let converter = session.makeClockConverter()
+        frameQueue.sync { forwarder.setConverter(converter) }
 
         self.videoOutput = output
         self.activeDevice = device
@@ -413,7 +450,13 @@ public final class CameraSource: @unchecked Sendable {
         }
         guard let chosen = CameraFormatChoice.choose(from: options),
               chosen.index < device.formats.count else { return }
-        device.activeFormat = device.formats[chosen.index]
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            device.activeFormat = device.formats[chosen.index]
+        } catch {
+            // A busy device keeps its current format; capture can continue.
+        }
     }
 
     /// Pins the device to the chosen rate (docs/PLAN.md, capture-camera:
@@ -441,6 +484,14 @@ public final class CameraSource: @unchecked Sendable {
         lock.lock()
         attachedWriter = writer
         lock.unlock()
+    }
+
+    public func setLossHandler(_ handler: @escaping @Sendable (String) -> Void) {
+        lock.withLock { onCameraLost = handler }
+    }
+
+    public func detachWriter() {
+        lock.withLock { attachedWriter = nil }
     }
 
     /// Detaches the writer and stops the session (Stop, or a camera that was
@@ -474,7 +525,9 @@ public final class CameraSource: @unchecked Sendable {
     /// recording continues; `camera.mov` simply ends at that time.
     public func noteDeviceLost() {
         if let identity = identity {
-            onCameraLost(identity.localizedName)
+            detachWriter()
+            let handler = lock.withLock { onCameraLost }
+            handler(identity.localizedName)
         }
     }
 
@@ -535,6 +588,7 @@ public final class CameraSource: @unchecked Sendable {
         }
         lock.lock()
         let writer = attachedWriter
+        receivedFrame = true
         lock.unlock()
         writer?.appendVideo(forwarded)
 
@@ -547,10 +601,20 @@ public final class CameraSource: @unchecked Sendable {
             forSourceWidth: CVPixelBufferGetWidth(pixelBuffer))
         lock.unlock()
         guard shouldEmit else { return }
-        if let jpeg = previewEncoder.encode(pixelBuffer, targetWidth: target) {
-            handler(jpeg)
+        let accepted = lock.withLock {
+            if previewBusy { return false }
+            previewBusy = true
+            return true
+        }
+        guard accepted else { return }
+        let frame = PreviewPixelBuffer(pixelBuffer)
+        previewQueue.async { [self, frame] in
+            defer { lock.withLock { previewBusy = false } }
+            if let jpeg = previewEncoder.encode(frame.value, targetWidth: target) { handler(jpeg) }
         }
     }
+
+    internal func waitForPreview() { previewQueue.sync {} }
 
     private static func formatWidth(_ format: AVCaptureDevice.Format) -> Int {
         Int(CMVideoFormatDescriptionGetDimensions(format.formatDescription).width)
@@ -568,12 +632,14 @@ public final class CameraSource: @unchecked Sendable {
 internal final class CameraFrameForwarder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
     private weak var owner: CameraSource?
-    private let converter: SessionClockConverter?
+    private var converter: SessionClockConverter?
 
     init(owner: CameraSource, converter: SessionClockConverter?) {
         self.owner = owner
         self.converter = converter
     }
+
+    func setConverter(_ converter: SessionClockConverter?) { self.converter = converter }
 
     func captureOutput(
         _ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection
@@ -588,4 +654,9 @@ internal final class CameraFrameForwarder: NSObject, AVCaptureVideoDataOutputSam
             converter.hostTime(fromSessionTime: time)
         }
     }
+}
+
+private final class PreviewPixelBuffer: @unchecked Sendable {
+    let value: CVPixelBuffer
+    init(_ value: CVPixelBuffer) { self.value = value }
 }

@@ -44,10 +44,12 @@ public struct TrackWriterStatus: Codable, Equatable, Sendable {
     /// gap fill, mute and tail padding).
     public let silenceFramesWritten: Int64
 
-    /// Samples dropped for any reason: backpressure (oldest-first), paused
-    /// spans, non-monotonic timestamps, payloads with no image buffer, and an
+    /// Samples lost: backpressure (oldest-first), non-monotonic timestamps, payloads with no image buffer, and an
     /// encoder that was not ready for audio.
     public let framesDropped: Int64
+    /// Intentional pause suppression is separate from encoder/backpressure loss.
+    public let framesSuppressedByPause: Int64?
+    public let microphoneSilent: Bool?
 
     /// Media time of the first appended sample, or nil when nothing was
     /// written.
@@ -81,7 +83,9 @@ public struct TrackWriterStatus: Codable, Equatable, Sendable {
         pendingDepth: Int,
         usedFallbackCodec: Bool,
         finalizeState: FinalizeState,
-        errorDescription: String?
+        errorDescription: String?,
+        framesSuppressedByPause: Int64? = 0,
+        microphoneSilent: Bool? = false
     ) {
         self.kind = kind
         self.framesWritten = framesWritten
@@ -93,5 +97,7 @@ public struct TrackWriterStatus: Codable, Equatable, Sendable {
         self.usedFallbackCodec = usedFallbackCodec
         self.finalizeState = finalizeState
         self.errorDescription = errorDescription
+        self.framesSuppressedByPause = framesSuppressedByPause
+        self.microphoneSilent = microphoneSilent
     }
 }

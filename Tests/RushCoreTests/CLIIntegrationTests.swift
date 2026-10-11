@@ -186,13 +186,37 @@ struct ControlCLIIntegrationTests {
     @Test("No engine on the socket exits 4 with engine-unreachable")
     func engineAbsent() throws {
         let deadSocket = URL(fileURLWithPath: "/tmp/rctl-absent-\(UUID().uuidString.prefix(8))/control.sock")
-        let result = try Self.runCLI(["--socket", deadSocket.path, "guide"])
+        let result = try Self.runCLI(["--socket", deadSocket.path, "--no-launch", "guide"])
         #expect(result.status == 4)
         let error = try JSONSerialization.jsonObject(
             with: Data(result.stderr.utf8)) as? [String: Any]
         let payload = error?["error"] as? [String: Any]
         #expect(payload?["code"] as? String == "engine-unreachable")
         #expect((payload?["socket"] as? String) == deadSocket.path)
+    }
+
+    @Test("CLI launches an absent engine on demand using isolated diagnostic roots")
+    func launchOnDemand() throws {
+        let tag = UUID().uuidString.prefix(8)
+        let scratch = URL(fileURLWithPath: "/tmp/rctl-autolaunch-\(tag)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let process = Process()
+        process.executableURL = try Self.product("rushes")
+        process.arguments = ["--socket", scratch.appendingPathComponent("control.sock").path, "status"]
+        var environment = ProcessInfo.processInfo.environment
+        environment["RUSHES_RECORDINGS_ROOT"] = scratch.appendingPathComponent("root").path
+        environment["RUSHES_INDEX_PATH"] = scratch.appendingPathComponent("index.sqlite").path
+        environment["RUSHES_CAPTURE_STUB"] = "1"
+        process.environment = environment
+        let out = Pipe(); let err = Pipe()
+        process.standardOutput = out; process.standardError = err
+        try process.run(); process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        let object = try JSONSerialization.jsonObject(with: out.fileHandleForReading.readDataToEndOfFile()) as? [String: Any]
+        #expect(object?["state"] as? String == "idle")
+        let pid = try #require((object?["pid"] as? NSNumber)?.int32Value)
+        kill(pid, SIGTERM)
     }
 
     @Test("Usage errors exit 2: no command and unknown command")
@@ -242,18 +266,8 @@ final class EngineHarness: @unchecked Sendable {
         _ = cleanupOnce
     }
 
-    /// Kills engines left behind by a test run that crashed or was killed
-    /// mid-flight. The pattern is scoped to this harness's own socket
-    /// prefix, so it never touches David's real engine.
-    private static func killStaleEngines() {
-        let pkill = Process()
-        pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        pkill.arguments = ["-f", "rushcore-engine --socket-path /tmp/rctl-cli-"]
-        pkill.standardOutput = Pipe()
-        pkill.standardError = Pipe()
-        try? pkill.run()
-        pkill.waitUntilExit()
-    }
+    // Cleanup owns only processes created by this harness. Never pattern-kill
+    // engines from another concurrently running worktree's test suite.
 
     let cliURL: URL
     let socketPath: URL
@@ -292,7 +306,6 @@ final class EngineHarness: @unchecked Sendable {
             self.outputText += chunk
             self.outputLock.unlock()
         }
-        Self.killStaleEngines()
         Self.installCleanupOnce()
         do {
             try process.run()
@@ -343,7 +356,7 @@ final class EngineHarness: @unchecked Sendable {
     ) throws -> (status: Int32, stdout: String, stderr: String) {
         let process = Process()
         process.executableURL = cliURL
-        process.arguments = ["--socket", socketPath.path] + arguments
+        process.arguments = ["--no-launch", "--socket", socketPath.path] + arguments
         let out = Pipe()
         let err = Pipe()
         process.standardOutput = out

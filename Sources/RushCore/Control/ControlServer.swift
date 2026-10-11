@@ -85,6 +85,12 @@ final class SocketLineIO: @unchecked Sendable {
     let fd: Int32
     private let writeLock = NSLock()
     private var buffer = Data()
+    private var closed = false
+    private var activeReads = 0
+    private let previewLock = NSLock()
+    private let previewQueue = DispatchQueue(label: "rush.socket.preview")
+    private var pendingPreview: Data?
+    private var previewWriting = false
 
     init(fd: Int32) {
         self.fd = fd
@@ -95,6 +101,7 @@ final class SocketLineIO: @unchecked Sendable {
     func writeFully(_ data: Data) -> Bool {
         writeLock.lock()
         defer { writeLock.unlock() }
+        guard !closed else { return false }
         return data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Bool in
             guard var base = raw.baseAddress else { return true }
             var remaining = raw.count
@@ -112,11 +119,37 @@ final class SocketLineIO: @unchecked Sendable {
         }
     }
 
+    /// A bounded mailbox for best-effort camera previews. New frames replace
+    /// pending frames; at most one writer and one pending frame exist per peer.
+    func offerPreview(_ line: Data) {
+        let start = previewLock.withLock {
+            pendingPreview = line
+            if previewWriting { return false }
+            previewWriting = true
+            return true
+        }
+        guard start else { return }
+        previewQueue.async { [self] in
+            while let line = previewLock.withLock({ () -> Data? in
+                guard let line = pendingPreview else { previewWriting = false; return nil }
+                pendingPreview = nil
+                return line
+            }) {
+                guard writeFully(line) else {
+                    previewLock.withLock { pendingPreview = nil; previewWriting = false }
+                    break
+                }
+            }
+        }
+    }
+
     /// Reads one newline-terminated line (returned without the newline), or
     /// nil on EOF/error. A line still buffered from a previous read is
     /// returned first. Blocking: for a client-steerable variant use
     /// `pollLine(pollTimeoutMs:shouldContinue:)`.
     func readLine() -> Data? {
+        guard beginRead() else { return nil }
+        defer { endRead() }
         while true {
             if let buffered = takeBufferedLine() { return buffered }
             var chunk = [UInt8](repeating: 0, count: 65_536)
@@ -148,10 +181,30 @@ final class SocketLineIO: @unchecked Sendable {
         return trailing
     }
 
+    private func beginRead() -> Bool {
+        writeLock.withLock {
+            guard !closed else { return false }
+            activeReads += 1
+            return true
+        }
+    }
+
+    private func endRead() {
+        writeLock.withLock {
+            activeReads -= 1
+            if closed && activeReads == 0 { Darwin.close(fd) }
+        }
+    }
+
     func close() {
-        writeLock.lock()
-        defer { writeLock.unlock() }
-        Darwin.close(fd)
+        writeLock.withLock {
+            guard !closed else { return }
+            closed = true
+            // Wake a blocking reader, but retain the descriptor until its
+            // final syscall returns so the OS cannot reuse it mid-read.
+            _ = Darwin.shutdown(fd, SHUT_RDWR)
+            if activeReads == 0 { Darwin.close(fd) }
+        }
     }
 }
 
@@ -171,6 +224,8 @@ extension SocketLineIO {
     func pollLine(
         pollTimeoutMs: Int32, shouldContinue: @escaping @Sendable () -> Bool
     ) -> SocketLineResult {
+        guard beginRead() else { return .closed }
+        defer { endRead() }
         while true {
             if let buffered = takeBufferedLine() { return .line(buffered) }
             var descriptor = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
@@ -323,7 +378,8 @@ public final class ControlServer: @unchecked Sendable {
         let currentClients = clients
         stateLock.unlock()
         for client in currentClients {
-            _ = client.writeFully(line)
+            if event.event == ControlEventKind.cameraPreview.rawValue { client.offerPreview(line) }
+            else { _ = client.writeFully(line) }
         }
     }
 
@@ -369,6 +425,10 @@ public final class ControlServer: @unchecked Sendable {
                 Darwin.close(accepted)
                 continue
             }
+            var sendTimeout = timeval(tv_sec: 0, tv_usec: 250_000)
+            _ = setsockopt(accepted, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
+            var noSIGPIPE: Int32 = 1
+            _ = setsockopt(accepted, SOL_SOCKET, SO_NOSIGPIPE, &noSIGPIPE, socklen_t(MemoryLayout<Int32>.size))
             let client = SocketLineIO(fd: accepted)
             stateLock.lock()
             if running {

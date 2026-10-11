@@ -33,12 +33,16 @@ public struct CaptureContext: Sendable {
     /// flash window and our own tone in system audio, which normal
     /// recordings exclude (docs/PLAN.md, Roadmap Phase 1 item 9).
     public let selftest: Bool
+    public let shellBundleID: String?
+    public let preview: @Sendable (Data) -> Void
 
     public init(
         session: RecordingSession,
         request: SessionRequest,
         package: RecordingPackage,
         selftest: Bool = false,
+        shellBundleID: String? = nil,
+        preview: @escaping @Sendable (Data) -> Void = { _ in },
         warning: @escaping @Sendable (String, String?) -> Void,
         streamFailure: @escaping @Sendable (String) -> Void
     ) {
@@ -46,6 +50,8 @@ public struct CaptureContext: Sendable {
         self.request = request
         self.package = package
         self.selftest = selftest
+        self.shellBundleID = shellBundleID
+        self.preview = preview
         self.warning = warning
         self.streamFailure = streamFailure
     }
@@ -61,6 +67,7 @@ public protocol CaptureRig: Sendable {
     /// Stops all capture. Idempotent; called before `RecordingSession.stop`
     /// so no sample races a finalizing writer.
     func stop() async
+    func adoptClock(_ clock: SessionClock) async
 }
 
 /// Builds the capture for one armed session. The production factory wires
@@ -68,6 +75,21 @@ public protocol CaptureRig: Sendable {
 /// engine's diagnostic mode) inject the stub factory.
 public protocol CaptureRigFactory: Sendable {
     func attach(_ context: CaptureContext) async throws -> CaptureRig
+    func warmCamera(cameraID: String?, preview: @escaping @Sendable (Data) -> Void,
+                    warning: @escaping @Sendable (String, String?) -> Void) async throws -> JSONValue
+    func stopPreview() async
+}
+
+extension CaptureRig {
+    public func adoptClock(_ clock: SessionClock) async {}
+}
+
+extension CaptureRigFactory {
+    public func warmCamera(cameraID: String?, preview: @escaping @Sendable (Data) -> Void,
+                           warning: @escaping @Sendable (String, String?) -> Void) async throws -> JSONValue {
+        .object(["running": .bool(true), "camera": .string(cameraID), "capture": .string("stub")])
+    }
+    public func stopPreview() async {}
 }
 
 // MARK: - Production rig
@@ -79,7 +101,17 @@ public protocol CaptureRigFactory: Sendable {
 /// `input.ndjson`.
 public struct ProductionCaptureRigFactory: CaptureRigFactory {
 
+    private let cameras = CameraCoordinator()
     public init() {}
+
+    public func warmCamera(cameraID: String?, preview: @escaping @Sendable (Data) -> Void,
+                           warning: @escaping @Sendable (String, String?) -> Void) async throws -> JSONValue {
+        let source = try await cameras.warm(cameraID: cameraID, preview: preview, warning: warning)
+        return .object(["running": .bool(source.isRunning), "camera": .string(cameraID),
+                        "name": .string(source.identity?.localizedName)])
+    }
+
+    public func stopPreview() async { await cameras.stop() }
 
     public func attach(_ context: CaptureContext) async throws -> CaptureRig {
         let request = context.request
@@ -100,6 +132,7 @@ public struct ProductionCaptureRigFactory: CaptureRigFactory {
             let plan = ScreenStreamPlan(
                 width: dimensions.width,
                 height: dimensions.height,
+                showsCursor: request.cursor != "data",
                 capturesSystemAudio: request.systemAudio,
                 excludesOwnProcessAudio: !context.selftest,
                 capturesMicrophone: request.microphoneId != nil,
@@ -116,7 +149,7 @@ public struct ProductionCaptureRigFactory: CaptureRigFactory {
             try await source.start(
                 surface: Self.surface(for: screen),
                 exclusion: ScreenExclusionList(
-                    shellBundleID: nil,
+                    shellBundleID: context.shellBundleID,
                     engineBundleID: Bundle.main.bundleIdentifier),
                 selftest: context.selftest)
             screenSource = source
@@ -127,16 +160,20 @@ public struct ProductionCaptureRigFactory: CaptureRigFactory {
         // (docs/PLAN.md, Camera loss).
         var cameraSource: CameraSource?
         if let cameraId = request.cameraId {
-            let source = CameraSource(onCameraLost: { name in
-                context.warning("camera-lost", name)
-            })
-            let warm = await source.warmUp(deviceID: cameraId)
-            if warm.identity == nil {
-                context.warning("camera-warmup-failed", warm.failure)
-            } else if let writer = writers[.camera] {
-                source.attach(writer: writer)
+            do {
+                let source = try await cameras.warm(cameraID: cameraId, preview: context.preview, warning: context.warning)
+                if let writer = writers[.camera] { source.attach(writer: writer) }
                 cameraSource = source
+            } catch {
+                context.warning("camera-warmup-failed", String(describing: error))
             }
+        }
+
+        var microphoneSource: MicrophoneSource?
+        if request.screen == nil, let microphoneID = request.microphoneId, let writer = writers[.microphone] {
+            let source = MicrophoneSource(writer: writer)
+            try await source.start(deviceID: microphoneID)
+            microphoneSource = source
         }
 
         return ProductionCaptureRig(
@@ -144,7 +181,8 @@ public struct ProductionCaptureRigFactory: CaptureRigFactory {
             package: context.package,
             warning: context.warning,
             screenSource: screenSource,
-            cameraSource: cameraSource)
+            cameraSource: cameraSource,
+            microphoneSource: microphoneSource)
     }
 
     /// Maps the request's screen target onto the capture surface.
@@ -154,6 +192,7 @@ public struct ProductionCaptureRigFactory: CaptureRigFactory {
         switch target {
         case .display(let id): return .display(id: id)
         case .window(let id): return .window(id: id)
+        case .area(let id, let r): return .area(displayID: id, rect: r.cgRect)
         }
     }
 
@@ -192,21 +231,25 @@ private final class ProductionCaptureRig: CaptureRig, @unchecked Sendable {
     private let warning: @Sendable (String, String?) -> Void
     private let screenSource: ScreenSource?
     private let cameraSource: CameraSource?
+    private let microphoneSource: MicrophoneSource?
     private let stateLock = NSLock()
     private var recorder: InputRecorder?
+    private var heartbeat: DispatchSourceTimer?
 
     init(
         request: SessionRequest,
         package: RecordingPackage,
         warning: @escaping @Sendable (String, String?) -> Void,
         screenSource: ScreenSource?,
-        cameraSource: CameraSource?
+        cameraSource: CameraSource?,
+        microphoneSource: MicrophoneSource?
     ) {
         self.request = request
         self.package = package
         self.warning = warning
         self.screenSource = screenSource
         self.cameraSource = cameraSource
+        self.microphoneSource = microphoneSource
     }
 
     func gateOpened(epochHostNs: Int64) async {
@@ -228,6 +271,11 @@ private final class ProductionCaptureRig: CaptureRig, @unchecked Sendable {
                 warnings: { text in self.warning("input-tap", text) })
             recorder.start()
             installRecorder(recorder)
+            let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "rush.input.heartbeat"))
+            timer.schedule(deadline: .now() + 1, repeating: 1)
+            timer.setEventHandler { recorder.tick(nowHostNs: Int64(DispatchTime.now().uptimeNanoseconds)) }
+            stateLock.withLock { heartbeat = timer }
+            timer.resume()
         } catch {
             warning("input-recorder-failed", String(describing: error))
         }
@@ -237,7 +285,13 @@ private final class ProductionCaptureRig: CaptureRig, @unchecked Sendable {
         let recorder = takeRecorder()
         recorder?.stop()
         await screenSource?.stop()
-        cameraSource?.stop()
+        cameraSource?.detachWriter()
+        await microphoneSource?.stop()
+        stateLock.withLock { heartbeat?.cancel(); heartbeat = nil }
+    }
+
+    func adoptClock(_ clock: SessionClock) async {
+        stateLock.withLock { recorder?.adoptClock(clock) }
     }
 
     /// Synchronous lock-confined accessors: the async surface must not hold
@@ -257,6 +311,14 @@ private final class ProductionCaptureRig: CaptureRig, @unchecked Sendable {
     }
 
     private static func contentRect(for request: SessionRequest) -> CGRect {
+        if case .area(_, let r)? = request.screen { return r.cgRect }
+        if case .window(let id)? = request.screen,
+           let number = UInt32(id.replacingOccurrences(of: "window-", with: "")),
+           let rows = CGWindowListCopyWindowInfo(.optionIncludingWindow, number) as? [[String: Any]],
+           let metadata = rows.first {
+            let payload = metadata[kCGWindowBounds as String]
+            if let dimensions = payload as? [String: Any], let frame = CGRect(dictionaryRepresentation: dimensions as CFDictionary) { return frame }
+        }
         if case .display(let id)? = request.screen,
            let cgID = UInt32(id.replacingOccurrences(of: "display-", with: "")) {
             return CGDisplayBounds(cgID)
@@ -558,4 +620,33 @@ private final class StubCaptureRig: CaptureRig, @unchecked Sendable {
         cancelPump()
         inputFile?.close()
     }
+}
+
+/// One reusable camera for warm preview and recording. The actor owns lifecycle;
+/// CameraSource confines device/session mutation to its own session queue.
+public actor CameraCoordinator {
+    private var source: CameraSource?
+    private var selectedID: String?
+    public init() {}
+
+    public func warm(cameraID: String?, preview: @escaping @Sendable (Data) -> Void,
+                     warning: @escaping @Sendable (String, String?) -> Void) async throws -> CameraSource {
+        if let source, selectedID == cameraID, source.isRunning {
+            source.previewHandler = preview
+            source.setLossHandler { name in warning("camera-lost", name) }
+            return source
+        }
+        source?.stop()
+        let newSource = CameraSource(onCameraLost: { name in warning("camera-lost", name) })
+        newSource.previewHandler = preview
+        let result = await newSource.warmUp(deviceID: cameraID)
+        guard result.identity != nil else {
+            throw ControlFailure(code: "camera-warmup-failed", message: result.failure)
+        }
+        source = newSource
+        selectedID = cameraID
+        return newSource
+    }
+
+    public func stop() { source?.stop(); source = nil; selectedID = nil }
 }

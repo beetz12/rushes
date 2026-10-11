@@ -156,6 +156,8 @@ public actor RecordingSession {
     private var log: NDJSONAppendFile?
     private var clock: SessionClock?
     private var warnings: [RecordingManifest.ManifestWarning] = []
+    private var cameraEndedNs: Int64?
+    private var cameraFinalize: Task<TrackWriterStatus, Never>?
 
     /// Track order used for statuses and manifest entries.
     private static let trackOrder: [TrackKind] = [.screen, .camera, .microphone, .systemAudio]
@@ -461,6 +463,7 @@ public actor RecordingSession {
         // Common end: all tracks end at the same media time; video repeats
         // its last frame there, audio is padded with silence.
         let endMediaNs = clock.map { $0.durationNs(nowNs: nowNs()) }
+        if let cameraFinalize { _ = await cameraFinalize.value }
         var statuses: [TrackKind: TrackWriterStatus] = [:]
         await withTaskGroup(of: (TrackKind, TrackWriterStatus).self) { group in
             for (kind, writer) in writerTable.all {
@@ -499,6 +502,7 @@ public actor RecordingSession {
                 }
                 track.droppedFrames = status.framesDropped
                 track.firstSampleNs = status.firstMediaTimeNs
+                if kind == .camera, let cameraEndedNs { track.durationNs = cameraEndedNs }
                 workingManifest.tracks[index] = track
             }
             // appendWarning updated the session's warning list; carry it in.
@@ -533,6 +537,32 @@ public actor RecordingSession {
             throw SessionError.manifestWriteFailed(String(describing: error))
         }
         return outcome
+    }
+
+    public func endCameraAtLoss() async {
+        guard cameraEndedNs == nil, let clock, let writer = writerTable.writer(for: .camera) else { return }
+        let end = clock.durationNs(nowNs: nowNs())
+        cameraEndedNs = end
+        let finalize = Task { await writer.finalize(endMediaTimeNs: end) }
+        cameraFinalize = finalize
+        _ = await finalize.value
+    }
+
+    public func effectiveRequest() -> SessionRequest? { request }
+
+    public func currentClock() -> SessionClock? { clock }
+
+    public func setBubble(_ bubble: BubbleMetadata) throws {
+        manifest?.bubble = bubble
+        try persistManifest()
+    }
+
+    public func setMuted(_ muted: Bool, for kind: TrackKind) throws {
+        guard [.recording, .paused].contains(state), kind.carriesAudio,
+              let writer = writerTable.writer(for: kind) else {
+            throw SessionError.wrongState(event: "mute", state: state)
+        }
+        writer.setMuted(muted)
     }
 
     // MARK: - Snapshot
@@ -610,11 +640,13 @@ public actor RecordingSession {
         let tracks = request.trackKinds.map { kind in
             makeTrack(kind: kind, request: request, deviceNames: deviceNames)
         }
-        let sources = RecordingManifest.RecordingSources(
+        var sources = RecordingManifest.RecordingSources(
             mode: request.screen?.modeString ?? "camera-only",
             displayId: {
-                if case .display(let id) = request.screen { return id }
-                return nil
+                switch request.screen {
+                case .display(let id), .area(let id, _): return id
+                default: return nil
+                }
             }(),
             windowId: {
                 if case .window(let id) = request.screen { return id }
@@ -623,6 +655,8 @@ public actor RecordingSession {
             cameraId: request.cameraId,
             microphoneId: request.microphoneId,
             systemAudio: request.systemAudio)
+        if case .area(_, let area) = request.screen { sources.area = area }
+        sources.cursor = request.cursor
         return RecordingManifest(
             id: package.id,
             title: request.title,

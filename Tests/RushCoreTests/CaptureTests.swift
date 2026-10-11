@@ -588,6 +588,7 @@ struct CameraSourceTests {
         // first, throttles the second (7 ms later) and emits the third
         // (35 ms after the first, past the 33.33 ms minimum interval).
         source.acceptFrame(makeVideoBuffer(hostNs: epochNs + 33_000_000))
+        source.waitForPreview()
         source.acceptFrame(makeVideoBuffer(hostNs: epochNs + 40_000_000))  // 7ms later: throttled
         source.acceptFrame(makeVideoBuffer(hostNs: epochNs + 68_000_000))  // 35ms later: emitted
 
@@ -597,6 +598,7 @@ struct CameraSourceTests {
         #expect(backend.videoFrames.contains(40_000_000))
         #expect(backend.videoFrames.contains(68_000_000))
 
+        source.waitForPreview()
         // Preview tee saw exactly the throttled subset; the fake encoder
         // emits empty Data, which counts as one delivery per emitted frame.
         #expect(previewBox.count == 2)

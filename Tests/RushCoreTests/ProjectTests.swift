@@ -693,6 +693,29 @@ struct ProjectTests {
         #expect(mic.ok && mic.issues.isEmpty)
     }
 
+    @Test("Camera loss permits only its measured shorter camera duration")
+    func verifyCameraLossDuration() async throws {
+        let root = tempDir("camera-loss-duration")
+        defer { cleanup(root) }
+        let package = try RecordingPackage.create(root: root)
+        try await writeVideoFile(url: package.trackURL(for: .screen), durationNs: 2_000_000_000, epochNs: epochNs)
+        try await writeVideoFile(url: package.trackURL(for: .camera), durationNs: 1_000_000_000, epochNs: epochNs)
+        var manifest = sampleManifest(id: package.id, status: .complete)
+        manifest.clock?.durationNs = 2_000_000_000
+        manifest.tracks = [.init(kind: .screen), .init(kind: .camera)]
+        manifest.tracks[1].durationNs = 1_000_000_000
+        manifest.warnings = [.init(code: "camera-lost", atMs: 1000)]
+        try package.writeManifest(manifest)
+        #expect((await PackageVerifier().verify(package)).ok)
+        manifest.warnings = []
+        try package.writeManifest(manifest)
+        #expect(!(await PackageVerifier().verify(package)).ok)
+        manifest.warnings = [.init(code: "camera-lost")]
+        manifest.tracks[0].durationNs = 1_000_000_000
+        try package.writeManifest(manifest)
+        #expect(!(await PackageVerifier().verify(package)).ok)
+    }
+
     @Test("Verify reports the specific failure for each broken track")
     func verifyReportsSpecificFailures() async throws {
         let root = tempDir("verify-bad")

@@ -83,6 +83,9 @@ public final class TrackWriter: @unchecked Sendable {
     private var framesWritten: Int64 = 0
     private var silenceFramesWritten: Int64 = 0
     private var framesDropped: Int64 = 0
+    private var framesSuppressedByPause: Int64 = 0
+    private var silenceWatch = SilenceWatch()
+    private var microphoneSilent = false
     private var firstMediaTimeNs: Int64?
     private var lastReportedMediaNs: Int64?
     private var usedFallbackCodec = false
@@ -162,6 +165,14 @@ public final class TrackWriter: @unchecked Sendable {
     public func adoptClock(_ clock: SessionClock) {
         queue.sync {
             self.clock = clock
+            if let cached = cachedPreGatePixelBuffer, !wroteAnySample, let backend,
+               clock.epochNs < Int64.max, backend.currentState == .writing {
+                if !sessionBegun { backend.startSession(); sessionBegun = true }
+                if backend.isReadyForMoreMediaData, backend.appendVideoFrame(cached, mediaTimeNs: 0) {
+                    noteVideoAppended(pixelBuffer: cached, mediaTimeNs: 0)
+                    cachedPreGatePixelBuffer = nil
+                }
+            }
         }
     }
 
@@ -200,10 +211,7 @@ public final class TrackWriter: @unchecked Sendable {
                 cachedPreGatePixelBuffer = pixelBuffer
                 return
             }
-            if clock.isPaused(atHostNs: hostNs) {
-                self.framesDropped += 1
-                return
-            }
+            if clock.isPaused(atHostNs: hostNs) { framesSuppressedByPause += 1; return }
             enqueueVideo(
                 pixelBuffer, mediaTimeNs: clock.mediaTimeNs(atHostNs: hostNs), backend: backend)
             drainPendingVideo(backend)
@@ -298,10 +306,7 @@ public final class TrackWriter: @unchecked Sendable {
                 return
             }
             guard hostNs >= clock.epochNs else { return }
-            if clock.isPaused(atHostNs: hostNs) {
-                self.framesDropped += 1
-                return
-            }
+            if clock.isPaused(atHostNs: hostNs) { framesSuppressedByPause += 1; return }
 
             let frameCount = CMSampleBufferGetNumSamples(sampleBuffer)
             guard frameCount > 0,
@@ -312,9 +317,12 @@ public final class TrackWriter: @unchecked Sendable {
                 self.failureText = failureText ?? "audio sample had no readable format"
                 return
             }
-            let mediaNs = clock.mediaTimeNs(atHostNs: hostNs)
+            var mediaNs = clock.mediaTimeNs(atHostNs: hostNs)
             let durationNs = Int64(
                 (Double(frameCount) / Double(asbd.pointee.mSampleRate) * 1e9).rounded())
+            if configuration.kind == .microphone {
+                microphoneSilent = silenceWatch.receive(rms: AudioLevel.rms(sampleBuffer), mediaNs: mediaNs, muted: isMuted)
+            }
             if donorAudioBuffer == nil {
                 // The first accepted sample fixes the input format every
                 // synthesized buffer must match.
@@ -330,6 +338,13 @@ public final class TrackWriter: @unchecked Sendable {
                 // device's first sample arrives later (docs/PLAN.md, Audio at
                 // zero).
                 writeSilence(fromMediaNs: 0, toMediaNs: mediaNs)
+            }
+            // Host timestamps and frame durations round independently to
+            // integer nanoseconds. Snap sub-sample overlaps to the previous
+            // end instead of dropping every other real PCM buffer.
+            if let lastEnd = lastAudioEndNs, mediaNs < lastEnd,
+               lastEnd - mediaNs <= Int64(ceil(1e9 / asbd.pointee.mSampleRate)) {
+                mediaNs = lastEnd
             }
             guard mediaNs >= (lastAudioEndNs ?? 0) else {
                 self.framesDropped += 1
@@ -461,7 +476,9 @@ public final class TrackWriter: @unchecked Sendable {
                 pendingDepth: pendingVideo.count,
                 usedFallbackCodec: usedFallbackCodec,
                 finalizeState: finalizeState,
-                errorDescription: failureText)
+                errorDescription: failureText,
+                framesSuppressedByPause: framesSuppressedByPause,
+                microphoneSilent: microphoneSilent)
         }
     }
 
@@ -543,6 +560,7 @@ public final class TrackWriter: @unchecked Sendable {
                 failureText = failureText ?? backend.failureDescription ?? "asset writer failed"
                 return
             }
+            if let endNs = endMediaTimeNs { backend.endSession(atMediaNs: endNs) }
             backend.markInputFinished()
             finalizeState = .finalizing
             backend.finishWriting { [finalizeSignal] in

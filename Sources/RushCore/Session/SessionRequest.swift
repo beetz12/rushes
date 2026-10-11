@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// What a recording wants to be, before any check runs (docs/PLAN.md,
@@ -27,12 +28,14 @@ public struct SessionRequest: Codable, Equatable, Sendable {
         case display(id: String)
         /// One window, by stable catalog id.
         case window(id: String)
+        case area(displayID: String, rect: CaptureArea)
 
         /// The manifest's capture mode string ("display" or "window").
         public var modeString: String {
             switch self {
             case .display: return "display"
             case .window: return "window"
+            case .area: return "area"
             }
         }
     }
@@ -65,6 +68,7 @@ public struct SessionRequest: Codable, Equatable, Sendable {
     public var countdownSeconds: Int
 
     public var title: String?
+    public var cursor: String = "baked"
 
     /// A saved preset carried alongside the request, untouched.
     public var preset: SessionPreset?
@@ -121,5 +125,19 @@ public struct SessionPreset: Codable, Equatable, Sendable {
     public init(name: String, payload: Data? = nil) {
         self.name = name
         self.payload = payload
+    }
+}
+
+/// Global screen points, top-left origin. The source converts to display-local.
+public struct CaptureArea: Codable, Equatable, Sendable {
+    public var x: Double
+    public var y: Double
+    public var width: Double
+    public var height: Double
+    public var cgRect: CGRect {
+        CGRect(origin: CGPoint(x: x, y: y), size: CGSize(width: width, height: height))
+    }
+    public init(x: Double, y: Double, width: Double, height: Double) {
+        self.x = x; self.y = y; self.width = width; self.height = height
     }
 }

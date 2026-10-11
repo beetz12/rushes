@@ -1,4 +1,5 @@
 import AVFoundation
+import Darwin
 import Foundation
 import Testing
 
@@ -510,6 +511,49 @@ struct EngineControllerTests {
         #expect(FileManager.default.fileExists(atPath: stoppedPackage.inputURL.path))
     }
 
+    @Test("Countdown cancellation removes only its own new package and concurrent start refuses")
+    func cancelCountdown() async throws {
+        let scratch = try tempDirectory("cancel")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let root = scratch.appendingPathComponent("root")
+        let controller = try makeController(root: root, indexURL: scratch.appendingPathComponent("index.sqlite"))
+        let exchange = ControlExchange()
+        let task = Task { await controller.handle(ControlRequest(id: "countdown", cmd: "record.start", args: .object(["display": .string("main"), "countdownSeconds": .int(1)])), context: exchange.context) }
+        try await Task.sleep(nanoseconds: 250_000_000)
+        await controller.handle(startRequest(), context: exchange.context)
+        #expect(exchange.lastResponse?.error?.code == "already-active")
+        await controller.handle(ControlRequest(id: "cancel", cmd: "record.cancel"), context: exchange.context)
+        #expect(exchange.lastResponse?.ok == true)
+        await task.value
+        #expect(exchange.responses.first(where: { $0.id == "countdown" })?.error?.code == "cancelled")
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
+    @Test("Mute and bubble metadata persist; restart creates a fresh take and discard removes it")
+    func recordingControls() async throws {
+        let scratch = try tempDirectory("controls")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let root = scratch.appendingPathComponent("root")
+        let controller = try makeController(root: root, indexURL: scratch.appendingPathComponent("index.sqlite"))
+        let exchange = ControlExchange()
+        await controller.handle(startRequest(), context: exchange.context)
+        let first = try #require(exchange.lastResponse?.result?["id"]?.string)
+        await controller.handle(ControlRequest(id: "mute", cmd: "record.mute", args: .object(["track": .string("microphone"), "muted": .bool(true)])), context: exchange.context)
+        #expect(exchange.lastResponse?.ok == true)
+        await controller.handle(ControlRequest(id: "bubble", cmd: "record.bubble", args: .object(["center": .array([.double(0.1), .double(0.2)]), "size": .int(160)])), context: exchange.context)
+        let package = try #require(RecordingPackage.resolve(root: root, id: first))
+        #expect(try package.readManifest().bubble?.center == [0.1,0.2])
+        try await Task.sleep(nanoseconds: 250_000_000)
+        await controller.handle(ControlRequest(id: "restart", cmd: "record.restart"), context: exchange.context)
+        #expect(exchange.lastResponse?.ok == true)
+        let second = try #require(exchange.lastResponse?.result?["id"]?.string)
+        #expect(first != second)
+        #expect((try? package.readManifest().id) != first)
+        await controller.handle(ControlRequest(id: "discard", cmd: "record.discard"), context: exchange.context)
+        #expect(exchange.lastResponse?.result?["discarded"]?.bool == true)
+        #expect(RecordingPackage.resolve(root: root, id: second) == nil)
+    }
+
     @Test("Stop by a wrong id is not-found; stop with nothing active is not-recording")
     func stopGuards() async throws {
         let scratch = try tempDirectory("stopguards")
@@ -561,7 +605,7 @@ struct EngineControllerTests {
         #expect(exchange.lastResponse?.result?["state"]?.string == "recording")
 
         let stateEvents = exchange.events.filter { $0.event == ControlEventKind.stateChanged.rawValue }
-        #expect(stateEvents.map(\.state) == ["paused", "recording"])
+        #expect(stateEvents.map(\.state) == ["armed", "paused", "recording"])
         #expect(stateEvents.allSatisfy { $0.recordingId == recordingID })
 
         await controller.handle(
@@ -773,3 +817,36 @@ struct EngineControllerTests {
     }
 }
 
+
+@Suite("Socket descriptor lifetime")
+struct SocketDescriptorLifetimeTests {
+    @Test("A second close cannot close an unrelated reused descriptor")
+    func reusedDescriptor() throws {
+        var pair: [Int32] = [-1,-1]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
+        let original = pair[0]
+        defer { Darwin.close(pair[1]) }
+        let socketIO = SocketLineIO(fd: original)
+        socketIO.close()
+        let file = Darwin.open("/dev/null", O_RDONLY)
+        #expect(file >= 0)
+        if file != original { #expect(dup2(file, original) == original); Darwin.close(file) }
+        defer { Darwin.close(original) }
+        socketIO.close()
+        #expect(fcntl(original, F_GETFD) >= 0)
+        #expect(!socketIO.writeFully(Data([1])))
+    }
+
+    @Test("Closing a blocked reader wakes it before releasing its descriptor")
+    func blockedRead() async throws {
+        var pair: [Int32] = [-1,-1]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
+        defer { Darwin.close(pair[1]) }
+        let socketIO = SocketLineIO(fd: pair[0])
+        let reader = Task.detached { socketIO.readLine() }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        socketIO.close()
+        #expect(await reader.value == nil)
+        socketIO.close()
+    }
+}

@@ -253,6 +253,7 @@ public final class ScreenSource: @unchecked Sendable {
     private let lock = NSLock()
     private var streamStorage: (any ScreenStreamDriving)?
     private var startedFlag = false
+    private var retainedOutputs: [ScreenStreamOutputForwarder] = []
 
     /// The routing sink the session's writers install into.
     internal let routingSink = WriterRoutingSink()
@@ -318,22 +319,33 @@ public final class ScreenSource: @unchecked Sendable {
         let resolved = try await resolver.resolve(
             surface: surface, excludingBundleIDs: exclusion.bundleIDs(selftest: selftest))
         let filter = Self.makeFilter(resolved: resolved, surface: surface)
-        let stream = streamFactory(filter, Self.makeConfiguration(for: plan), failureForwarder)
+        var resolvedPlan = plan
+        if case .area(_, let rect) = surface {
+            resolvedPlan.sourceRect = rect.offsetBy(dx: -resolved.displayFrame.minX, dy: -resolved.displayFrame.minY)
+        }
+        let stream = streamFactory(filter, Self.makeConfiguration(for: resolvedPlan), failureForwarder)
         let screenQueue = queueFactory("rush.rushcore.sck.screen")
         let audioQueue = queueFactory("rush.rushcore.sck.audio")
+        let screenOutput = ScreenStreamOutputForwarder(output: .screen, sink: routingSink)
+        var outputs = [screenOutput]
         try await stream.addOutput(
-            ScreenStreamOutputForwarder(output: .screen, sink: routingSink),
+            screenOutput,
             type: .screen, queue: screenQueue)
         if plan.capturesSystemAudio {
+            let audioOutput = ScreenStreamOutputForwarder(output: .systemAudio, sink: routingSink)
+            outputs.append(audioOutput)
             try await stream.addOutput(
-                ScreenStreamOutputForwarder(output: .systemAudio, sink: routingSink),
+                audioOutput,
                 type: .audio, queue: audioQueue)
         }
         if plan.capturesMicrophone {
+            let microphoneOutput = ScreenStreamOutputForwarder(output: .microphone, sink: routingSink)
+            outputs.append(microphoneOutput)
             try await stream.addOutput(
-                ScreenStreamOutputForwarder(output: .microphone, sink: routingSink),
+                microphoneOutput,
                 type: .microphone, queue: audioQueue)
         }
+        lock.withLock { retainedOutputs = outputs }
         try await stream.startCapture()
         install(stream: stream)
     }
@@ -370,7 +382,9 @@ public final class ScreenSource: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         startedFlag = false
-        return streamStorage
+        let stream = streamStorage
+        streamStorage = nil
+        return stream
     }
 
     /// Filter construction (docs/PLAN.md, Sources per capture mode):

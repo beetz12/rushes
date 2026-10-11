@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import Darwin
 import Foundation
 
 // MARK: - Result shapes
@@ -56,6 +57,8 @@ public struct EngineControllerConfig: Sendable {
     public var catalog: any SourceCataloging
     public var volumeProvider: @Sendable (URL) -> VolumeInfo
     public var permissionAdvisor: PermissionAdvisor
+    public var permissionRequester: @Sendable (PermissionKind) async -> PermissionStatus
+    public var shellBundleID: String?
     public var makeWriter: TrackWriterOpener
     public var captureRigs: CaptureRigFactory
     public var hostNowNs: @Sendable () -> Int64
@@ -77,6 +80,8 @@ public struct EngineControllerConfig: Sendable {
             VolumeInfo.current(nearestAncestorOf: $0)
         },
         permissionAdvisor: PermissionAdvisor = .allAllowed,
+        permissionRequester: @escaping @Sendable (PermissionKind) async -> PermissionStatus = { SystemPermissions.check($0) },
+        shellBundleID: String? = nil,
         makeWriter: @escaping TrackWriterOpener = { configuration, clock in
             try TrackWriter(configuration: configuration, clock: clock)
         },
@@ -94,6 +99,8 @@ public struct EngineControllerConfig: Sendable {
         self.catalog = catalog
         self.volumeProvider = volumeProvider
         self.permissionAdvisor = permissionAdvisor
+        self.permissionRequester = permissionRequester
+        self.shellBundleID = shellBundleID
         self.makeWriter = makeWriter
         self.captureRigs = captureRigs
         self.hostNowNs = hostNowNs
@@ -131,7 +138,15 @@ public actor EngineController: ControlHandling {
     private let index: PackageIndex
 
     private var active: ActiveRecording?
+    private var previewEnabled = false
+    private var silentMicReported = false
+    private var starting = false
+    private var finishing = false
+    private var startGeneration = UUID()
+    private var lastStartParams: [String: JSONValue] = [:]
     private var durationTimer: Task<Void, Never>?
+    private var maintenanceTimer: Task<Void, Never>?
+    private var activity: NSObjectProtocol?
     private var completionWaiters: [CheckedContinuation<StoppedRecording, Never>] = []
     /// The most recent stop outcome, kept so a `--wait` client whose
     /// recording ended between start and wait still receives it.
@@ -168,8 +183,9 @@ public actor EngineController: ControlHandling {
     /// losing footage.
     @discardableResult
     public func shutdown() async -> StoppedRecording? {
-        guard active != nil else { return nil }
-        return try? await stopActive()
+        let result = active != nil ? try? await stopActive() : nil
+        await config.captureRigs.stopPreview()
+        return result
     }
 
     // MARK: - ControlHandling
@@ -212,6 +228,63 @@ public actor EngineController: ControlHandling {
             return .success(id: request.id, result: try await statusResult())
         case "targets":
             return .success(id: request.id, result: try await targetsResult())
+        case "permissions.check":
+            return .success(id: request.id, result: await permissionsResult())
+        case "permissions.request":
+            let kind = try permissionKind(request)
+            _ = await config.permissionRequester(kind)
+            return .success(id: request.id, result: await permissionsResult())
+        case "permissions.settings":
+            return .success(id: request.id, result: .object(["url": .string(SystemPermissions.settingsURL(try permissionKind(request)))]))
+        case "camera.preview.start":
+            guard !starting, active == nil else { throw ControlFailure(code: "wrong-state", message: "preview selection cannot change during a take") }
+            let camera = request.param("camera")?.string ?? "default"
+            let catalog = try await config.catalog.cameras()
+            let id = camera == "default" ? catalog.first?.id : camera
+            guard let id else { throw ControlFailure(code: "camera-not-found", message: "no camera found") }
+            let permission = await config.permissionAdvisor.check(.camera)
+            guard permission.state == .allowed else { throw ControlFailure(code: "permission-denied", message: "grant camera access first") }
+            previewEnabled = true
+            let preview = previewPublisher()
+            let result = try await config.captureRigs.warmCamera(cameraID: id, preview: preview, warning: { _, _ in })
+            return .success(id: request.id, result: result)
+        case "camera.preview.stop":
+            guard active == nil else { throw ControlFailure(code: "wrong-state", message: "camera is recording") }
+            previewEnabled = false
+            await config.captureRigs.stopPreview()
+            return .success(id: request.id)
+        case "record.mute":
+            let recording = try requireActive()
+            let track = request.param("track")?.string
+            guard let kind: TrackKind = track == "microphone" ? .microphone : (track == "systemAudio" ? .systemAudio : nil),
+                  let muted = request.param("muted")?.bool else { throw ControlFailure(code: "invalid-params", message: "mute needs track microphone|systemAudio and muted Boolean") }
+            try await recording.session.setMuted(muted, for: kind)
+            return .success(id: request.id, result: .object(["track": .string(track), "muted": .bool(muted)]))
+        case "record.bubble":
+            let recording = try requireActive()
+            guard let center = request.param("center")?.array?.compactMap(\.double), center.count == 2,
+                  center.allSatisfy({ $0.isFinite && $0 >= 0 && $0 <= 1 }) else { throw ControlFailure(code: "invalid-params", message: "bubble center needs two fractions between 0 and 1") }
+            let size = Int(request.param("size")?.int ?? 200)
+            guard [160, 200, 280].contains(size) else { throw ControlFailure(code: "invalid-params", message: "bubble size must be 160, 200 or 280") }
+            try await recording.session.setBubble(BubbleMetadata(center: center, size: size, visible: request.param("visible")?.bool ?? true))
+            return .success(id: request.id)
+        case "record.cancel":
+            startGeneration = UUID()
+            if let current = active, await current.session.state == .armed {
+                _ = try await discardActive()
+            } else if active != nil {
+                throw ControlFailure(code: "wrong-state", message: "cancel applies during countdown; use discard for an active take")
+            }
+            return .success(id: request.id, result: .object(["state": .string("idle")]))
+        case "record.discard":
+            startGeneration = UUID()
+            return .success(id: request.id, result: try await discardActive())
+        case "record.restart":
+            let params = lastStartParams
+            guard !params.isEmpty else { throw ControlFailure(code: "not-recording", message: "no prior take to restart") }
+            startGeneration = UUID()
+            if active != nil { _ = try await discardActive() }
+            return try await recordStart(ControlRequest(id: request.id, cmd: "record.start", args: .object(params)))
         case "record.start":
             return try await recordStart(request)
         case "record.stop":
@@ -250,8 +323,10 @@ public actor EngineController: ControlHandling {
     private func statusResult() async throws -> JSONValue {
         guard let recording = active else {
             var object: [String: JSONValue] = [
-                "state": .string("idle"),
+                "state": .string(starting ? "preparing" : (finishing ? "finishing" : "idle")),
+                "permissions": await permissionsResult(),
                 "version": .string(config.version),
+                "pid": .int(Int64(getpid())),
             ]
             if !config.socketPath.isEmpty {
                 object["socket"] = .string(config.socketPath)
@@ -367,7 +442,8 @@ public actor EngineController: ControlHandling {
             ControlFailure(code: ControlErrorCode.invalidParams, message: message)
         }
         let seconds = request.param("seconds")?.double ?? 20
-        guard seconds >= 6, seconds <= 600 else {
+        guard request.param("seconds") == nil || request.param("seconds")?.double != nil else { throw invalid("seconds must be numeric") }
+        guard seconds.isFinite, seconds >= 6, seconds <= 600 else {
             throw invalid("seconds must be between 6 and 600")
         }
         // `--pause-at S` (optionally a list): the media second at which the
@@ -578,11 +654,22 @@ public actor EngineController: ControlHandling {
     // MARK: - record.start
 
     private func recordStart(_ request: ControlRequest) async throws -> ControlResponse? {
+        guard !starting, !finishing else { throw ControlFailure(code: "already-active", message: "a take is preparing or finishing") }
         if let current = active {
             throw ControlFailure(
                 code: ControlErrorCode.alreadyActive,
                 message: "a recording is already active (\(current.recordingID));"
                     + " stop it first")
+        }
+        starting = true
+        let generation = UUID()
+        startGeneration = generation
+        defer { starting = false }
+        lastStartParams = request.params.filter { $0.key != "wait" }
+        if let duration = request.param("duration") {
+            guard let value = duration.double, value.isFinite, value > 0, value <= 86_400 else {
+                throw ControlFailure(code: "invalid-params", message: "duration must be a finite number between 0 and 86400 seconds")
+            }
         }
         let sessionRequest = try await resolveSessionRequest(params: request.params)
 
@@ -607,11 +694,16 @@ public actor EngineController: ControlHandling {
         do {
             rig = try await config.captureRigs.attach(CaptureContext(
                 session: session,
-                request: sessionRequest,
+                request: await session.effectiveRequest() ?? sessionRequest,
                 package: startedPackage,
                 selftest: request.param("selftest")?.bool == true,
+                shellBundleID: config.shellBundleID,
+                preview: previewPublisher(),
                 warning: { [weak self] code, message in
-                    Task { await self?.captureWarning(code: code, message: message) }
+                    Task {
+                        await session.recordWarning(code: code, message: message)
+                        await self?.publishCaptureWarning(code: code, message: message)
+                    }
                 },
                 streamFailure: { [weak self] reason in
                     Task { await self?.captureStreamFailure(reason) }
@@ -625,40 +717,58 @@ public actor EngineController: ControlHandling {
                 message: "capture could not start: \(error)")
         }
 
+        guard startGeneration == generation else {
+            await rig.stop()
+            _ = try? await session.stop()
+            try? FileManager.default.removeItem(at: startedPackage.folderURL)
+            throw ControlFailure(code: "cancelled", message: "recording start cancelled")
+        }
+        let recording = ActiveRecording(session: session, rig: rig, package: startedPackage,
+                                        recordingID: startedPackage.id, startRequestID: request.id)
+        active = recording
+        activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "Recording a Rushes video")
+        lastStopResult = nil
+        silentMicReported = false
+        emit(ControlEvent(kind: .stateChanged, id: request.id, recordingId: recording.recordingID, state: "armed"))
+
         // The caller owns the countdown's timing; the pipeline stays armed
         // behind the gate while it runs.
+        let countdownEnd = config.hostNowNs() + Int64(sessionRequest.countdownSeconds) * 1_000_000_000
         if sessionRequest.countdownSeconds > 0 {
-            try? await Task.sleep(
-                nanoseconds: UInt64(sessionRequest.countdownSeconds) * 1_000_000_000)
+            for remaining in stride(from: sessionRequest.countdownSeconds, through: 1, by: -1) {
+                guard startGeneration == generation else { break }
+                emit(ControlEvent(kind: .countdown, id: request.id, recordingId: recording.recordingID,
+                                  result: .object(["remaining": .int(Int64(remaining))])))
+                let target = countdownEnd - Int64(remaining - 1) * 1_000_000_000
+                if target > config.hostNowNs() { try? await Task.sleep(nanoseconds: UInt64(target - config.hostNowNs())) }
+            }
         }
+        emit(ControlEvent(kind: .countdown, id: request.id, recordingId: recording.recordingID, result: .object(["remaining": .int(0)])))
+        guard startGeneration == generation, active?.recordingID == recording.recordingID else {
+            throw ControlFailure(code: "cancelled", message: "countdown cancelled")
+        }
+        let epoch: Int64
         do {
-            _ = try await session.openGate()
+            epoch = try await session.openGate(atHostNs: sessionRequest.countdownSeconds > 0 ? countdownEnd : nil)
         } catch {
             await rig.stop()
             _ = try? await session.stop()
             await upsertIndexRow(for: startedPackage)
             throw Self.failure(forSessionError: error)
         }
-        await rig.gateOpened(epochHostNs: config.hostNowNs())
-
-        let recording = ActiveRecording(
-            session: session,
-            rig: rig,
-            package: startedPackage,
-            recordingID: startedPackage.id,
-            startRequestID: request.id)
-        active = recording
-        lastStopResult = nil
-        await upsertIndexRow(for: startedPackage)
+        await rig.gateOpened(epochHostNs: epoch)
+        scheduleMaintenance(recordingID: recording.recordingID)
+        starting = false
 
         emit(ControlEvent(
             kind: .recordingStarted,
             id: request.id,
             recordingId: recording.recordingID,
             t: 0))
+        await upsertIndexRow(for: startedPackage)
 
         if let duration = request.param("duration")?.double, duration > 0 {
-            scheduleDurationStop(seconds: duration, recordingID: recording.recordingID)
+            scheduleDurationStop(seconds: duration, recordingID: recording.recordingID, epochHostNs: epoch)
         }
 
         // Without wait, the response is the start result; with wait, events
@@ -697,7 +807,12 @@ public actor EngineController: ControlHandling {
         let recording = try requireActive()
         durationTimer?.cancel()
         durationTimer = nil
+        maintenanceTimer?.cancel()
+        maintenanceTimer = nil
+        if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
         active = nil
+        finishing = true
+        defer { finishing = false }
 
         await recording.rig.stop()
         do {
@@ -719,6 +834,9 @@ public actor EngineController: ControlHandling {
         guard let recording = active else { return }
         durationTimer?.cancel()
         durationTimer = nil
+        maintenanceTimer?.cancel()
+        maintenanceTimer = nil
+        if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
         active = nil
         await recording.rig.stop()
         let outcome = try? await recording.session.stopEarly(
@@ -740,6 +858,11 @@ public actor EngineController: ControlHandling {
     private func finish(
         _ recording: ActiveRecording, outcome: SessionOutcome
     ) async -> StoppedRecording {
+        let report = await PackageVerifier().verify(recording.package)
+        if var manifest = try? recording.package.readManifest() {
+            manifest.verified = RecordingManifest.VerificationStamp(at: ISO8601DateFormatter().string(from: Date()), ok: report.ok)
+            try? recording.package.writeManifest(manifest)
+        }
         let result = StoppedRecording(outcome: outcome)
         lastStopResult = result
         await upsertIndexRow(for: recording.package)
@@ -772,11 +895,17 @@ public actor EngineController: ControlHandling {
         } catch {
             throw Self.failure(forSessionError: error)
         }
+        if let clock = await recording.session.currentClock() { await recording.rig.adoptClock(clock) }
         emit(ControlEvent(
             kind: .stateChanged,
             id: recording.startRequestID,
             recordingId: recording.recordingID,
             state: newState))
+    }
+
+    private func publishCaptureWarning(code: String, message: String?) async {
+        if code == "camera-lost", let recording = active { await recording.session.endCameraAtLoss() }
+        emit(ControlEvent(kind: .warning, recordingId: active?.recordingID, code: code, message: message))
     }
 
     /// Capture-level warning: recorded into the manifest and surfaced as a
@@ -819,9 +948,38 @@ public actor EngineController: ControlHandling {
         }
     }
 
-    private func scheduleDurationStop(seconds: Double, recordingID: String) {
+    private func scheduleMaintenance(recordingID: String) {
+        maintenanceTimer = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: 100_000_000) } catch { break }
+                await self?.maintain(recordingID: recordingID)
+            }
+        }
+    }
+
+    private func maintain(recordingID: String) async {
+        guard let recording = active, recording.recordingID == recordingID else { return }
+        for kind in [TrackKind.microphone, .systemAudio] {
+            await recording.session.trackWriter(for: kind)?.tick(nowHostNs: config.hostNowNs())
+        }
+        if config.volumeProvider(config.recordingsRoot).availableBytes < 1024 * 1024 * 1024 {
+            await captureStreamFailure("less than 1 GB free; saved footage before disk fills")
+            return
+        }
+        let snapshot = await recording.session.snapshot()
+        if !silentMicReported, snapshot.tracks.contains(where: { $0.kind == .microphone && $0.microphoneSilent == true }) {
+            silentMicReported = true
+            await captureWarning(code: "mic-silent", message: "microphone has been near digital silence for three seconds")
+        }
+        if let failed = snapshot.tracks.first(where: { $0.errorDescription != nil }) {
+            await captureStreamFailure("\(failed.kind.rawValue) writer: \(failed.errorDescription ?? "failed")")
+        }
+    }
+
+    private func scheduleDurationStop(seconds: Double, recordingID: String, epochHostNs: Int64) {
+        let remaining = max(0, epochHostNs + Int64(seconds * 1e9) - config.hostNowNs())
         durationTimer = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            try? await Task.sleep(nanoseconds: UInt64(remaining))
             await self?.durationElapsed(recordingID: recordingID)
         }
     }
@@ -829,6 +987,48 @@ public actor EngineController: ControlHandling {
     private func durationElapsed(recordingID: String) async {
         guard active?.recordingID == recordingID else { return }
         _ = try? await stopActive()
+    }
+
+    private func discardActive() async throws -> JSONValue {
+        let recording = try requireActive()
+        let result = try await stopActive()
+        try FileManager.default.removeItem(at: recording.package.folderURL)
+        _ = try await index.rebuild(root: config.recordingsRoot)
+        return .object(["id": .string(result.id), "discarded": .bool(true), "state": .string("idle")])
+    }
+
+    private func previewPublisher() -> @Sendable (Data) -> Void {
+        let sink = previewEnabled ? eventSink : nil
+        return { jpeg in
+            sink?(ControlEvent(kind: .cameraPreview, result: .object([
+                "jpeg": .string(jpeg.base64EncodedString()), "mime": .string("image/jpeg"), "mirrored": .bool(true)])))
+        }
+    }
+
+    private func permissionKind(_ request: ControlRequest) throws -> PermissionKind {
+        guard let text = request.param("permission")?.string, let kind = PermissionKind(rawValue: text) else {
+            throw ControlFailure(code: "invalid-params", message: "unknown permission")
+        }
+        return kind
+    }
+
+    private func permissionsResult() async -> JSONValue {
+        var values: [String: JSONValue] = [:]
+        var details: [String: JSONValue] = [:]
+        for kind in [PermissionKind.screen, .camera, .microphone, .accessibility, .inputMonitoring] {
+            let status = await config.permissionAdvisor.check(kind)
+            values[kind.rawValue] = .string(SystemPermissions.wireState(status.state))
+            details[kind.rawValue] = .object(["settingsURL": .string(status.settingsURL), "relaunchRequired": .bool(kind == .screen && status.state != .allowed)])
+        }
+        values["details"] = .object(details)
+        return .object(values)
+    }
+
+    private static func windowRect(_ id: String) -> CGRect? {
+        guard let number = UInt32(id.replacingOccurrences(of: "window-", with: "")),
+              let rows = CGWindowListCopyWindowInfo(.optionIncludingWindow, number) as? [[String: Any]],
+              let bounds = rows.first?[kCGWindowBounds as String] as? [String: Any] else { return nil }
+        return CGRect(dictionaryRepresentation: bounds as CFDictionary)
     }
 
     // MARK: - Package resolution
@@ -863,6 +1063,13 @@ public actor EngineController: ControlHandling {
             ControlFailure(code: ControlErrorCode.invalidParams, message: message)
         }
 
+        for key in ["display", "window", "camera", "mic", "cursor", "title"] {
+            if let raw = params[key], raw.string == nil { throw invalid("\(key) must be a string") }
+        }
+        for key in ["systemAudio", "wait", "selftest"] {
+            if let raw = params[key], raw.bool == nil { throw invalid("\(key) must be Boolean") }
+        }
+        if params["display"] != nil && params["window"] != nil { throw invalid("choose display or window") }
         let displays = (try? await config.catalog.displays()) ?? []
         let cameras = (try? await config.catalog.cameras()) ?? []
         let microphones = (try? await config.catalog.microphones()) ?? []
@@ -890,9 +1097,28 @@ public actor EngineController: ControlHandling {
             request.screen = .window(id: window)
             // The catalog carries no window geometry; the main display's
             // output size bounds it (the stream only scales down).
-            let bounds = displays.first(where: \.isMain) ?? displays.first
-            request.screenDimensions = bounds.map(Self.screenOutputSize(for:))
-                ?? SessionRequest.Dimensions(width: 1920, height: 1080)
+            if let rect = Self.windowRect(window) {
+                let size = captureOutputSize(contentSize: rect.size, pointPixelScale: Self.backingScale(matchingPoints: rect.size), maxWidth: 3840, maxHeight: 3840)
+                request.screenDimensions = .init(width: size.width, height: size.height)
+            } else { throw invalid("window is unavailable") }
+        }
+
+        if let area = params["area"]?.object {
+            guard params["window"] == nil, let x = area["x"]?.double, let y = area["y"]?.double,
+                  let width = area["width"]?.double, let height = area["height"]?.double,
+                  [x,y,width,height].allSatisfy(\.isFinite), width > 0, height > 0 else { throw invalid("area needs finite x,y,width,height") }
+            let display = params["display"]?.string ?? "main"
+            guard let target = display == "main" ? (displays.first(where: \.isMain) ?? displays.first) : displays.first(where: { $0.id == display }) else { throw invalid("no area display found") }
+            let id = UInt32(target.id.replacingOccurrences(of: "display-", with: "")) ?? CGMainDisplayID()
+            let frame = CGDisplayBounds(id)
+            guard let rect = AreaRectMath.clamp(CGRect(x: x, y: y, width: width, height: height), toDisplay: frame) else { throw invalid("area lies outside display") }
+            request.screen = .area(displayID: target.id, rect: CaptureArea(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height))
+            let size = AreaRectMath.outputSize(area: rect, pointPixelScale: Self.backingScale(matchingPoints: frame.size))
+            request.screenDimensions = .init(width: size.width, height: size.height)
+        }
+        if let cursor = params["cursor"]?.string {
+            guard ["baked", "data"].contains(cursor) else { throw invalid("cursor must be baked or data") }
+            request.cursor = cursor
         }
 
         if let camera = params["camera"]?.string?.nilIfEmpty {
@@ -924,11 +1150,11 @@ public actor EngineController: ControlHandling {
         if let systemAudio = params["systemAudio"]?.bool {
             request.systemAudio = systemAudio
         }
-        if let countdown = params["countdownSeconds"]?.int {
-            guard countdown >= 0, countdown <= 10 else {
+        if let rawCountdown = params["countdownSeconds"] {
+            guard let countdown = rawCountdown.int, countdown >= 0, countdown <= 10 else {
                 throw invalid("countdownSeconds must be between 0 and 10")
             }
-            request.countdownSeconds = Int(countdown)
+            request.countdownSeconds = Int(rawCountdown.int!)
         }
         if let title = params["title"]?.string?.nilIfEmpty {
             request.title = title

@@ -101,6 +101,8 @@ public struct RecordingManifest: Equatable, Sendable {
         public var cameraId: String?
         public var microphoneId: String?
         public var systemAudio: Bool
+        public var area: CaptureArea?
+        public var cursor: String?
 
         public init(
             mode: String? = nil,
@@ -142,6 +144,7 @@ public struct RecordingManifest: Equatable, Sendable {
         /// When the device actually delivered its first sample (diagnostics).
         public var firstSampleNs: Int64?
         public var latencyMs: Int?
+        public var durationNs: Int64?
         public var droppedFrames: Int64?
         public var device: DeviceRef?
 
@@ -260,6 +263,7 @@ public struct RecordingManifest: Equatable, Sendable {
     public var input: RecordingInput?
     public var warnings: [ManifestWarning]
     public var verified: VerificationStamp?
+    public var bubble: BubbleMetadata?
 
     public init(
         schema: String = RecordingManifest.currentSchema,
@@ -354,7 +358,7 @@ extension RecordingManifest: Codable {
 
     private enum Keys: String, CodingKey {
         case schema, id, title, createdAt, status, app, clock, sources, tracks
-        case input, warnings, verified
+        case input, warnings, verified, bubble
         case createdHostNs, startedHostNs, endedHostNs
     }
 
@@ -385,6 +389,7 @@ extension RecordingManifest: Codable {
         input = try container.decodeIfPresent(RecordingInput.self, forKey: .input)
         warnings = try container.decodeIfPresent([ManifestWarning].self, forKey: .warnings) ?? []
         verified = try container.decodeIfPresent(VerificationStamp.self, forKey: .verified)
+        bubble = try container.decodeIfPresent(BubbleMetadata.self, forKey: .bubble)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -404,6 +409,7 @@ extension RecordingManifest: Codable {
         try container.encodeIfPresent(input, forKey: .input)
         try container.encode(warnings, forKey: .warnings)
         try container.encodeIfPresent(verified, forKey: .verified)
+        try container.encodeIfPresent(bubble, forKey: .bubble)
     }
 }
 
@@ -434,7 +440,7 @@ extension RecordingManifest.AppInfo: Codable {
 
 extension RecordingManifest.RecordingSources: Codable {
     private enum Keys: String, CodingKey {
-        case mode, displayId, windowId, cameraId, microphoneId, systemAudio
+        case mode, displayId, windowId, cameraId, microphoneId, systemAudio, area, cursor
     }
 
     public init(from decoder: Decoder) throws {
@@ -445,6 +451,8 @@ extension RecordingManifest.RecordingSources: Codable {
         cameraId = try container.decodeIfPresent(String.self, forKey: .cameraId)
         microphoneId = try container.decodeIfPresent(String.self, forKey: .microphoneId)
         systemAudio = try container.decodeIfPresent(Bool.self, forKey: .systemAudio) ?? false
+        area = try container.decodeIfPresent(CaptureArea.self, forKey: .area)
+        cursor = try container.decodeIfPresent(String.self, forKey: .cursor)
     }
 }
 
@@ -452,7 +460,7 @@ extension RecordingManifest.RecordingTrack: Codable {
     private enum Keys: String, CodingKey {
         case role, file, present, codec, width, height, fps
         case sampleRate, channels, offsetNs, offsetMs, firstSampleNs
-        case latencyMs, droppedFrames, device
+        case latencyMs, droppedFrames, device, durationNs
     }
 
     public init(from decoder: Decoder) throws {
@@ -476,6 +484,7 @@ extension RecordingManifest.RecordingTrack: Codable {
             latencyMs: try container.decodeIfPresent(Int.self, forKey: .latencyMs),
             droppedFrames: try container.decodeIfPresent(Int64.self, forKey: .droppedFrames),
             device: try container.decodeIfPresent(RecordingManifest.DeviceRef.self, forKey: .device))
+        durationNs = try container.decodeIfPresent(Int64.self, forKey: .durationNs)
         // Keep the stored milliseconds exactly as written: `offsetMs` is
         // derived on construction, but a pair that disagrees on disk is a
         // finding `verify` must be able to report.
@@ -499,6 +508,7 @@ extension RecordingManifest.RecordingTrack: Codable {
         try container.encode(offsetMs, forKey: .offsetMs)
         try container.encodeIfPresent(firstSampleNs, forKey: .firstSampleNs)
         try container.encodeIfPresent(latencyMs, forKey: .latencyMs)
+        try container.encodeIfPresent(durationNs, forKey: .durationNs)
         try container.encodeIfPresent(droppedFrames, forKey: .droppedFrames)
         try container.encodeIfPresent(device, forKey: .device)
     }
@@ -552,5 +562,14 @@ extension RecordingManifest.VerificationStamp: Codable {
         let container = try decoder.container(keyedBy: Keys.self)
         at = try container.decodeIfPresent(String.self, forKey: .at) ?? ""
         ok = try container.decodeIfPresent(Bool.self, forKey: .ok) ?? false
+    }
+}
+
+public struct BubbleMetadata: Codable, Equatable, Sendable {
+    public var center: [Double]
+    public var size: Int
+    public var visible: Bool
+    public init(center: [Double], size: Int = 200, visible: Bool = true) {
+        self.center = center; self.size = size; self.visible = visible
     }
 }

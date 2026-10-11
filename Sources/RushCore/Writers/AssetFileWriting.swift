@@ -42,6 +42,7 @@ internal protocol TrackFileWriting: AnyObject {
     /// `startSession(atSourceTime: .zero)`: the file's media time zero is the
     /// session epoch.
     func startSession()
+    func endSession(atMediaNs: Int64)
 
     /// Appends one video frame at a media-clock time.
     @discardableResult
@@ -64,6 +65,10 @@ internal protocol TrackFileWriting: AnyObject {
 
 /// Builds backends. Injected so tests can supply stub writers, including ones
 /// that refuse a codec to drive the HEVC-to-H.264 fallback.
+extension TrackFileWriting {
+    func endSession(atMediaNs: Int64) {}
+}
+
 internal protocol TrackFileWritingFactory: Sendable {
     /// Creates (but does not start) a writer for the configuration.
     /// Throws when the file cannot be created or the codec has no settings.
@@ -174,6 +179,10 @@ internal final class AVAssetFileWriter: TrackFileWriting, @unchecked Sendable {
     @discardableResult
     func appendAudioSamples(_ sampleBuffer: CMSampleBuffer) -> Bool {
         input.append(sampleBuffer)
+    }
+
+    func endSession(atMediaNs: Int64) {
+        writer.endSession(atSourceTime: CMTime(exactNanoseconds: atMediaNs))
     }
 
     func markInputFinished() {

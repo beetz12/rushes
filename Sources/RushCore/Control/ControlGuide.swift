@@ -104,6 +104,16 @@ public struct ControlGuide: Codable, Equatable, Sendable {
 
     private static func commandDocs() -> [CommandDoc] {
         [
+            CommandDoc(name: "permissions.check", cli: ["permissions check"], summary: "Inspect native permissions without prompting.", usage: "rushes permissions check", result: "{screen,camera,microphone,accessibility,inputMonitoring,details}"),
+            CommandDoc(name: "permissions.request", cli: ["permissions request"], summary: "Explicitly request one native permission.", usage: "rushes permissions request PERMISSION", result: "permission states"),
+            CommandDoc(name: "permissions.settings", cli: ["permissions settings"], summary: "Get the relevant Settings link.", usage: "rushes permissions settings PERMISSION", result: "{url}"),
+            CommandDoc(name: "camera.preview.start", cli: ["camera preview-start"], summary: "Warm camera and publish bounded JPEG preview events.", usage: "rushes camera preview-start --camera default", result: "{running,camera,name}"),
+            CommandDoc(name: "camera.preview.stop", cli: ["camera preview-stop"], summary: "Close camera preview while idle.", usage: "rushes camera preview-stop", result: "{}"),
+            CommandDoc(name: "record.cancel", cli: ["record cancel"], summary: "Cancel countdown.", usage: "rushes record cancel", result: "{state}"),
+            CommandDoc(name: "record.discard", cli: ["record discard"], summary: "Delete only the active take after closing writers.", usage: "rushes record discard", result: "{id,discarded,state}"),
+            CommandDoc(name: "record.restart", cli: ["record restart"], summary: "Discard active take and start a new one with prior options.", usage: "rushes record restart", result: "{id,packagePath,state}"),
+            CommandDoc(name: "record.mute", cli: ["record mute"], summary: "Mute one audio track while keeping its timeline continuous.", usage: "rushes record mute --track microphone --muted true", result: "{track,muted}"),
+            CommandDoc(name: "record.bubble", cli: [], summary: "Store normalized camera bubble center and point size.", usage: "socket record.bubble {center:[x,y],size:200,visible:true}", result: "{}"),
             CommandDoc(
                 name: "ping",
                 cli: ["ping"],
@@ -149,6 +159,8 @@ public struct ControlGuide: Codable, Equatable, Sendable {
                     ParamDoc(name: "display", flag: "--display", type: "string",
                              description: "Display to record, by stable id or \"main\"."
                                  + " Exactly one of display/window is required unless the take is camera-only."),
+                    ParamDoc(name: "area", flag: "--area", type: "object", description: "Global point rectangle {x,y,width,height}; CLI X,Y,W,H."),
+                    ParamDoc(name: "cursor", flag: "--cursor", type: "string", description: "baked or data (cursor-free master)."),
                     ParamDoc(name: "window", flag: "--window", type: "string",
                              description: "Window to record, by stable id."),
                     ParamDoc(name: "camera", flag: "--camera", type: "string",
@@ -264,6 +276,8 @@ public struct ControlGuide: Codable, Equatable, Sendable {
 
     private static func eventDocs() -> [EventDoc] {
         [
+            EventDoc(event: "camera-preview", fields: ["result.jpeg", "result.mime", "result.mirrored"], description: "Bounded best-effort JPEG frames from the recording camera session."),
+            EventDoc(event: "countdown", fields: ["recordingId", "result.remaining"], description: "Warm pipeline countdown, then zero at the gate."),
             EventDoc(
                 event: ControlEventKind.recordingStarted.rawValue,
                 fields: ["id (request tag)", "recordingId", "t (media ms)"],

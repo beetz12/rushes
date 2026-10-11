@@ -178,7 +178,7 @@ public enum InputTapDegradation {
 public final class InputRecorder: @unchecked Sendable {
 
     /// The session clock's media-time mapping (host ns -> media ns).
-    private let clock: SessionClock
+    private var clock: SessionClock
 
     /// The content rectangle, global unflipped points, that pointer
     /// positions are normalized against.
@@ -270,6 +270,10 @@ public final class InputRecorder: @unchecked Sendable {
             ],
             scale: pointPixelScale))
 
+        lock.lock()
+        lastKnownPosition = CGEvent(source: nil)?.location ?? CGPoint(x: contentRect.midX, y: contentRect.midY)
+        lastPointerLineAtHostNs = clock.epochNs
+        lock.unlock()
         let keystrokesWanted = keystrokesEnabled
         // Capturing `self` (an @unchecked Sendable class) keeps the closure
         // Sendable; the raw `userInfo` pointer is derived inside, where the
@@ -364,7 +368,7 @@ public final class InputRecorder: @unchecked Sendable {
         let hostNs = Int64(clamping: event.timestamp)
         // Events before the epoch belong to the countdown: dropped (media
         // time would be zero, which would place them at the recording start).
-        guard hostNs >= clock.epochNs else { return }
+        guard mappedMediaMs(hostNs) != nil else { return }
 
         switch type {
         case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
@@ -450,6 +454,7 @@ public final class InputRecorder: @unchecked Sendable {
         let last = lastPointerLineAtHostNs
         let position = lastKnownPosition
         lock.unlock()
+        guard mappedMediaMs(nowHostNs) != nil else { return }
         guard let last, nowHostNs - last >= 1_000_000_000 else { return }
         guard let position,
               let normalized = PointerNormalizer.normalize(position, in: contentRect) else { return }
@@ -465,8 +470,18 @@ public final class InputRecorder: @unchecked Sendable {
 
     // MARK: Internals
 
+    public func adoptClock(_ clock: SessionClock) {
+        lock.lock(); self.clock = clock; lock.unlock()
+    }
+
+    private func mappedMediaMs(_ hostNs: Int64) -> Double? {
+        lock.lock(); let snapshot = clock; lock.unlock()
+        guard hostNs >= snapshot.epochNs && !snapshot.isPaused(atHostNs: hostNs) else { return nil }
+        return Double(snapshot.mediaTimeNs(atHostNs: hostNs)) / 1_000_000
+    }
+
     private func mediaMs(atHostNs hostNs: Int64) -> Double {
-        Double(clock.mediaTimeNs(atHostNs: hostNs)) / 1_000_000
+        mappedMediaMs(hostNs) ?? 0
     }
 
     private func append(_ line: InputEventLine) {

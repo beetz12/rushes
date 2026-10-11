@@ -77,6 +77,7 @@ func parseCLI(_ arguments: [String]) -> CLIInvocation {
     // connects there unless `--socket` or `RUSHES_SOCKET` says otherwise.
     var socket = ProcessInfo.processInfo.environment["RUSHES_SOCKET"]
         ?? ControlServer.defaultSocketPath.path
+    var noLaunch = false
     var enginePath = ProcessInfo.processInfo.environment["RUSHES_ENGINE"]
     var index = 0
 
@@ -85,6 +86,9 @@ func parseCLI(_ arguments: [String]) -> CLIInvocation {
     while index < tokens.count {
         let token = tokens[index]
         switch token {
+        case "--no-launch":
+            noLaunch = true
+            index += 1
         case "--socket":
             index += 1
             guard index < tokens.count else { fail("usage", "--socket needs a path") }
@@ -118,11 +122,15 @@ func parseCLI(_ arguments: [String]) -> CLIInvocation {
         socketPath: URL(fileURLWithPath: socketPath),
         enginePath: enginePath,
         command: command)
+    if noLaunch { invocation.switches.insert("--no-launch") }
     if command == "record", !rest.isEmpty {
         invocation.command = "record \(rest[0])"
         parseArguments(Array(rest.dropFirst()), into: &invocation)
     } else if command == "selftest", !rest.isEmpty {
         invocation.command = "selftest \(rest[0])"
+        parseArguments(Array(rest.dropFirst()), into: &invocation)
+    } else if ["permissions", "camera"].contains(command), !rest.isEmpty {
+        invocation.command = "\(command) \(rest[0])"
         parseArguments(Array(rest.dropFirst()), into: &invocation)
     } else if command == "analyze", !rest.isEmpty {
         invocation.command = "analyze \(rest[0])"
@@ -140,7 +148,7 @@ func parseArguments(_ words: [String], into invocation: inout CLIInvocation) {
     let valueFlags: Set<String> = [
         "--display", "--window", "--camera", "--mic", "--duration",
         "--countdown", "--title", "--id", "--limit",
-        "--seconds", "--pause-at",
+        "--seconds", "--pause-at", "--area", "--cursor", "--permission", "--track", "--muted",
     ]
     var index = 0
     while index < words.count {
@@ -177,22 +185,37 @@ func splitFlag(_ word: String) -> (String, String?) {
 // MARK: - Engine connection
 
 func connectOrFail(_ invocation: CLIInvocation) -> ControlConnection {
-    do {
-        return try ControlClient.connect(to: invocation.socketPath)
-    } catch {
-        var extra: [String: JSONValue] = [
-            "socket": .string(invocation.socketPath.path),
-        ]
-        if let enginePath = invocation.enginePath {
-            extra["enginePath"] = .string(enginePath)
+    if let connection = try? ControlClient.connect(to: invocation.socketPath) { return connection }
+    if !invocation.switches.contains("--no-launch") {
+        let sibling = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+            .deletingLastPathComponent().appendingPathComponent("rushcore-engine").path
+        let path = invocation.enginePath ?? sibling
+        if FileManager.default.isExecutableFile(atPath: path) {
+            let launcher = Process()
+            launcher.executableURL = URL(fileURLWithPath: path)
+            var arguments = ["--socket-path", invocation.socketPath.path]
+            let environment = ProcessInfo.processInfo.environment
+            if let root = environment["RUSHES_RECORDINGS_ROOT"] { arguments += ["--recordings-root", root] }
+            if let index = environment["RUSHES_INDEX_PATH"] { arguments += ["--index-path", index] }
+            if environment["RUSHES_CAPTURE_STUB"] == "1" { arguments += ["--capture-stub"] }
+            launcher.arguments = arguments
+            launcher.standardOutput = FileHandle.nullDevice
+            launcher.standardError = FileHandle.nullDevice
+            do {
+                try launcher.run()
+                let deadline = Date().addingTimeInterval(5)
+                while Date() < deadline {
+                    if let connection = try? ControlClient.connect(to: invocation.socketPath) { return connection }
+                    if !launcher.isRunning { break }
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+                if launcher.isRunning { launcher.terminate() }
+            } catch { /* The same typed unreachable error applies below. */ }
         }
-        fail(
-            ControlErrorCode.engineUnreachable,
-            "engine not running at \(invocation.socketPath.path);"
-                + " start it with rushcore-engine"
-                + (invocation.enginePath.map { " (seam: \($0))" } ?? ""),
-            extra: extra)
     }
+    fail(ControlErrorCode.engineUnreachable,
+         "engine not running at \(invocation.socketPath.path)",
+         extra: ["socket": .string(invocation.socketPath.path), "enginePath": .string(invocation.enginePath)])
 }
 
 nonisolated(unsafe) var requestCounter = 0
@@ -322,6 +345,7 @@ func runRecordStartWait(
             ) {
                 switch message {
                 case .event(let event):
+                    if event.event == ControlEventKind.cameraPreview.rawValue { continue }
                     printNDJSON(CLIEventAdapter.outputJSON(event))
                 case .response(let response):
                     if response.id == startRequest.id {
@@ -386,7 +410,7 @@ enum CLIEventAdapter {
 func finishWaitResponse(_ response: ControlResponse) -> Never {
     if response.ok, let result = response.result {
         printNDJSON(.object(["event": .string("done"), "result": result]))
-        exit(0)
+        exit(result["status"]?.string == "failed" ? 1 : 0)
     }
     failFromResponse(response)
 }
@@ -459,7 +483,7 @@ case "verify":
     }
     let response = runRequest(invocation, cmd: "verify", args: .object(["id": .string(id)]))
     printJSON(response.result ?? .object([:]))
-    exit(0)
+    exit(response.result?["ok"]?.bool == true ? 0 : 1)
 
 case "record start":
     var args: [String: JSONValue] = [:]
@@ -469,18 +493,24 @@ case "record start":
     if let mic = invocation.flags["--mic"] { args["mic"] = .string(mic) }
     if invocation.switches.contains("--system-audio") { args["systemAudio"] = .bool(true) }
     if let duration = invocation.flags["--duration"] {
-        guard let value = Double(duration), value > 0 else {
+        guard let value = Double(duration), value.isFinite, value > 0, value <= 86_400 else {
             fail("usage", "--duration needs a positive number of seconds")
         }
         args["duration"] = .double(value)
     }
     if let countdown = invocation.flags["--countdown"] {
-        guard let value = Int64(countdown), value >= 0 else {
+        guard let value = Int64(countdown), value >= 0, value <= 10 else {
             fail("usage", "--countdown needs a non-negative integer")
         }
         args["countdownSeconds"] = .int(value)
     }
     if let title = invocation.flags["--title"] { args["title"] = .string(title) }
+    if let cursor = invocation.flags["--cursor"] { args["cursor"] = .string(cursor) }
+    if let area = invocation.flags["--area"] {
+        let values = area.split(separator: ",").compactMap { Double($0) }
+        guard values.count == 4, values.allSatisfy(\.isFinite), values[2] > 0, values[3] > 0 else { fail("usage", "--area needs X,Y,W,H") }
+        args["area"] = .object(["x": .double(values[0]), "y": .double(values[1]), "width": .double(values[2]), "height": .double(values[3])])
+    }
     // `--camera`/`--mic` as bare switches mean "default".
     if invocation.switches.contains("--camera"), args["camera"] == nil {
         args["camera"] = .string("default")
@@ -505,7 +535,7 @@ case "record stop":
     }
     let response = runRequest(invocation, cmd: "record.stop", args: .object(args))
     printJSON(response.result ?? .object([:]))
-    exit(0)
+    exit(response.result?["status"]?.string == "failed" ? 1 : 0)
 
 case "record pause":
     let response = runRequest(invocation, cmd: "record.pause")
@@ -514,6 +544,29 @@ case "record pause":
 
 case "record resume":
     let response = runRequest(invocation, cmd: "record.resume")
+    printJSON(response.result ?? .object([:]))
+    exit(0)
+
+case "record cancel", "record discard", "record restart":
+    let response = runRequest(invocation, cmd: invocation.command.replacingOccurrences(of: " ", with: "."))
+    printJSON(response.result ?? .object([:]))
+    exit(0)
+
+case "record mute":
+    guard let track = invocation.flags["--track"], let raw = invocation.flags["--muted"], ["true", "false"].contains(raw) else { fail("usage", "mute needs --track microphone|systemAudio --muted true|false") }
+    let response = runRequest(invocation, cmd: "record.mute", args: .object(["track": .string(track), "muted": .bool(raw == "true")]))
+    printJSON(response.result ?? .object([:]))
+    exit(0)
+
+case "permissions check", "permissions request", "permissions settings":
+    var args: [String: JSONValue] = [:]
+    if let permission = invocation.flags["--permission"] ?? invocation.positional.first { args["permission"] = .string(permission) }
+    let response = runRequest(invocation, cmd: invocation.command.replacingOccurrences(of: " ", with: "."), args: .object(args))
+    printJSON(response.result ?? .object([:]))
+    exit(0)
+
+case "camera preview-start", "camera preview-stop":
+    let response = runRequest(invocation, cmd: invocation.command == "camera preview-start" ? "camera.preview.start" : "camera.preview.stop", args: .object(["camera": .string(invocation.flags["--camera"] ?? "default")]))
     printJSON(response.result ?? .object([:]))
     exit(0)
 

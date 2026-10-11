@@ -201,3 +201,13 @@ public struct SystemSourceCatalog: SourceCataloging {
     }
 
 }
+
+/// Explicit diagnostic catalog: --capture-stub must never invoke a live screen
+/// sharing API or contend for devices while unrelated real capture runs.
+public struct DiagnosticSourceCatalog: SourceCataloging {
+    public init() {}
+    public func displays() async throws -> [DisplaySource] { [.init(id: "display-diagnostic", name: "Synthetic display", widthPoints: 640, heightPoints: 480, isMain: true)] }
+    public func windows() async throws -> [WindowSource] { [] }
+    public func cameras() async throws -> [CameraDevice] { [.init(id: "camera-diagnostic", name: "Synthetic camera")] }
+    public func microphones() async throws -> [MicrophoneDevice] { [.init(id: "mic-diagnostic", name: "Synthetic microphone")] }
+}

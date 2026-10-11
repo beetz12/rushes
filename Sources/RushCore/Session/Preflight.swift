@@ -8,6 +8,8 @@ public enum PermissionKind: String, Codable, Sendable {
     case screen
     case camera
     case microphone
+    case accessibility
+    case inputMonitoring
 }
 
 /// One permission surface's state, with "not asked" and "denied" kept
@@ -274,7 +276,7 @@ public struct Preflight: Sendable {
         }
 
         switch effective.screen {
-        case .display(let id):
+        case .display(let id), .area(let id, _):
             guard displays.contains(where: { $0.id == id }) else {
                 return refuse(.unknownSource, "sources", "display \(id) is not in the catalog")
             }

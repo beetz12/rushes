@@ -281,7 +281,8 @@ struct TrackWriterTests {
 
         let status = await writer.finalize(endMediaTimeNs: expectedEndNs, deadline: .seconds(10))
         #expect(status.finalizeState == .finalized)
-        #expect(status.framesDropped == pausedFrames)
+        #expect((status.framesSuppressedByPause ?? 0) == Int64(pausedFrames))
+        #expect(status.framesDropped == 0)
         // Live frames plus the repeated end frame.
         #expect(status.framesWritten == liveFrames + 1)
 
@@ -323,6 +324,40 @@ struct TrackWriterTests {
         #expect(summary.videoTracks == 0)
         let expected = Double(host - epochNs) / 1e9
         #expect(abs(summary.durationSeconds - expected) < 0.15)
+    }
+
+    @Test("Silence warning requires three seconds of measured unmuted PCM")
+    func measuredSilence() {
+        var watch = SilenceWatch()
+        let measurements = [
+            watch.receive(rms: 0, mediaNs: 0, muted: false),
+            watch.receive(rms: 0, mediaNs: 2_999_999_999, muted: false),
+            watch.receive(rms: 0, mediaNs: 3_000_000_000, muted: false),
+            watch.receive(rms: nil, mediaNs: 4_000_000_000, muted: false),
+            watch.receive(rms: 0, mediaNs: 8_000_000_000, muted: false),
+            watch.receive(rms: 0, mediaNs: 12_000_000_000, muted: true),
+            watch.receive(rms: .nan, mediaNs: 20_000_000_000, muted: false),
+        ]
+        #expect(measurements == [false,false,true,false,false,false,false])
+    }
+
+    @Test("Sub-sample timestamp rounding preserves every real-shaped PCM buffer")
+    func audioRoundingOverlap() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("mic.mov")
+        let writer = try TrackWriter(configuration: .microphone(outputURL: url), clock: .init(epochNs: epochNs))
+        let count = 150
+        for index in 0..<count {
+            let offset = Int64((Double(index) * 512 / 48_000 * 1e9).rounded())
+            writer.appendAudio(makeAudioBuffer(hostNs: epochNs + offset, frames: 512))
+        }
+        let end = Int64((Double(count) * 512 / 48_000 * 1e9).rounded())
+        let status = await writer.finalize(endMediaTimeNs: end)
+        #expect(status.framesWritten >= count)
+        #expect(status.framesDropped == 0)
+        let summary = try await inspect(url: url)
+        #expect(abs(summary.durationSeconds - 1.6) < 0.005)
     }
 
     @Test("Audio gaps over the threshold are filled with silence")

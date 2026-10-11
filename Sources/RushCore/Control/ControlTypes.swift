@@ -108,7 +108,9 @@ public enum JSONValue: Codable, Equatable, Sendable {
     public var int: Int64? {
         switch self {
         case .int(let value): return value
-        case .double(let value): return value == value.rounded() ? Int64(value) : nil
+        case .double(let value):
+            guard value.isFinite, value == value.rounded(), value >= Double(Int64.min), value < Double(Int64.max) else { return nil }
+            return Int64(value)
         default: return nil
         }
     }
@@ -347,6 +349,8 @@ public enum ControlEventKind: String, Codable, Sendable {
     /// Engine-local only: the engine booted and the socket is listening.
     /// Never crosses the socket; the engine prints it on its own stdout.
     case ready = "ready"
+    case cameraPreview = "camera-preview"
+    case countdown = "countdown"
 }
 
 /// One NDJSON event line on the socket. `id` is the originating request's
