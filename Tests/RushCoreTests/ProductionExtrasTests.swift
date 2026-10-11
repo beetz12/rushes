@@ -42,6 +42,13 @@ private func extrasCMBuffer(_ pcm: AVAudioPCMBuffer, hostTime: CMTime) throws ->
     return value
 }
 
+private final class PreviewDataLog: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bytes: [Data] = []
+    func append(_ data: Data) { lock.withLock { bytes.append(data) } }
+    var count: Int { lock.withLock { bytes.count } }
+}
+
 @Suite("Native production extras")
 struct ProductionExtrasTests {
     @Test("Volatile result suffixes never double-advance repeated script words")
@@ -183,6 +190,81 @@ struct ProductionExtrasTests {
         await service.cancel()
         #expect(Date().timeIntervalSince(cancelStart) < 0.1)
         #expect(service.snapshot().state == "cancelled")
+    }
+
+    @Test("Native configuration arms without devices and rejects a recording with no microphone")
+    func coordinatorConfiguration() async throws {
+        let coordinator = ProductionEffectsCoordinator()
+        let set = ControlRequest(id: "configure", cmd: "teleprompter.set", args: .object(["enabled": .bool(true), "script": .string("hello world"), "locale": .string("en-US")]))
+        let config = try await coordinator.handle(set)
+        #expect(config["enabled"]?.bool == true)
+        #expect(config["script"]?.string == "hello world")
+        #expect(config["state"]?.string == "armed")
+        #expect(config["capture"]?.string == "recording-microphone-tee-only")
+        do { try await coordinator.beginRecording(id: "fixture", microphoneEnabled: false); Issue.record("No microphone accepted") }
+        catch let failure as ControlFailure { #expect(failure.payload.code == "no-microphone") }
+        let stopped = try await coordinator.handle(ControlRequest(id: "stop", cmd: "teleprompter.stop"))
+        #expect(stopped["state"]?.string == "disabled")
+        let blur = try await coordinator.handle(ControlRequest(id: "blur", cmd: "camera.blur.set", args: .object(["enabled": .bool(true), "radius": .int(24)])))
+        #expect(blur["preservesRawMasters"]?.bool == true)
+        #expect(blur["requiresDerivedCamera"]?.bool == true)
+        #expect(coordinator.currentPolicy().cameraBlur == .init(enabled: true, radius: 24))
+        await coordinator.cancelRecording()
+    }
+    @Test("Per-package effects policy is safe, independent of current settings, and cannot overwrite symlinked masters")
+    func effectsPolicy() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        #expect(try ProductionEffectsPolicy.read(from: folder).cameraBlur.enabled == false)
+        let policy = ProductionEffectsPolicy(cameraBlur: .init(enabled: true, radius: 24))
+        try policy.write(to: folder)
+        #expect(try ProductionEffectsPolicy.read(from: folder) == policy)
+        let literal = folder.appendingPathComponent("production-effects.json")
+        try FileManager.default.removeItem(at: literal)
+        let master = folder.appendingPathComponent("camera.mov")
+        let bytes = Data("unchanged camera master".utf8)
+        try bytes.write(to: master)
+        try FileManager.default.createSymbolicLink(at: literal, withDestinationURL: master)
+        #expect(throws: ControlFailure.self) { try policy.write(to: folder) }
+        #expect(try Data(contentsOf: master) == bytes)
+    }
+    @Test("A requested strict export blur never returns raw on cancellation or invalid timestamps")
+    func strictExportBlur() async throws {
+        let buffer = try extrasPixelBuffer()
+        CIContext().render(CIImage(color: .white).cropped(to: CGRect(x: 0, y: 0, width: 320, height: 180)), to: buffer)
+        let worker = try CameraBlurExportWorker(radius: 18)
+        let result = try await worker.process(buffer, at: .zero)
+        #expect(result.disposition == "no-person")
+        #expect(result.pixelBuffer !== buffer)
+        do { _ = try await worker.process(buffer, at: .invalid); Issue.record("Invalid timestamp returned raw") }
+        catch let failure as ControlFailure { #expect(failure.payload.code == "blur-frame-time") }
+        worker.cancel()
+        do { _ = try await worker.process(buffer, at: .zero); Issue.record("Cancelled blur returned raw") }
+        catch is ControlFailure {}
+    }
+    @Test("Camera preview nil transform suppresses raw JPEG on its existing worker without capture")
+    func previewWithholding() throws {
+        let source = CameraSource(onCameraLost: { _ in })
+        let log = PreviewDataLog()
+        source.previewHandler = { log.append($0) }
+        source.setPreviewTransform { _ in nil }
+        let buffer = try extrasPixelBuffer()
+        CIContext().render(CIImage(color: .red).cropped(to: CGRect(x: 0, y: 0, width: 320, height: 180)), to: buffer)
+        var format: CMVideoFormatDescription?
+        #expect(CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: buffer, formatDescriptionOut: &format) == noErr)
+        var sample: CMSampleBuffer?
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 30), presentationTimeStamp: CMTime(seconds: 100, preferredTimescale: 1000), decodeTimeStamp: .invalid)
+        #expect(CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: buffer, formatDescription: try #require(format), sampleTiming: &timing, sampleBufferOut: &sample) == noErr)
+        source.acceptFrame(try #require(sample))
+        source.waitForPreview()
+        #expect(log.count == 0)
+        source.setPreviewTransform(nil)
+        timing.presentationTimeStamp = CMTime(seconds: 101, preferredTimescale: 1000)
+        #expect(CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: buffer, formatDescription: try #require(format), sampleTiming: &timing, sampleBufferOut: &sample) == noErr)
+        source.acceptFrame(try #require(sample))
+        source.waitForPreview()
+        #expect(log.count == 1)
     }
     @Test("Streaming Apple recognition advances real spoken PCM to the last script token",
           .enabled(if: ProcessInfo.processInfo.environment["RUSHES_EXTRAS_SPEECH_FIXTURE"] != nil), .timeLimit(.minutes(1)))
