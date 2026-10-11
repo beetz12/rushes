@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { SharingService, type ShareProvider } from '../src/main/sharing';
@@ -17,20 +17,44 @@ function rig(root: string) {
       sha256: 'test-hash',
       kind: input.kind,
     })),
-    publish: vi.fn(async (r) => ({ ...r, manifest: { state: 'ready' } })),
+    publish: vi.fn(async (r, input) => ({
+      ...r,
+      manifest: { ...r.manifest, ...input, state: 'ready' },
+    })),
     updateMetadata: vi.fn(async (r) => ({ ...r, manifest: { ...r.manifest, enriched: true } })),
     delete: vi.fn(async () => {}),
     setupCheck: vi.fn(async () => ({ ok: true })),
   };
   const engine = {
-    request: vi.fn(async (cmd: string, args?: Record<string, unknown>) => {
-      if (cmd === 'show') return { packagePath: root, manifest: { title: 'Fixture' } };
-      if (cmd === 'export') {
-        expect(String(args?.path)).toBe(join(root, 'renders', 'share.mp4'));
-        await writeFile(String(args?.path), 'synthetic fixture export');
-        return { width: 640, height: 480, durationMs: 1200 };
+    request: vi.fn(async (cmd: string) => {
+      if (cmd === 'show')
+        return {
+          packagePath: root,
+          manifest: { title: 'Fixture', clock: { durationNs: 1200000000 } },
+        };
+      if (cmd === 'share.assets') {
+        const folder = join(root, 'renders', 'shared_assets', 'fixture-key');
+        await mkdir(folder, { recursive: true });
+        const videoPath = join(folder, 'share.mp4'),
+          posterPath = join(folder, 'poster.jpg');
+        await writeFile(videoPath, 'synthetic fixture export');
+        await writeFile(posterPath, 'synthetic fixture poster');
+        return {
+          id: 'take',
+          videoPath,
+          posterPath,
+          width: 640,
+          height: 480,
+          durationMs: 1200,
+          title: 'Edited fixture',
+          summary: 'Fixture summary',
+          chapters: [{ startMs: 0, title: 'Edited chapter' }],
+          cacheKey: 'fixture-key',
+          editRevision: 2,
+          cached: true,
+        };
       }
-      throw new Error('No metadata fixture');
+      throw new Error('No fixture for command');
     }),
   };
   return {
@@ -45,20 +69,23 @@ function rig(root: string) {
   };
 }
 describe('stable share state', () => {
-  it('keeps one real reservation across re-renders and supplies the latest reservation to delete', async () => {
+  it('keeps one reservation across re-renders and supplies the latest reservation to delete', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rushes-share-'));
     const r = rig(root);
-    expect(await r.service.share('take')).toEqual({
+    expect(await r.service.share('take', true)).toEqual({
       url: 'https://example.invalid/stable-share-id',
+      state: 'ready',
     });
-    expect(await r.service.share('take')).toEqual({
+    expect(await r.service.share('take', true)).toEqual({
       url: 'https://example.invalid/stable-share-id',
+      state: 'ready',
     });
     expect(r.provider.reserve).toHaveBeenCalledTimes(1);
     expect(r.provider.publish).toHaveBeenCalledTimes(2);
     const state = JSON.parse(await readFile(join(root, 'share', 'state.json'), 'utf8'));
     expect(state.state).toBe('ready');
     expect(state.reservation.manifest.state).toBe('ready');
+    expect(state.editRevision).toBe(2);
     await r.service.unshare('take');
     expect(r.provider.delete).toHaveBeenCalledWith(state.reservation);
     await rm(root, { recursive: true });
@@ -67,20 +94,20 @@ describe('stable share state', () => {
     const root = await mkdtemp(join(tmpdir(), 'rushes-retry-'));
     const r = rig(root);
     vi.mocked(r.provider.upload).mockRejectedValueOnce(new Error('Fixture transport lost'));
-    await expect(r.service.share('take')).rejects.toThrow('transport lost');
+    await expect(r.service.share('take', true)).rejects.toThrow('transport lost');
     const pending = JSON.parse(await readFile(join(root, 'share', 'state.json'), 'utf8'));
-    expect(pending.state).toBe('processing');
+    expect(pending.state).toBe('failed');
     expect(pending.reservation.id).toBe('stable-share-id');
-    await r.service.share('take');
+    await r.service.share('take', true);
     expect(r.provider.reserve).toHaveBeenCalledTimes(1);
     await rm(root, { recursive: true });
   });
-  it('de-duplicates concurrent requests and refuses a changed provider for unshare', async () => {
+  it('de-duplicates concurrent requests and refuses changed provider unshare', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rushes-provider-'));
     const r = rig(root);
-    await Promise.all([r.service.share('take'), r.service.share('take')]);
+    await Promise.all([r.service.share('take', true), r.service.share('take', true)]);
     expect(r.provider.reserve).toHaveBeenCalledTimes(1);
-    expect(r.provider.upload).toHaveBeenCalledTimes(1);
+    expect(r.provider.upload).toHaveBeenCalledTimes(2);
     const changed = new SharingService(
       r.engine,
       async () => r.provider,
@@ -93,24 +120,67 @@ describe('stable share state', () => {
     expect(r.provider.delete).not.toHaveBeenCalled();
     await rm(root, { recursive: true });
   });
-  it('uploads only existing transcript sidecars and retains the same share URL on enrichment', async () => {
+  it('uploads only projected snapshot sidecars and retains URL on enrichment', async () => {
     const root = await mkdtemp(join(tmpdir(), 'rushes-enrich-'));
     const r = rig(root);
-    await writeFile(join(root, 'captions.vtt'), 'WEBVTT\n\n00:00.000 --> 00:01.000\nFixture');
-    await writeFile(join(root, 'transcript.json'), '{"locale":"en-US","words":[]}');
-    await r.service.share('take');
+    const original = r.engine.request.getMockImplementation()!;
+    vi.mocked(r.engine.request).mockImplementation(async (cmd: string) => {
+      const value = await original(cmd);
+      if (cmd === 'share.assets')
+        return {
+          ...value,
+          captionsPath: join(root, 'renders', 'shared_assets', 'fixture-key', 'projected.vtt'),
+          transcriptPath: join(root, 'renders', 'shared_assets', 'fixture-key', 'projected.json'),
+        };
+      return value;
+    });
+    await r.service.share('take', true);
     expect(vi.mocked(r.provider.upload).mock.calls.map((c) => c[1].kind)).toEqual([
       'video',
+      'poster',
       'captions',
       'transcript',
     ]);
+    expect(
+      vi.mocked(r.provider.upload).mock.calls.every((c) => c[1].path.includes('shared_assets')),
+    ).toBe(true);
     const state = JSON.parse(await readFile(join(root, 'share', 'state.json'), 'utf8'));
     expect(state.reservation.url).toBe('https://example.invalid/stable-share-id');
-    expect(state.reservation.manifest.enriched).toBe(true);
-    expect(r.provider.updateMetadata).toHaveBeenCalledWith(expect.anything(), {
-      captions: [{ file: 'captions-hash.mp4', lang: 'en' }],
-      transcript: 'transcript-hash.mp4',
+    expect(state.reservation.manifest.transcript).toBe('transcript-hash.mp4');
+    expect(r.provider.updateMetadata).not.toHaveBeenCalled();
+    expect(r.provider.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'stable-share-id' }),
+      expect.objectContaining({
+        title: 'Edited fixture',
+        summary: 'Fixture summary',
+        chapters: [{ startMs: 0, title: 'Edited chapter' }],
+        captions: [{ file: 'captions-hash.mp4', lang: 'en' }],
+        transcript: 'transcript-hash.mp4',
+      }),
+    );
+    await rm(root, { recursive: true });
+  });
+  it('returns a persisted real reservation before render and waits only when requested', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rushes-reserve-'));
+    const r = rig(root);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const implementation = r.engine.request.getMockImplementation()!;
+    r.engine.request.mockImplementation(async (cmd: string) => {
+      if (cmd === 'share.assets') await gate;
+      return implementation(cmd);
     });
+    const immediate = await r.service.share('take');
+    expect(immediate).toEqual({
+      url: 'https://example.invalid/stable-share-id',
+      state: 'processing',
+    });
+    expect(r.provider.upload).not.toHaveBeenCalled();
+    const state = JSON.parse(await readFile(join(root, 'share', 'state.json'), 'utf8'));
+    expect(state.state).toBe('processing');
+    const waiting = r.service.share('take', true);
+    release();
+    expect(await waiting).toEqual({ url: immediate.url, state: 'ready' });
     await rm(root, { recursive: true });
   });
 });

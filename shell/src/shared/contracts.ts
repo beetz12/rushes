@@ -20,6 +20,7 @@ export const commands = [
   'permissions.settings',
   'camera.preview.start',
   'camera.preview.stop',
+  'camera.preview.subscribe',
   'list',
   'show',
   'verify',
@@ -70,15 +71,36 @@ export const windowSchema = z
     y: z.number().finite().optional(),
   })
   .strict();
+const anchorSchema = z.object({
+  displayId: z.number().int(),
+  horizontal: z.enum(['left', 'right']),
+  vertical: z.enum(['top', 'bottom']),
+  x: z.number().nonnegative(),
+  y: z.number().nonnegative(),
+});
+export const countdownSecondsSchema = z.union([z.literal(0), z.literal(3), z.literal(5)]);
+export type CountdownSeconds = z.infer<typeof countdownSecondsSchema>;
+export const countdownChoices: ReadonlyArray<{ seconds: CountdownSeconds; label: string }> = [
+  { seconds: 0, label: 'None' },
+  { seconds: 3, label: '3 seconds' },
+  { seconds: 5, label: '5 seconds' },
+];
+export function countdownFromSelection(value: string): CountdownSeconds | undefined {
+  const selection = z.enum(['0', '3', '5']).safeParse(value);
+  if (!selection.success) return;
+  return countdownSecondsSchema.parse(Number(selection.data));
+}
 export const recordingOptionsSchema = z.object({
   mode: z.enum(['display', 'window', 'area']),
   source: z.string().max(300),
   camera: z.string().max(300),
   mic: z.string().max(300),
   systemAudio: z.boolean(),
-  countdownSeconds: z.union([z.literal(0), z.literal(3), z.literal(5)]),
+  countdownSeconds: countdownSecondsSchema,
   bubbleSize: z.union([z.literal(160), z.literal(200), z.literal(280)]),
   cursor: z.enum(['baked', 'data']).optional(),
+  bubbleAnchor: anchorSchema.optional(),
+  barAnchor: anchorSchema.optional(),
   area: z
     .object({
       x: z.number(),
@@ -145,7 +167,7 @@ export interface RushesAPI {
   }>;
   saveCloudSettings(settings: CloudSettings): Promise<void>;
   testCloud(): Promise<any>;
-  share(id: string): Promise<{ url: string }>;
+  share(id: string): Promise<{ url: string; state?: string }>;
   copyLink(url: string): Promise<void>;
 }
 declare global {

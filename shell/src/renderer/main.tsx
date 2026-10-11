@@ -1,6 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
-import { formatDuration, defaultOptions, type RecordingOptions } from '../shared/contracts';
+import {
+  formatDuration,
+  defaultOptions,
+  countdownChoices,
+  countdownFromSelection,
+  type RecordingOptions,
+} from '../shared/contracts';
 import {
   CircleDot,
   Monitor,
@@ -21,6 +27,7 @@ import {
   SquarePen,
   type LucideIcon,
 } from 'lucide-react';
+import { normalizedPointer } from '../shared/geometry';
 import './style.css';
 const api = window.rushes;
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -122,6 +129,11 @@ function App() {
       }
       if (e.event === 'countdown')
         setCountdown(Number((e.result as any)?.remaining ?? e.remaining));
+      if (e.event === 'window-anchor')
+        setOptions((previous) => ({
+          ...previous,
+          [e.view === 'bubble' ? 'bubbleAnchor' : 'barAnchor']: e.anchor,
+        }));
       if (e.event === 'area-selected') {
         setOptions((o) => ({ ...o, mode: 'area', area: e.area as any }));
         setNote('Area selected. Ready to record.');
@@ -141,7 +153,7 @@ function App() {
     };
   }, [refresh]);
   useEffect(() => {
-    if (options.camera === 'none' || !api || !['recorder', 'bar'].includes(view)) return;
+    if (options.camera === 'none' || !api || view !== 'recorder') return;
     void api
       .request('camera.preview.start', { camera: options.camera })
       .catch((e) => setError(String(e)));
@@ -350,7 +362,7 @@ function App() {
                   <p className="eyebrow">MAKE SOMETHING CLEAR</p>
                   <h1>A little video goes a long way.</h1>
                   <p className="subtitle">
-                    Record your screen, your camera, or both. Keep every track.
+                    Record your screen with an optional camera. Keep every track.
                   </p>
                 </div>
                 <button
@@ -555,13 +567,16 @@ function App() {
                     Countdown{' '}
                     <select
                       value={options.countdownSeconds}
-                      onChange={(e) =>
-                        updateOptions({ countdownSeconds: Number(e.target.value) as any })
-                      }
+                      onChange={(e) => {
+                        const countdownSeconds = countdownFromSelection(e.target.value);
+                        if (countdownSeconds !== undefined) updateOptions({ countdownSeconds });
+                      }}
                     >
-                      <option value="0">None</option>
-                      <option value="3">3 seconds</option>
-                      <option value="5">5 seconds</option>
+                      {countdownChoices.map((choice) => (
+                        <option key={choice.seconds} value={choice.seconds}>
+                          {choice.label}
+                        </option>
+                      ))}
                     </select>
                   </label>
                   {active ? (
@@ -850,6 +865,8 @@ function Review({ id, back, run, setNote }: any) {
     [speed, setSpeed] = useState(1),
     [playing, setPlaying] = useState(false),
     [link, setLink] = useState(''),
+    [shareStage, setShareStage] = useState(''),
+    [sharePercent, setSharePercent] = useState(0),
     [exportBusy, setExportBusy] = useState(false),
     [renderedPreview, setRenderedPreview] = useState<{ url: string; durationMs: number } | null>(
       null,
@@ -865,6 +882,19 @@ function Review({ id, back, run, setNote }: any) {
     recording?.manifest?.tracks?.find((t: any) => t.role === 'camera');
   const canvasAspect =
     videoTrack?.width && videoTrack?.height ? videoTrack.width / videoTrack.height : 16 / 9;
+  useEffect(
+    () =>
+      api.onEvent((event) => {
+        if (event.event !== 'share-progress' || event.id !== id) return;
+        setShareStage(String(event.state ?? 'uploading'));
+        if (typeof event.url === 'string') setLink(event.url);
+        if (typeof event.bytes === 'number' && typeof event.total === 'number' && event.total > 0)
+          setSharePercent(Math.round((event.bytes / event.total) * 100));
+        if (event.state === 'failed')
+          setNote(String(event.message ?? 'Sharing failed. Your local recording is kept.'));
+      }),
+    [id],
+  );
   const reload = useCallback(async () => {
     const show = await api.request('show', { id });
     setRecording(show);
@@ -1202,11 +1232,11 @@ function Review({ id, back, run, setNote }: any) {
                 onPointerDown={(e) => e.currentTarget.setPointerCapture(e.pointerId)}
                 onPointerMove={(e) => {
                   if (!e.buttons || layout !== 'bubble') return;
-                  const rect = e.currentTarget.parentElement!.getBoundingClientRect();
-                  setBubbleCenter([
-                    Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
-                    Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
-                  ]);
+                  const center = normalizedPointer(
+                    { x: e.clientX, y: e.clientY },
+                    e.currentTarget.parentElement?.getBoundingClientRect(),
+                  );
+                  if (center) setBubbleCenter(center);
                 }}
                 onTimeUpdate={(e) => {
                   if (!screenRef.current) setCurrentTime(e.currentTarget.currentTime);
@@ -1743,13 +1773,29 @@ function Review({ id, back, run, setNote }: any) {
                 await api.request('edit.save', { id });
                 const r = await api.share(id);
                 setLink(r.url);
-                setNote('Share link copied to clipboard.');
+                setShareStage((previous) =>
+                  previous === 'ready' ? 'ready' : (r.state ?? 'processing'),
+                );
+                setNote(
+                  r.state === 'ready'
+                    ? 'Share link copied. Video is ready.'
+                    : 'Share link copied. The video is being prepared.',
+                );
               })
             }
           >
             <Icon name="link" />
             Copy share link
           </button>
+          {shareStage && (
+            <p className="fine-print">
+              {shareStage === 'ready'
+                ? 'Video is ready.'
+                : shareStage === 'failed'
+                  ? 'Sharing needs a retry.'
+                  : `Preparing video: ${shareStage}${shareStage === 'uploading' ? ` · ${sharePercent}%` : ''}`}
+            </p>
+          )}
           {link && <input aria-label="Share link" readOnly value={link} />}
           <p className="fine-print">
             Sharing uses your configured bucket or Worker. Setup in Settings.

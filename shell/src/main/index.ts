@@ -20,6 +20,7 @@ import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { z } from 'zod';
+import { normalizedPointer } from '../shared/geometry';
 import { EngineSupervisor } from './engine';
 import { SharingService } from './sharing';
 import { atomicJSON, atomicBytes } from './atomic';
@@ -124,22 +125,7 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
   w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   w.webContents.on('will-navigate', (e) => e.preventDefault());
   w.on('closed', () => windows.delete(view));
-  if (view === 'bubble')
-    w.on('moved', () => {
-      if (!supervisor.active) return;
-      const bounds = w.getBounds(),
-        d = screen.getDisplayMatching(bounds).bounds;
-      void supervisor.client
-        .request('record.bubble', {
-          center: [
-            (bounds.x + bounds.width / 2 - d.x) / d.width,
-            (bounds.y + bounds.height / 2 - d.y) / d.height,
-          ],
-          size: options.bubbleSize,
-          visible: true,
-        })
-        .catch(() => {});
-    });
+  if (view === 'bubble' || view === 'bar') w.on('moved', () => rememberPosition(view, w));
   w.once('ready-to-show', () => {
     if (view === 'bubble' || view === 'bar') w.showInactive();
     else w.show();
@@ -174,27 +160,103 @@ function handle(name: string, fn: (value: any) => any) {
     }
   });
 }
+const positionTimers = new Map<string, NodeJS.Timeout>();
+let bubbleTimer: NodeJS.Timeout | undefined;
+function placement(view: 'bubble' | 'bar', width: number, height: number) {
+  const anchor = view === 'bubble' ? options.bubbleAnchor : options.barAnchor;
+  const d =
+      screen.getAllDisplays().find((d) => d.id === anchor?.displayId) ?? screen.getPrimaryDisplay(),
+    bounds = d.workArea;
+  const x = anchor
+    ? anchor.horizontal === 'left'
+      ? bounds.x + anchor.x
+      : bounds.x + bounds.width - width - anchor.x
+    : view === 'bubble'
+      ? bounds.x + 32
+      : bounds.x + (bounds.width - width) / 2;
+  const y = anchor
+    ? anchor.vertical === 'top'
+      ? bounds.y + anchor.y
+      : bounds.y + bounds.height - height - anchor.y
+    : view === 'bubble'
+      ? bounds.y + bounds.height - height - 160
+      : bounds.y + bounds.height - height - 26;
+  return {
+    x: Math.round(Math.max(bounds.x, Math.min(x, bounds.x + bounds.width - width))),
+    y: Math.round(Math.max(bounds.y, Math.min(y, bounds.y + bounds.height - height))),
+  };
+}
+function bubbleGeometry() {
+  const w = windows.get('bubble');
+  if (!w || w.isDestroyed() || !supervisor.active) return;
+  const bounds = w.getBounds(),
+    d = screen.getDisplayMatching(bounds).bounds;
+  const center = normalizedPointer(
+    { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 },
+    { left: d.x, top: d.y, width: d.width, height: d.height },
+  );
+  if (!center) return;
+  return {
+    center,
+    size: options.bubbleSize,
+    sizeFraction: Math.max(0.05, Math.min(0.8, bounds.width / d.width)),
+    visible: true,
+  };
+}
+async function syncBubble() {
+  const geometry = bubbleGeometry();
+  if (geometry) await supervisor.client.request('record.bubble', geometry);
+}
+function rememberPosition(view: 'bubble' | 'bar', w: BrowserWindow) {
+  const bounds = w.getBounds(),
+    display = screen.getDisplayMatching(bounds),
+    d = display.workArea;
+  const left = Math.max(0, bounds.x - d.x),
+    right = Math.max(0, d.x + d.width - bounds.x - bounds.width),
+    top = Math.max(0, bounds.y - d.y),
+    bottom = Math.max(0, d.y + d.height - bounds.y - bounds.height);
+  const anchor = {
+    displayId: display.id,
+    horizontal: left <= right ? 'left' : 'right',
+    vertical: top <= bottom ? 'top' : 'bottom',
+    x: Math.min(left, right),
+    y: Math.min(top, bottom),
+  } as const;
+  options = { ...options, [view === 'bubble' ? 'bubbleAnchor' : 'barAnchor']: anchor };
+  broadcast({ event: 'window-anchor', view, anchor });
+  clearTimeout(positionTimers.get(view));
+  positionTimers.set(
+    view,
+    setTimeout(
+      () =>
+        void writeOptions().catch((error) => broadcast({ event: 'error', message: String(error) })),
+      300,
+    ),
+  );
+  if (view === 'bubble' && supervisor.active) {
+    clearTimeout(bubbleTimer);
+    bubbleTimer = setTimeout(
+      () =>
+        void syncBubble().catch((error) => broadcast({ event: 'warning', message: String(error) })),
+      100,
+    );
+  }
+}
 function bar() {
-  const bounds = screen.getPrimaryDisplay().workArea;
-  return windowFor('bar', {
-    x: Math.round(bounds.x + (bounds.width - 680) / 2),
-    y: Math.round(bounds.y + bounds.height - 130),
-    focusable: false,
-  });
+  return windowFor('bar', { ...placement('bar', 680, 104), focusable: false });
 }
 function bubble() {
-  const b = screen.getPrimaryDisplay().workArea;
   return windowFor('bubble', {
     width: options.bubbleSize,
     height: options.bubbleSize,
-    x: b.x + 32,
-    y: b.y + b.height - options.bubbleSize - 160,
+    ...placement('bubble', options.bubbleSize, options.bubbleSize),
     focusable: false,
     backgroundColor: '#00000000',
   });
 }
 async function requestControl(cmd: string, args: Record<string, unknown> = {}) {
   try {
+    if (cmd === 'record.stop') await syncBubble();
     return await supervisor.client.request(cmd, args);
   } catch (error) {
     broadcast({ event: 'error', message: String(error) });
@@ -227,19 +289,20 @@ async function readCloud() {
   } catch {}
 }
 async function provider() {
-  if (cloudSettings.provider === 'none') throw new Error('Configure sharing in Settings first.');
+  const settings = cloudSettings;
+  if (settings.provider === 'none') throw new Error('Configure sharing in Settings first.');
   const sdkPath = app.isPackaged
     ? join(process.resourcesPath, 'cloud', 'index.js')
     : resolve(__dirname, '../../../cloud/dist/index.js');
   const sdk = await import(pathToFileURL(sdkPath).toString());
   const store = new sdk.JsonJobStore(join(userDir, 'share-jobs'));
-  if (cloudSettings.provider === 'worker') return new sdk.WorkerProvider(cloudSettings, { store });
+  if (settings.provider === 'worker') return new sdk.WorkerProvider(settings, { store });
   const assetsDir = app.isPackaged
     ? join(process.resourcesPath, 'viewer')
     : resolve(__dirname, '../../../viewer/dist');
   const js = await readFile(join(assetsDir, 'viewer.js'), 'utf8');
   const css = await readFile(join(assetsDir, 'viewer.css'), 'utf8');
-  return new sdk.BucketProvider(cloudSettings, { store, viewerAssets: { js, css } });
+  return new sdk.BucketProvider(settings, { store, viewerAssets: { js, css } });
 }
 function configurationSummary(settings: CloudSettings) {
   return {
@@ -354,6 +417,7 @@ async function ready() {
     if (JSON.stringify(request.args).length > 2 * 1024 * 1024) throw new Error('Request too large');
     if (['export', 'thumbnail', 'captions.export', 'diagnostics'].includes(request.cmd))
       throw new Error('Use the native save dialog for file output');
+    if (request.cmd === 'record.stop') await syncBubble();
     const result = await supervisor.client.request(request.cmd, request.args);
     if (request.cmd === 'permissions.settings' && result.url) {
       const u = new URL(result.url);
@@ -619,7 +683,7 @@ async function ready() {
     if (cmd === 'share.setup') return (await provider()).setupCheck();
     const id = z.string().min(1).max(200).parse(args.id);
     if (cmd === 'share') {
-      const result = await shares.share(id);
+      const result = await shares.share(id, args.wait === true);
       clipboard.writeText(result.url);
       return result;
     }
@@ -632,12 +696,25 @@ async function ready() {
       state = 'recording';
       currentId = e.recordingId;
       bar();
+      if (!windows.has('bubble'))
+        void supervisor.client
+          .request('show', { id: currentId })
+          .then(async (show) => {
+            if (show.manifest.sources?.cameraId) {
+              await supervisor.client.request('camera.preview.subscribe', { enabled: true });
+              bubble();
+              await syncBubble();
+            }
+          })
+          .catch((error) => broadcast({ event: 'warning', message: String(error) }));
+      void syncBubble().catch((error) => broadcast({ event: 'warning', message: String(error) }));
     }
     if (e.event === 'state-changed' && typeof e.state === 'string') state = e.state;
     if (e.event === 'recording-stopped') {
       state = 'idle';
       windows.get('bar')?.close();
       windows.get('bubble')?.close();
+      void supervisor.client.request('camera.preview.stop').catch(() => {});
       const library = windowFor('library');
       const openReview = () =>
         library.webContents.send('rushes:event', {
@@ -667,6 +744,12 @@ async function ready() {
       bar();
     }
     broadcast({ event: 'engine-ready' });
+    if (cloudSettings.provider !== 'none')
+      void shares
+        .resumePending()
+        .catch((error) =>
+          broadcast({ event: 'warning', code: 'share-resume-failed', message: String(error) }),
+        );
     trayUpdate();
   } catch (error) {
     broadcast({ event: 'error', message: String(error) });
@@ -676,6 +759,16 @@ async function ready() {
       detail: `${String(error)}\nEngine: ${enginePath}`,
     });
   }
+  screen.on('display-metrics-changed', () => {
+    for (const view of ['bubble', 'bar'] as const) {
+      const w = windows.get(view);
+      if (w && !w.isDestroyed()) {
+        const bounds = w.getBounds(),
+          p = placement(view, bounds.width, bounds.height);
+        w.setPosition(p.x, p.y);
+      }
+    }
+  });
   windowFor('recorder');
   globalShortcut.register('CommandOrControl+Shift+R', () => {
     if (state === 'idle') {
@@ -822,7 +915,10 @@ app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   quitting = true;
-  void supervisor.quit().finally(() => {
+  void supervisor.quit().finally(async () => {
+    await writeOptions().catch((error) =>
+      console.error('[Rushes] Could not save window positions', String(error)),
+    );
     globalShortcut.unregisterAll();
     app.quit();
   });
