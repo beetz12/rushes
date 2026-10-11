@@ -787,7 +787,12 @@ function Library({ run, setNote }: any) {
   useEffect(
     () =>
       api.onEvent((e) => {
-        if (e.event === 'recording-stopped') void reload();
+        const job = (e.result as any)?.job;
+        if (
+          e.event === 'recording-stopped' ||
+          (e.event === 'job-changed' && job?.status === 'done')
+        )
+          void reload();
         if (e.event === 'open-recording') setSelected(String(e.id));
       }),
     [reload],
@@ -958,6 +963,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
       null,
     ),
     [previewLoading, setPreviewLoading] = useState(false);
+  const titleEdited = useRef(false);
   const screenRef = useRef<HTMLVideoElement>(null),
     cameraRef = useRef<HTMLVideoElement>(null),
     micRef = useRef<HTMLAudioElement>(null),
@@ -1015,6 +1021,17 @@ function Review({ id, back, run, setNote, trashed }: any) {
     try {
       setMetadata(await api.request('meta.get', { id }));
     } catch {}
+  }, [id]);
+  const refreshAnalysis = useCallback(async () => {
+    const results = await Promise.allSettled([
+      api.request('transcript.get', { id }),
+      api.request('meta.get', { id }),
+    ]);
+    if (results[0].status === 'fulfilled') setTranscript(results[0].value);
+    if (results[1].status === 'fulfilled') {
+      setMetadata(results[1].value);
+      if (!titleEdited.current && results[1].value.title) setTitle(results[1].value.title);
+    }
   }, [id]);
   useEffect(() => {
     void run(reload);
@@ -1238,7 +1255,10 @@ function Review({ id, back, run, setNote, trashed }: any) {
         className="title-input"
         aria-label="Recording title"
         value={title}
-        onChange={(e) => setTitle(e.target.value)}
+        onChange={(e) => {
+          titleEdited.current = true;
+          setTitle(e.target.value);
+        }}
         onBlur={() => void save()}
       />
       <p className="recording-meta">
@@ -1732,7 +1752,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
           )}
         </div>
         <aside className="review-sidebar">
-          <RecordingJobs id={id} run={run} />
+          <RecordingJobs id={id} run={run} onCompleted={() => void refreshAnalysis()} />
           <h3>Make it yours.</h3>
           <label className="field">
             Layout

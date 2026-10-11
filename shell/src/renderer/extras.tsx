@@ -440,18 +440,41 @@ export function DrawingTools({ run, error }: { run: Run; error: string }) {
     </div>
   );
 }
-export function RecordingJobs({ id, run }: { id: string; run: Run }) {
+export function RecordingJobs({
+  id,
+  run,
+  onCompleted,
+}: {
+  id: string;
+  run: Run;
+  onCompleted?: () => void;
+}) {
   const [jobs, setJobs] = useState<any[]>([]),
     [error, setError] = useState(''),
-    [download, setDownload] = useState(false);
+    [download, setDownload] = useState(false),
+    [extractive, setExtractive] = useState(false);
+  const completed = useRef(new Set<string>());
+  const onCompletedRef = useRef(onCompleted);
+  onCompletedRef.current = onCompleted;
   useEffect(() => {
     let disposed = false;
+    const accept = (next: any[]) => {
+      setJobs(next);
+      for (const job of next) {
+        if (job.status !== 'done') continue;
+        const completion = `${job.id}:${job.attempts}`;
+        if (!completed.current.has(completion)) {
+          completed.current.add(completion);
+          if (['transcribe', 'metadata'].includes(job.kind)) onCompletedRef.current?.();
+        }
+      }
+    };
     const reload = () =>
       api
         .request('jobs.list', { id })
         .then((result) => {
           if (!disposed) {
-            setJobs(result.jobs ?? []);
+            accept(result.jobs ?? []);
             setError('');
           }
         })
@@ -460,8 +483,13 @@ export function RecordingJobs({ id, run }: { id: string; run: Run }) {
         });
     void reload();
     const timer = setInterval(() => void reload(), 5000);
+    const off = api.onEvent((event) => {
+      const job = (event.result as any)?.job;
+      if (event.event === 'job-changed' && job?.recordingId === id) void reload();
+    });
     return () => {
       disposed = true;
+      off();
       clearInterval(timer);
     };
   }, [id]);
@@ -485,7 +513,13 @@ export function RecordingJobs({ id, run }: { id: string; run: Run }) {
               className="text-button"
               onClick={() =>
                 run(async () => {
-                  await api.request('jobs.retry', { jobId: job.id, allowAssetDownload: download });
+                  await api.request('jobs.retry', {
+                    jobId: job.id,
+                    allowAssetDownload: download,
+                    ...(extractive && job.kind === 'metadata'
+                      ? { metadataMode: 'extractive' }
+                      : {}),
+                  });
                   const result = await api.request('jobs.list', { id });
                   setJobs(result.jobs ?? []);
                 })
@@ -510,7 +544,9 @@ export function RecordingJobs({ id, run }: { id: string; run: Run }) {
           )}
         </div>
       ))}
-      {jobs.some((job) => job.status === 'failed' && job.requiresAction) && (
+      {jobs.some(
+        (job) => job.status === 'failed' && job.error?.requiresAction === 'download-speech-model',
+      ) && (
         <label className="check-row">
           <input
             type="checkbox"
@@ -518,6 +554,20 @@ export function RecordingJobs({ id, run }: { id: string; run: Run }) {
             onChange={(event) => setDownload(event.target.checked)}
           />
           Allow Apple speech model download on retry
+        </label>
+      )}
+      {jobs.some(
+        (job) =>
+          job.status === 'failed' &&
+          job.error?.requiresAction === 'enable-apple-intelligence-or-request-extractive',
+      ) && (
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={extractive}
+            onChange={(event) => setExtractive(event.target.checked)}
+          />
+          Use a local extractive summary on retry
         </label>
       )}
     </section>
