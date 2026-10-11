@@ -7,7 +7,7 @@
 4. Sweep remaining feature areas (19) (done).
 5. Write docs/research/openscreen.md and .json (done).
 6. Run check_research.py and check_clean.py (done: "OK 1 notes, 16 ideas" and "0").
-7. Commit on goal/research-openscreen; write results JSON (in progress).
+7. Commit on goal/research-openscreen; write results JSON (done).
 
 ## Done
 - Steps 1-6. Evidence from the project's architecture docs plus code spot checks (schema, CLI main,
@@ -23,4 +23,4 @@
 - Agent tool count (26) - from ai-agent.md, not counted in code.
 
 ## First unfinished step
-- Step 7: commit notes, then write the goal result JSON.
+- None. Notes committed; goal result JSON written outside the worktree.
