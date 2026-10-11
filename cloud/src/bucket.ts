@@ -3,7 +3,7 @@ import { describeAsset, readChunk, PART_BYTES, xmlEscape, xmlValue } from './ass
 import { signV4, type SigningCredentials } from './sigv4.js';
 import { viewerPage } from './page.js';
 import { MemoryJobStore, type JobStore, type ShareJob, type UploadJob } from './store.js';
-import { ShareError, assertShareId, assertAssetFile, requireHTTPS, metadataPatch, publicManifest, type Fetch, type ShareProvider, type ShareReservation, type ReserveInput, type UploadInput, type UploadedAsset, type PublishInput, type MetadataPatch } from './types.js';
+import { ShareError, assertShareId, assertAssetFile, requireHTTPS, applyMetadata, publicationMetadata, publicManifest, type Fetch, type ShareProvider, type ShareReservation, type ReserveInput, type UploadInput, type UploadedAsset, type PublishInput, type MetadataPatch } from './types.js';
 export interface BucketConfig extends SigningCredentials {
     endpoint: string;
     region: string;
@@ -239,7 +239,9 @@ export class BucketProvider implements ShareProvider {
             throw new ShareError('INVALID_VIDEO', 'A video asset is required.');
         await this.verifySize(`s/${share.id}/${input.video.file}`, input.video.bytes);
         const previous = share.manifest.video?.file;
-        const next: ShareReservation = { ...share, manifest: { ...share.manifest, status: 'ready', title: input.title ?? share.manifest.title, durationMs: input.durationMs, video: { file: input.video.file, bytes: input.video.bytes, width: input.width, height: input.height }, ...(input.poster ? { poster: assertAssetFile(input.poster.file) } : {}) } };
+        const manifest = applyMetadata(share.manifest, publicationMetadata(input));
+        const next: ShareReservation = { ...share, manifest: { ...manifest, status: 'ready', video: { file: input.video.file, bytes: input.video.bytes, width: input.width, height: input.height }, ...(input.poster ? { poster: assertAssetFile(input.poster.file) } : {}) } };
+        for(const file of [...(next.manifest.captions?.map(c=>c.file)??[]), ...(next.manifest.transcript?[next.manifest.transcript]:[])]) await this.request('HEAD', `s/${share.id}/${assertAssetFile(file)}`);
         await this.document(next);
         await this.save(next);
         if (previous && previous !== input.video.file)
@@ -248,7 +250,7 @@ export class BucketProvider implements ShareProvider {
     }
     async updateMetadata(share: ShareReservation, patch: Partial<MetadataPatch>): Promise<ShareReservation> { for (const f of [patch.poster, patch.transcript, ...(patch.captions?.map(c => c.file) ?? [])])
         if (f)
-            assertAssetFile(f); const next = { ...share, manifest: { ...share.manifest, ...metadataPatch(patch) } }; await this.document(next); return this.save(next); }
+            assertAssetFile(f); const next = { ...share, manifest: applyMetadata(share.manifest, patch) }; await this.document(next); return this.save(next); }
     private async list(prefix: string): Promise<string[]> { const keys: string[] = []; let token = ''; do {
         const r = await this.request('GET', '', { 'list-type': '2', prefix, ...(token ? { 'continuation-token': token } : {}) });
         const xml = await r.text();

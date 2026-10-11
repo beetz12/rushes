@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { describeAsset, readChunk, PART_BYTES } from './assets.js';
 import { MemoryJobStore, type JobStore } from './store.js';
-import { ShareError, assertShareId, requireHTTPS, metadataPatch, publicManifest, type Fetch, type ShareProvider, type ShareReservation, type ReserveInput, type UploadInput, type UploadedAsset, type PublishInput, type MetadataPatch } from './types.js';
+import { ShareError, assertShareId, requireHTTPS, metadataPatch, publicationMetadata, publicManifest, type Fetch, type ShareProvider, type ShareReservation, type ReserveInput, type UploadInput, type UploadedAsset, type PublishInput, type MetadataPatch } from './types.js';
 export interface WorkerConfig {
     workerURL: string;
     token: string;
@@ -120,7 +120,7 @@ export class WorkerProvider implements ShareProvider {
         await this.store.write(share.id, s);
         return asset;
     }
-    async publish(share: ShareReservation, input: PublishInput): Promise<ShareReservation> { return this.save(await this.request(`/api/shares/${assertShareId(share.id)}/publish`, 'POST', input)); }
+    async publish(share: ShareReservation, input: PublishInput): Promise<ShareReservation> { return this.save(await this.request(`/api/shares/${assertShareId(share.id)}/publish`, 'POST', {...input,...publicationMetadata(input)})); }
     async updateMetadata(share: ShareReservation, patch: Partial<MetadataPatch>): Promise<ShareReservation> { return this.save(await this.request(`/api/shares/${assertShareId(share.id)}`, 'PATCH', metadataPatch(patch))); }
     async delete(share: ShareReservation): Promise<void> { await this.request(`/api/shares/${assertShareId(share.id)}`, 'DELETE'); await this.store.remove(share.id); }
     async setupCheck(): Promise<{

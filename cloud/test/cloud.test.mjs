@@ -17,7 +17,7 @@ test('SigV4 query and URI canonicalization preserve duplicate/slash/UTF8 keys, s
 test('viewer page escapes OG/title and uses same-origin CSP and uncached metadata', () => { const html = viewerPage({ schema: 'rushes.share/1', id: ID, title: '<svg onload="alert(1)">', status: 'ready', createdAt: '2026-10-11', durationMs: 1, summary: '<script>x</script>', video: { file: 'video-abcdef12.mp4', width: 2, height: 2, bytes: 1 }, poster: 'poster-abcdef12.jpg' }, 'https://share.example'); assert.ok(!html.includes('<svg')); assert.ok(html.includes('&lt;svg onload=&quot;')); assert.ok(html.includes("script-src 'self'")); assert.ok(html.includes('og:video')); assert.ok(html.includes('poster-abcdef12.jpg')); });
 async function fixture(t) {
     const objects = new Map(), sessions = new Map();
-    const uploads = [];
+    const uploads = [], manifestWrites = [];
     let aborts = 0, failPart = 0, nonce = 0;
     const metadata = new Map();
     const server = createServer(async (req, res) => {
@@ -75,6 +75,7 @@ async function fixture(t) {
             }
         }
         if (signed && req.method === 'PUT') {
+            if(key.endsWith('/share.json'))manifestWrites.push(JSON.parse(bytes.toString()));
             objects.set(key, bytes);
             metadata.set(key, req.headers['content-type']);
             return send(200, '', { ETag: '"fixture"' });
@@ -103,7 +104,7 @@ async function fixture(t) {
     t.after(() => rm(dir, { recursive: true, force: true }));
     const store = new JsonJobStore(join(dir, 'jobs'));
     const provider = () => new BucketProvider({ endpoint: base, region: 'auto', bucket: 'recordings', publicBaseURL: base, ...credentials }, { store, allowLocalHTTP: true, viewerAssets: { js: 'export {};', css: 'body{background:#222}' } });
-    return { objects, sessions, uploads, dir, store, base, provider, setFailPart: n => failPart = n, get aborts() { return aborts; } };
+    return { objects, sessions, uploads, manifestWrites, dir, store, base, provider, setFailPart: n => failPart = n, get aborts() { return aborts; } };
 }
 test('actual HTTP bucket processing link, small PUT, stable republish, private state, enrichment, range, unshare', async (t) => { const f = await fixture(t); const p = f.provider(); assert.equal((await p.setupCheck()).ok, true); const s = await p.reserve({ id: ID, title: 'Actual fixture', durationMs: 1000 }); assert.equal((await fetch(s.url)).status, 200); assert.equal((await (await fetch(s.url + '/share.json')).json()).status, 'processing'); const path = join(f.dir, 'video.mp4'); await writeFile(path, Buffer.from('small mp4 fixture')); const asset = await p.upload(s, { path, kind: 'video' }); let ready = await p.publish(s, { video: asset, width: 320, height: 240, durationMs: 1000 }); assert.equal(ready.url, s.url); assert.equal((await (await fetch(s.url + '/share.json')).json()).status, 'ready'); const r = await fetch(s.url + '/' + asset.file, { headers: { Range: 'bytes=0-4' } }); assert.equal(r.status, 206); assert.equal(await r.text(), 'small'); ready = await p.updateMetadata(ready, { summary: 'A summary', chapters: [{ startMs: 0, title: 'Start' }] }); assert.equal((await (await fetch(s.url + '/share.json')).json()).summary, 'A summary'); const state = await readFile(join(f.dir, 'jobs', ID + '.json'), 'utf8'); assert.ok(!state.includes(credentials.secretAccessKey)); assert.ok(!state.includes(credentials.accessKeyId)); assert.equal((await stat(join(f.dir, 'jobs', ID + '.json'))).mode & 0o777, 0o600); assert.equal((await p.reserve({ id: ID, title: 'Same recording' })).url, s.url); await p.delete(ready); assert.equal((await fetch(s.url)).status, 404); assert.ok(![...f.objects.keys()].some(k => k.startsWith('s/' + ID))); });
 test('multipart resumes saved part after simulated crash, reconciles remote evidence, uploads only missing parts', async (t) => { const f = await fixture(t); const p = f.provider(); const s = await p.reserve({ id: ID, title: 'Resume fixture' }); const bytes = Buffer.alloc(PART * 2 + 1234, 0x41); const path = join(f.dir, 'resume.mp4'); await writeFile(path, bytes); const hash = createHash('sha256').update(bytes).digest('hex'); const file = `video-${hash.slice(0, 8)}.mp4`; const key = `s/${ID}/${file}`; const first = bytes.subarray(0, PART); const etag = '"' + createHash('md5').update(first).digest('hex') + '"'; f.sessions.set('crashed-upload', { key, parts: new Map([[1, { bytes: first, etag }]]) }); await f.store.write(ID, { reservation: s, uploads: { [file]: { key, sha256: hash, size: bytes.length, uploadId: 'crashed-upload', parts: { '1': etag, '2': 'unconfirmed-etag' }, provider: f.base + '/recordings' } } }); const progress = []; const uploaded = await f.provider().upload(s, { path, kind: 'video', onProgress: p => progress.push(p) }); assert.equal(uploaded.bytes, bytes.length); assert.deepEqual(f.uploads.sort(), [2, 3]); assert.equal(progress[0].skippedParts, 1); assert.equal(f.objects.get(key).length, bytes.length); assert.deepEqual(f.objects.get(key), bytes); assert.equal((await f.store.read(ID)).uploads[file].completed, true); });
@@ -222,3 +223,26 @@ test('deployment creates only an absent explicitly selected account subdomain an
     return Response.json({ success: true, result: { subdomain: 'selected-public-name' } }); if (path.endsWith('/r2/buckets') && options.method === 'GET')
     return Response.json({ success: true, result: { buckets: [{ name: 'rushes-media' }] } }); return Response.json({ success: false, errors: [{ code: 10000 }] }, { status: 403 }); }), e => e.code === 'CLOUDFLARE_API'); assert.deepEqual(writes, [{ path: '/client/v4/accounts/' + base.accountId + '/workers/subdomain', method: 'PUT', body: '{"subdomain":"selected-public-name"}' }]); const renameWrites = []; await assert.rejects(() => deployWorker(base, async (url, options) => { if (options.method !== 'GET')
     renameWrites.push(url); return Response.json({ success: true, result: new URL(url).pathname.endsWith('/workers/subdomain') ? { subdomain: 'existing-public-name' } : { buckets: [] } }); }), e => e.code === 'SUBDOMAIN_MISMATCH'); assert.deepEqual(renameWrites, []); });
+test('bucket ready republish atomically replaces video plus edited metadata and nullable transcript clears stale references', async t => {
+    const f = await fixture(t), p = f.provider();
+    const reservation = await p.reserve({id:ID,title:'Original snapshot',durationMs:2000});
+    const upload = async(kind,label,body) => {
+        const extension={video:'mp4',captions:'vtt',transcript:'json'}[kind];
+        const path=join(f.dir,`${label}.${extension}`); await writeFile(path,body); return p.upload(reservation,{kind,path});
+    };
+    const oldVideo=await upload('video','old-video','original video'),oldCaptions=await upload('captions','old-captions','WEBVTT\n\noriginal captions'),oldTranscript=await upload('transcript','old-transcript','{"cues":[{"text":"original"}]}');
+    const old=await p.publish(reservation,{video:oldVideo,width:320,height:240,durationMs:2000,title:'Original snapshot',summary:'Original summary',chapters:[{startMs:0,title:'Original chapter'}],captions:[{file:oldCaptions.file,lang:'en'}],transcript:oldTranscript.file});
+    const newVideo=await upload('video','new-video','edited video'),newCaptions=await upload('captions','new-captions','WEBVTT\n\nedited captions'),newTranscript=await upload('transcript','new-transcript','{"cues":[{"text":"edited"}]}');
+    const before=f.manifestWrites.length;
+    const next=await p.publish(old,{video:newVideo,width:320,height:240,durationMs:1000,title:'Edited snapshot',summary:'Edited summary',chapters:[{startMs:0,title:'Edited chapter'}],captions:[{file:newCaptions.file,lang:'en'}],transcript:newTranscript.file});
+    assert.equal(next.url,old.url);assert.equal(f.manifestWrites.length,before+1);
+    const visible=f.manifestWrites.at(-1);assert.equal(visible.status,'ready');assert.equal(visible.video.file,newVideo.file);assert.equal(visible.title,'Edited snapshot');assert.equal(visible.summary,'Edited summary');assert.deepEqual(visible.chapters,[{startMs:0,title:'Edited chapter'}]);assert.deepEqual(visible.captions,[{file:newCaptions.file,lang:'en'}]);assert.equal(visible.transcript,newTranscript.file);assert.ok(!f.objects.has(`s/${ID}/${oldVideo.file}`));
+    const published=await(await fetch(next.url+'/share.json')).json();assert.deepEqual(published,visible);
+    const cleared=await p.publish(next,{video:newVideo,width:320,height:240,durationMs:1000,summary:null,chapters:[],captions:[],transcript:null});
+    assert.ok(!Object.hasOwn(cleared.manifest,'transcript'));assert.deepEqual(cleared.manifest.captions,[]);assert.equal(cleared.manifest.summary,null);assert.ok(!Object.hasOwn((await(await fetch(next.url+'/share.json')).json()),'transcript'));
+    const enriched=await p.updateMetadata(cleared,{transcript:newTranscript.file});assert.equal(enriched.manifest.transcript,newTranscript.file);
+    const removed=await p.updateMetadata(enriched,{transcript:null});assert.ok(!Object.hasOwn(removed.manifest,'transcript'));assert.ok(!Object.hasOwn((await f.store.read(ID)).reservation.manifest,'transcript'));
+    const failedBefore=f.manifestWrites.length;
+    await assert.rejects(()=>p.publish(removed,{video:newVideo,width:320,height:240,durationMs:1000,transcript:'transcript-ffffffff.json'}),e=>e.code==='BUCKET_HTTP'&&e.status===404);
+    assert.equal(f.manifestWrites.length,failedBefore);assert.deepEqual(await(await fetch(next.url+'/share.json')).json(),removed.manifest);
+});

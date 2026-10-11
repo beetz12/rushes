@@ -53,13 +53,18 @@ export interface UploadedAsset {
     sha256: string;
     kind: UploadInput['kind'];
 }
-export type MetadataPatch = Pick<ShareManifest, 'title' | 'durationMs'> & Partial<Pick<ShareManifest, 'summary' | 'chapters' | 'poster' | 'captions' | 'transcript'>>;
+export type MetadataPatch = Pick<ShareManifest, 'title' | 'durationMs'> & Partial<Pick<ShareManifest, 'summary' | 'chapters' | 'poster' | 'captions'>> & { transcript?: string | null };
 export interface PublishInput {
     video: UploadedAsset;
     width: number;
     height: number;
     durationMs: number;
     title?: string;
+    summary?: string | null;
+    chapters?: Chapter[];
+    captions?: ShareManifest['captions'];
+    /** Null explicitly removes a stale transcript when an edited snapshot has none. */
+    transcript?: string | null;
     poster?: UploadedAsset;
 }
 export interface ShareProvider {
@@ -116,8 +121,8 @@ export function metadataPatch(input: Partial<MetadataPatch>): Partial<MetadataPa
             throw new ShareError('INVALID_METADATA', 'Poster filename required.');
     }
     if (input.transcript !== undefined) {
-        out.transcript = assertAssetFile(input.transcript);
-        if (!out.transcript.startsWith('transcript-'))
+        out.transcript = input.transcript === null ? null : assertAssetFile(input.transcript);
+        if (out.transcript !== null && !out.transcript.startsWith('transcript-'))
             throw new ShareError('INVALID_METADATA', 'Transcript filename required.');
     }
     if (input.captions !== undefined) {
@@ -133,11 +138,24 @@ export function metadataPatch(input: Partial<MetadataPatch>): Partial<MetadataPa
     }
     return out;
 }
+/** Apply a projected patch without allowing nullable deletion markers into public state. */
+export function applyMetadata(input: ShareManifest, rawPatch: Partial<MetadataPatch>): ShareManifest {
+    const { transcript, ...fields } = metadataPatch(rawPatch);
+    const next: ShareManifest = { ...input, ...fields };
+    if (transcript === null) delete next.transcript;
+    else if (transcript !== undefined) next.transcript = transcript;
+    return next;
+}
+/** Metadata belongs to the same ready snapshot as the verified video. */
+export function publicationMetadata(input: PublishInput): Partial<MetadataPatch> {
+    return metadataPatch({title:input.title,durationMs:input.durationMs,summary:input.summary,
+        chapters:input.chapters,captions:input.captions,transcript:input.transcript});
+}
 export function publicManifest(input: ShareManifest): ShareManifest {
     assertShareId(input.id);
     if (input.schema !== 'rushes.share/1' || !['processing', 'ready', 'failed'].includes(input.status) || typeof input.createdAt !== 'string' || !Number.isFinite(Date.parse(input.createdAt)))
         throw new ShareError('INVALID_MANIFEST', 'Share manifest is invalid.');
-    const out: ShareManifest = { schema: 'rushes.share/1', id: input.id, status: input.status, createdAt: input.createdAt, title: '', durationMs: 0, ...metadataPatch(input) };
+    const out = applyMetadata({schema:'rushes.share/1',id:input.id,status:input.status,createdAt:input.createdAt,title:'',durationMs:0},input);
     if (input.video) {
         const v = input.video;
         assertAssetFile(v.file);

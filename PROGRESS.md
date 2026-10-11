@@ -99,3 +99,6 @@ source clean scan0 and diff whitespace clean. No native drawing/UI/device or rea
 macOS Trash operation was performed by these tests. Full gate still parent-held.
 SCREEN-only soak minute35: 101985 frames,64drops, pending0, no writer errors,
 physicalFootprint17302368B, RSSproxy47742976B. Final evidence still pending minute60.
+Cloud component history: source integration and app QA remain pending; R2/apply authorization has since been given, resources created, public HTTPS health still unverified.
+
+Atomic edited-share correction (root-directed follow-up): PublishInput carries title/summary/chapters/captions/transcript in one ready publication for both providers. Transcript null deletes stale references in publish/metadata updates. Referenced caption/transcript objects must exist before ready; controlled HTTP/Worker SQLite regression tests prove exactly one ready-manifest update, provider parity, stable URLs, stale-field removal and unchanged visible state after a missing-sidecar failure. SDK14 tests and Worker7 tests pass. This follow-up invokes no real provider, UI or account mutation. Root's current R2 billing/app-deployment work is separate from the earlier dated read-only account snapshot above.

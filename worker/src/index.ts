@@ -131,8 +131,11 @@ function patchManifest(m: ShareManifest, b: Record<string, unknown>): ShareManif
         next.durationMs = integer(b.durationMs, 'duration', 0, 7 * 24 * 60 * 60 * 1000);
     if (b.poster !== undefined)
         next.poster = asset(b.poster);
-    if (b.transcript !== undefined)
+    if (b.transcript === null) delete next.transcript;
+    else if (b.transcript !== undefined) {
         next.transcript = asset(b.transcript);
+        if(!next.transcript.startsWith('transcript-')) fail(400,'INVALID_TRANSCRIPT','Transcript filename required.');
+    }
     if (b.chapters !== undefined) {
         if (!Array.isArray(b.chapters) || b.chapters.length > 500)
             fail(400, 'INVALID_CHAPTERS', 'Too many chapters.');
@@ -141,7 +144,7 @@ function patchManifest(m: ShareManifest, b: Record<string, unknown>): ShareManif
     if (b.captions !== undefined) {
         if (!Array.isArray(b.captions) || b.captions.length > 20)
             fail(400, 'INVALID_CAPTIONS', 'Too many captions.');
-        next.captions = (b.captions as Array<Record<string, unknown>>).map(c => ({ file: asset(c?.file), lang: text(c?.lang, 'language', 35, 2) }));
+        next.captions = (b.captions as Array<Record<string, unknown>>).map(c => {const file=asset(c?.file);if(!file.startsWith('captions-'))fail(400,'INVALID_CAPTIONS','Caption filename required.');return {file,lang:text(c?.lang,'language',35,2)};});
     }
     return next;
 }
@@ -261,6 +264,7 @@ async function route(req: Request, env: Env): Promise<Response> {
                 if (!await env.MEDIA.head(`s/${id}/${m.poster}`))
                     fail(409, 'POSTER_NOT_READY', 'Poster has not been uploaded.');
             }
+            for(const sidecar of [...(m.captions?.map(c=>c.file)??[]),...(m.transcript?[m.transcript]:[])]) if(!await env.MEDIA.head(`s/${id}/${sidecar}`)) fail(409,'SIDECAR_NOT_READY','Caption/transcript assets must be uploaded before publication.');
             const next = await writeManifest(env, row, m);
             if (previous && previous !== file)
                 await env.MEDIA.delete(`s/${id}/${previous}`);
