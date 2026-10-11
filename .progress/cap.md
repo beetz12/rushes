@@ -17,8 +17,17 @@
 - Segmented muxer (enc-ffmpeg segmented_stream.rs): FFmpeg DASH muxer, init.mp4 + segment_NNN.m4s, atomic manifest (tmp + fsync + rename + dir fsync).
 - Instant upload (desktop-gpui upload.rs): per-segment presigned PUT, 20 URL prefetch, 3 attempts, manifest every 1 s, complete signal; web playlist route builds live HLS from manifest; finalize workflow + early transcription.
 
+- Recovery (recovery.rs 285-330, 849-900): startup scan of projects whose meta says in-progress or needs-remux; lock; keep complete m4s (>=100 B, valid tail); concat + merge + decode-validate; atomic publication journal. track_heal.rs: load-time rewrite of stretched camera/display timestamps.
+- Start gate (output_pipeline/start_gate.rs): pipelines warm up during countdown; frames before arm dropped; 20 s failsafe. Timestamp crate: Instant + SystemTime + mach/QPC; audio master clock 48 kHz.
+- Instant mode on macOS keeps camera bubble in screen capture (desktop-gpui recording.rs ~2214); studio excludes it and records camera separately. Share link created before recording (upload.rs 220-256). Upload resume + SHA-256 verification (crates/recording/src/upload_resume.rs, upload_verification.rs).
+- Viewer: playlist route makes live HLS from manifest; RecordingInProgress overlay; live AssemblyAI transcript captions; swaps to MP4 after finalize.
+- Self-host compose: cap-web, media-server (ffmpeg, Hono), MySQL 8, MinIO + mc setup; default secrets in compose.
+- Export: MP4 presets bpp 0.3/0.15/0.08/0.04 (CRF 24/28/32/36), GIF, MOV ProRes. Render: wgpu layers + WGSL shaders. Auto-zoom from clicks (Tauri recording.rs 6366-6446).
+- Local captions: whisper-rs + parakeet-rs (desktop-gpui transcription.rs). Camera bubble: round/square/full, 150-600 px, default 230 (camera_window.rs).
+- MIT crates surveyed: camera (enumeration, VID/PID model id, Native vs Compatibility mode, frame-duration pin), camera-avfoundation, camera-effects (Vision / ONNX selfie seg + blur, has two .onnx assets), scap-screencapturekit (thin cidre wrapper), scap-targets (displays/windows/notch), scap-cpal, scap-ffmpeg, scap-direct3d.
+
 ## Unverified
-- Instant mode camera handling on macOS (looks like the bubble is captured as part of the screen; confirm).
+- (none outstanding)
 
 ## First unfinished step
-- Step 2 continued: web viewer, self-hosting, recovery, project crate, editor/render/export, MIT crates.
+- Step 2 tail: comments/reactions/analytics schema, BYO S3, CLI/MCP/agent API, permissions, packaging, privacy. Then step 4 (write notes).
