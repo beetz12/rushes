@@ -511,6 +511,48 @@ struct EngineControllerTests {
         #expect(FileManager.default.fileExists(atPath: stoppedPackage.inputURL.path))
     }
 
+    @Test("Unasked screen permission never calls the shareable-content catalog")
+    func noImplicitScreenPrompt() async throws {
+        let scratch = try tempDirectory("permission-catalog")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let catalog = PromptGuardCatalog()
+        let advisor = PermissionAdvisor { kind in .init(state: kind == .screen ? .notAsked : .allowed) }
+        let controller = try EngineController(config: .init(recordingsRoot: scratch.appendingPathComponent("root"), indexDatabaseURL: scratch.appendingPathComponent("index.sqlite"), catalog: catalog, permissionAdvisor: advisor, makeWriter: h264WriterOpener, captureRigs: StubCaptureRigFactory()))
+        let exchange = ControlExchange()
+        await controller.handle(ControlRequest(id: "targets", cmd: "targets"), context: exchange.context)
+        #expect(exchange.lastResponse?.ok == true)
+        #expect(exchange.lastResponse?.result?["displays"]?.array?.isEmpty == true)
+        #expect(exchange.lastResponse?.result?["permissions"]?["screen"]?.string == "not-determined")
+        await controller.handle(startRequest(), context: exchange.context)
+        #expect(exchange.lastResponse?.error?.code == "permission-not-asked")
+        #expect(await catalog.screenCalls == 0)
+        await controller.handle(ControlRequest(id: "mic-only", cmd: "record.start", args: .object(["mic": .string("default")])), context: exchange.context)
+        #expect(exchange.lastResponse?.ok == true)
+        #expect(await catalog.screenCalls == 0)
+        await controller.handle(ControlRequest(id: "stop", cmd: "record.stop"), context: exchange.context)
+    }
+
+    @Test("Camera stays warm only for explicit preview; ordinary CLI takes release it")
+    func cameraReleasePolicy() async throws {
+        let scratch = try tempDirectory("camera-release")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let factory = PreviewLifecycleFactory()
+        let controller = try EngineController(config: .init(recordingsRoot: scratch.appendingPathComponent("root"), indexDatabaseURL: scratch.appendingPathComponent("index.sqlite"), catalog: StubCatalog(), makeWriter: h264WriterOpener, captureRigs: factory))
+        let exchange = ControlExchange()
+        await controller.handle(startRequest(), context: exchange.context)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        await controller.handle(ControlRequest(id: "stop-ordinary", cmd: "record.stop"), context: exchange.context)
+        #expect(await factory.closes == 1)
+        await controller.handle(ControlRequest(id: "preview", cmd: "camera.preview.start", args: .object(["camera": .string("default")])), context: exchange.context)
+        #expect(exchange.lastResponse?.ok == true)
+        await controller.handle(startRequest(), context: exchange.context)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        await controller.handle(ControlRequest(id: "stop-with-preview", cmd: "record.stop"), context: exchange.context)
+        #expect(await factory.closes == 1)
+        await controller.handle(ControlRequest(id: "close-preview", cmd: "camera.preview.stop"), context: exchange.context)
+        #expect(await factory.closes == 2)
+    }
+
     @Test("Countdown cancellation removes only its own new package and concurrent start refuses")
     func cancelCountdown() async throws {
         let scratch = try tempDirectory("cancel")
@@ -824,16 +866,22 @@ struct SocketDescriptorLifetimeTests {
     func reusedDescriptor() throws {
         var pair: [Int32] = [-1,-1]
         #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &pair) == 0)
-        let original = pair[0]
+        // Reserve a high descriptor range for this test. fcntl allocates a
+        // free slot; dup2 could close another parallel test's newly opened file.
+        let original = fcntl(pair[0], F_DUPFD, 512)
+        #expect(original >= 512)
+        Darwin.close(pair[0])
         defer { Darwin.close(pair[1]) }
         let socketIO = SocketLineIO(fd: original)
         socketIO.close()
         let file = Darwin.open("/dev/null", O_RDONLY)
         #expect(file >= 0)
-        if file != original { #expect(dup2(file, original) == original); Darwin.close(file) }
-        defer { Darwin.close(original) }
+        let reused = fcntl(file, F_DUPFD, 512)
+        Darwin.close(file)
+        #expect(reused == original)
+        defer { Darwin.close(reused) }
         socketIO.close()
-        #expect(fcntl(original, F_GETFD) >= 0)
+        #expect(fcntl(reused, F_GETFD) >= 0)
         #expect(!socketIO.writeFully(Data([1])))
     }
 
@@ -849,4 +897,18 @@ struct SocketDescriptorLifetimeTests {
         #expect(await reader.value == nil)
         socketIO.close()
     }
+}
+
+private actor PreviewLifecycleFactory: CaptureRigFactory {
+    private(set) var closes = 0
+    func attach(_ context: CaptureContext) async throws -> CaptureRig { try await StubCaptureRigFactory().attach(context) }
+    func stopPreview() async { closes += 1 }
+}
+
+private actor PromptGuardCatalog: SourceCataloging {
+    private(set) var screenCalls = 0
+    func displays() async throws -> [DisplaySource] { screenCalls += 1; return [] }
+    func windows() async throws -> [WindowSource] { screenCalls += 1; return [] }
+    func cameras() async throws -> [CameraDevice] { [] }
+    func microphones() async throws -> [MicrophoneDevice] { [.init(id: "safe-mic", name: "Synthetic microphone")] }
 }

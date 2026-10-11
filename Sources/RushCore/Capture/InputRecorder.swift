@@ -303,7 +303,9 @@ public final class InputRecorder: @unchecked Sendable {
         }
 
         guard let chosenTap else { return }
-        let thread = Thread { [chosenTap, self] in
+        let handle = InputTapHandle(chosenTap)
+        let thread = Thread { [handle, self] in
+            let chosenTap = handle.port
             if let runLoop = CFRunLoopGetCurrent() {
                 self.noteTapRunLoop(runLoop)
                 CGEvent.tapEnable(tap: chosenTap, enable: true)
@@ -532,4 +534,10 @@ func inputTapCallback(
     }
     // Listen-only: the event passes through untouched.
     return Unmanaged.passUnretained(event)
+}
+
+/// A strong immutable event-tap handle whose lifetime spans its dedicated loop.
+private final class InputTapHandle: @unchecked Sendable {
+    let port: CFMachPort
+    init(_ port: CFMachPort) { self.port = port }
 }

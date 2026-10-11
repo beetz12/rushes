@@ -636,17 +636,21 @@ public actor CameraCoordinator {
             source.setLossHandler { name in warning("camera-lost", name) }
             return source
         }
-        source?.stop()
+        if let source { await source.stopAndWait() }
         let newSource = CameraSource(onCameraLost: { name in warning("camera-lost", name) })
         newSource.previewHandler = preview
+        source = newSource
+        selectedID = cameraID
         let result = await newSource.warmUp(deviceID: cameraID)
         guard result.identity != nil else {
             throw ControlFailure(code: "camera-warmup-failed", message: result.failure)
         }
-        source = newSource
-        selectedID = cameraID
         return newSource
     }
 
-    public func stop() { source?.stop(); source = nil; selectedID = nil }
+    public func stop() async {
+        if let source { await source.stopAndWait() }
+        source = nil
+        selectedID = nil
+    }
 }

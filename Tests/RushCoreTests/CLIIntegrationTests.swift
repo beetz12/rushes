@@ -362,6 +362,18 @@ final class EngineHarness: @unchecked Sendable {
         process.standardOutput = out
         process.standardError = err
         try process.run()
+        let collection = DispatchGroup()
+        let captured = CLIOutputCapture()
+        collection.enter()
+        DispatchQueue.global(qos: .utility).async {
+            captured.stdout = out.fileHandleForReading.readDataToEndOfFile()
+            collection.leave()
+        }
+        collection.enter()
+        DispatchQueue.global(qos: .utility).async {
+            captured.stderr = err.fileHandleForReading.readDataToEndOfFile()
+            collection.leave()
+        }
 
         let deadline = Date().addingTimeInterval(timeout)
         while process.isRunning && Date() < deadline {
@@ -374,10 +386,25 @@ final class EngineHarness: @unchecked Sendable {
             process.waitUntilExit()
             throw CLIHarnessError.engineDidNotStart("CLI timed out after \(timeout)s: \(arguments)")
         }
-        let stdout = String(
-            data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        let stderr = String(
-            data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        guard collection.wait(timeout: .now() + 5) == .success else {
+            throw CLIHarnessError.engineDidNotStart("CLI output did not reach EOF")
+        }
+        let stdout = String(data: captured.stdout, encoding: .utf8) ?? ""
+        let stderr = String(data: captured.stderr, encoding: .utf8) ?? ""
         return (process.terminationStatus, stdout, stderr)
+    }
+}
+
+private final class CLIOutputCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var output = Data()
+    private var errorOutput = Data()
+    var stdout: Data {
+        get { lock.withLock { output } }
+        set { lock.withLock { output = newValue } }
+    }
+    var stderr: Data {
+        get { lock.withLock { errorOutput } }
+        set { lock.withLock { errorOutput = newValue } }
     }
 }

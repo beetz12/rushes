@@ -68,16 +68,16 @@ private enum SyntheticSelftestMedia {
     /// tone) of `durationSeconds`, stamped at a host time. The writer's
     /// leading-silence fill covers everything before it.
     static func audioBuffer(
-        hostNs: Int64, frames: Int, amplitude: Float = 0.8, frequency: Float = 1_000
+        hostNs: Int64, frames: Int, amplitude: Float = 0.8, frequency: Float = 1_000, channels: Int = 1
     ) -> CMSampleBuffer {
         let asbd = AudioStreamBasicDescription(
             mSampleRate: 48_000,
             mFormatID: kAudioFormatLinearPCM,
             mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
-            mBytesPerPacket: 4,
+            mBytesPerPacket: UInt32(4 * channels),
             mFramesPerPacket: 1,
-            mBytesPerFrame: 4,
-            mChannelsPerFrame: 1,
+            mBytesPerFrame: UInt32(4 * channels),
+            mChannelsPerFrame: UInt32(channels),
             mBitsPerChannel: 32,
             mReserved: 0)
         var format: CMAudioFormatDescription?
@@ -88,12 +88,12 @@ private enum SyntheticSelftestMedia {
                 formatDescriptionOut: &format)
         }
         guard status == noErr, let format else { fatalError("audio format creation failed") }
-        let totalBytes = frames * 4
+        let totalBytes = frames * channels * 4
         let memory = UnsafeMutableRawPointer.allocate(byteCount: totalBytes, alignment: 16)
         let floats = memory.assumingMemoryBound(to: Float.self)
         for index in 0..<frames {
             let t = Float(index) / 48_000
-            floats[index] = amplitude * sin(2 * Float.pi * frequency * t)
+            for channel in 0..<channels { floats[index * channels + channel] = amplitude * sin(2 * Float.pi * frequency * t) }
         }
         var block: CMBlockBuffer?
         CMBlockBufferCreateWithMemoryBlock(
@@ -147,15 +147,15 @@ private enum SyntheticSelftestMedia {
     /// silence itself; only the bursts are appended.
     static func writeAudioWithBursts(
         url: URL, durationSeconds: Double, burstTimes: [Double],
-        burstSeconds: Double = 0.05
+        burstSeconds: Double = 0.05, channels: Int = 1
     ) async throws {
         let writer = try TrackWriter(
-            configuration: TrackWriterConfiguration.microphone(outputURL: url),
+            configuration: channels == 1 ? TrackWriterConfiguration.microphone(outputURL: url) : TrackWriterConfiguration.systemAudio(outputURL: url),
             clock: SessionClock(epochNs: epochNs))
         let frames = Int(48_000 * burstSeconds)
         for burst in burstTimes {
             writer.appendAudio(audioBuffer(
-                hostNs: epochNs + Int64(burst * 1e9), frames: frames))
+                hostNs: epochNs + Int64(burst * 1e9), frames: frames, channels: channels))
         }
         _ = await writer.finalize(endMediaTimeNs: Int64(durationSeconds * 1e9))
     }
@@ -328,7 +328,7 @@ struct SelftestSyntheticFileTests {
             whiteIntervals: [(1.5, 1.7), (4.0, 4.2)])
         try await SyntheticSelftestMedia.writeAudioWithBursts(
             url: systemURL, durationSeconds: 6,
-            burstTimes: [1.58, 4.09], burstSeconds: 0.4)
+            burstTimes: [1.58, 4.09], burstSeconds: 0.4, channels: 2)
 
         let measurement = try await SelftestSyncMeasurement.measure(
             screenURL: screenURL,

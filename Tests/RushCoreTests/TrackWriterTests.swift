@@ -326,6 +326,32 @@ struct TrackWriterTests {
         #expect(abs(summary.durationSeconds - expected) < 0.15)
     }
 
+    @Test("Static video heartbeat advances media and creates recoverable fragments")
+    func staticVideoHeartbeat() async throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("screen.mov")
+        let writer = try TrackWriter(configuration: .screen(outputURL: url, width: 320, height: 240), clock: .init(epochNs: epochNs))
+        writer.appendVideo(makeVideoBuffer(hostNs: epochNs))
+        for tick in 1...30 {
+            try await Task.sleep(nanoseconds: 100_000_000)
+            writer.tick(nowHostNs: epochNs + Int64(tick) * 100_000_000)
+        }
+        writer.flush()
+        let status = await writer.finalize(endMediaTimeNs: 3_000_000_000)
+        #expect(status.finalizeState == .finalized)
+        #expect(status.lastMediaTimeNs == 3_000_000_000)
+        #expect(status.framesWritten >= 175)
+        #expect(status.framesDropped == 0)
+        let summary = try await inspect(url: url)
+        #expect(abs(summary.durationSeconds - 3) < 0.005)
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
+        _ = try await generator.image(at: CMTime(seconds: 2.5, preferredTimescale: 600))
+    }
+
     @Test("Silence warning requires three seconds of measured unmuted PCM")
     func measuredSilence() {
         var watch = SilenceWatch()

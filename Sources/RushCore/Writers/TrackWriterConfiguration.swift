@@ -179,6 +179,7 @@ extension TrackWriterConfiguration {
                 AVVideoAverageBitRateKey: bitrate,
                 AVVideoExpectedSourceFrameRateKey: frameRate,
                 AVVideoMaxKeyFrameIntervalKey: keyframeInterval,
+                AVVideoMaxKeyFrameIntervalDurationKey: 1.0,
             ] as [String: Any],
         ]
     }

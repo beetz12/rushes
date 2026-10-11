@@ -440,6 +440,30 @@ public final class TrackWriter: @unchecked Sendable {
     /// first accepted sample (its arrival writes the leading silence), while
     /// paused, or on video tracks.
     public func tick(nowHostNs: Int64) {
+        if configuration.kind.carriesVideo {
+            queue.sync {
+                guard let backend, backend.currentState == .writing,
+                      !clock.isPaused(atHostNs: nowHostNs), nowHostNs >= clock.epochNs,
+                      let last = lastPixelBuffer else { return }
+                let mediaNs = clock.mediaTimeNs(atHostNs: nowHostNs)
+                let frameRate = configuration.kind == .camera ? 30 : 60
+                let intervalNs = 1_000_000_000 / Int64(frameRate)
+                let cursor = max(lastVideoMediaNs ?? 0, pendingVideo.last?.mediaTimeNs ?? 0)
+                var nextNs = cursor + intervalNs
+                var emitted = 0
+                // Fill at the declared output cadence, not just the timer's
+                // cadence. A sparse variable-rate master with 1/60s sample
+                // durations has empty playable intervals between samples.
+                // Work per tick remains bounded if the host was stalled.
+                while nextNs <= mediaNs, emitted < 120 {
+                    enqueueVideo(last, mediaTimeNs: nextNs, backend: backend)
+                    drainPendingVideo(backend)
+                    nextNs += intervalNs
+                    emitted += 1
+                }
+            }
+            return
+        }
         guard configuration.kind.carriesAudio else { return }
         queue.sync {
             guard let backend, backend.currentState == .writing,

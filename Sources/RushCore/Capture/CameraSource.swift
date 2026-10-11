@@ -342,6 +342,7 @@ public final class CameraSource: @unchecked Sendable {
     private func deviceDisconnected(id: String) {
         sessionQueue.async { [self] in
             guard activeIdentity?.uniqueID == id else { return }
+            lock.withLock { running = false }
             detachWriter()
             let handler = lock.withLock { onCameraLost }
             handler(activeIdentity?.localizedName ?? id)
@@ -507,6 +508,16 @@ public final class CameraSource: @unchecked Sendable {
                 session.stopRunning()
             }
         }
+    }
+
+    /// Waits for the native session mutation queue to finish stopping. Used
+    /// for explicit close so an acknowledgement means capture has stopped.
+    public func stopAndWait() async {
+        stop()
+        await withCheckedContinuation { continuation in
+            sessionQueue.async { continuation.resume() }
+        }
+        frameQueue.sync {}
     }
 
     /// The warmed camera's identity, if any.

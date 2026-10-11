@@ -70,6 +70,7 @@ public enum AudioEnvelope {
                 AVLinearPCMBitDepthKey: 32,
                 AVLinearPCMIsFloatKey: true,
                 AVLinearPCMIsBigEndianKey: false,
+                AVLinearPCMIsNonInterleaved: false,
             ])
         reader.add(output)
         guard reader.startReading() else {
@@ -128,10 +129,19 @@ public enum AudioEnvelope {
                 dataPointerOut: &dataPointer) == noErr,
                 let pointer = dataPointer else { continue }
             let floats = UnsafeRawPointer(pointer).assumingMemoryBound(to: Float.self)
-            let sampleCount = lengthAtOffset / MemoryLayout<Float>.size
+            let channels: Int
+            if let format = CMSampleBufferGetFormatDescription(sampleBuffer),
+               let description = CMAudioFormatDescriptionGetStreamBasicDescription(format) {
+                channels = max(1, Int(description.pointee.mChannelsPerFrame))
+            } else { channels = 1 }
+            let sampleCount = min(frameCount, lengthAtOffset / MemoryLayout<Float>.size / channels)
             for index in 0..<sampleCount {
-                let square = Double(floats[index]) * Double(floats[index])
-                sumSquares += square
+                var frameEnergy: Double = 0
+                for channel in 0..<channels {
+                    let value = Double(floats[index * channels + channel])
+                    frameEnergy += value * value
+                }
+                sumSquares += frameEnergy / Double(channels)
                 count += 1
                 if count >= blockFrames {
                     flush()
@@ -376,8 +386,9 @@ public enum VideoOnset {
         let darkest = window.map(\.meanLuma).min() ?? 0
         let brightest = window.map(\.meanLuma).max() ?? 0
         guard brightest - darkest > 0.4 else {
-            // No bright flash in the window; fall back to the largest step.
-            return largestChange(samples: samples, windowMs: windowMs)
+            // No high-contrast flash was measured. Ordinary screen changes
+            // are insufficient evidence for sync calibration.
+            return nil
         }
         let threshold = darkest + (brightest - darkest) * 0.5
         for (index, frame) in window.enumerated() {

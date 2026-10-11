@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import CoreMedia
+import CoreGraphics
 import Dispatch
 import Foundation
 
@@ -94,8 +95,10 @@ public final class SelftestSignalEmitter: @unchecked Sendable, SelftestSignaling
         // The handler must not capture the timer itself (a source holding a
         // closure holding the source never deallocates); the array owns the
         // timer and is cleared in `stop`.
-        timer.setEventHandler {
-            window.orderFrontRegardless()
+        timer.setEventHandler { @Sendable in
+            MainActor.assumeIsolated {
+                window.orderFrontRegardless()
+            }
             DispatchQueue.main.asyncAfter(
                 deadline: .now() + DispatchTimeInterval.nanoseconds(Int(Self.flashDurationNs))
             ) {
@@ -135,7 +138,10 @@ public final class SelftestSignalEmitter: @unchecked Sendable, SelftestSignaling
             // Faceless engine: no Dock presence, no activation, no focus
             // stealing. Accessory apps may still order windows front.
             application.setActivationPolicy(.accessory)
-            guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
+            let screen = NSScreen.screens.first {
+                ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == CGMainDisplayID()
+            } ?? NSScreen.screens.first
+            guard let screen else { return }
             let window = NSWindow(
                 contentRect: screen.frame,
                 styleMask: .borderless,
@@ -143,7 +149,8 @@ public final class SelftestSignalEmitter: @unchecked Sendable, SelftestSignaling
                 defer: false)
             window.backgroundColor = .white
             window.isOpaque = true
-            window.level = .screenSaver
+            window.level = .floating
+            window.sharingType = .readOnly
             window.ignoresMouseEvents = true
             window.hidesOnDeactivate = false
             window.collectionBehavior = [

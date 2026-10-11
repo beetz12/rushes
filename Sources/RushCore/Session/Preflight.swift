@@ -259,6 +259,16 @@ public struct Preflight: Sendable {
         }
         pass("disk-space", "\(volume.availableBytes) bytes free")
 
+        // SCShareableContent can request screen access itself. Refuse before
+        // any catalog calls so only the explicit permission command prompts.
+        if effective.screen != nil {
+            let permission = await permissionAdvisor.check(.screen)
+            if permission.state != .allowed {
+                return refuse(permission.state == .denied ? .permissionDenied : .permissionNotAsked,
+                              "permissions", "grant screen recording access explicitly before recording")
+            }
+        }
+
         // 5. Requested sources exist. The screen source is the recording:
         // an unknown display or window refuses. A missing optional device
         // is switched off with a warning and the take continues.
@@ -267,8 +277,8 @@ public struct Preflight: Sendable {
         let cameras: [CameraDevice]
         let microphones: [MicrophoneDevice]
         do {
-            displays = try await catalog.displays()
-            windows = try await catalog.windows()
+            displays = effective.screen != nil ? try await catalog.displays() : []
+            windows = effective.screen != nil ? try await catalog.windows() : []
             cameras = try await catalog.cameras()
             microphones = try await catalog.microphones()
         } catch {

@@ -138,6 +138,8 @@ public actor EngineController: ControlHandling {
     private let index: PackageIndex
 
     private var active: ActiveRecording?
+    private var previewStarting = false
+    private var previewGeneration = UUID()
     private var previewEnabled = false
     private var silentMicReported = false
     private var starting = false
@@ -237,7 +239,11 @@ public actor EngineController: ControlHandling {
         case "permissions.settings":
             return .success(id: request.id, result: .object(["url": .string(SystemPermissions.settingsURL(try permissionKind(request)))]))
         case "camera.preview.start":
-            guard !starting, active == nil else { throw ControlFailure(code: "wrong-state", message: "preview selection cannot change during a take") }
+            guard !starting, !previewStarting, active == nil else { throw ControlFailure(code: "wrong-state", message: "preview selection cannot change during a take or warm-up") }
+            previewStarting = true
+            let generation = UUID()
+            previewGeneration = generation
+            defer { previewStarting = false }
             let camera = request.param("camera")?.string ?? "default"
             let catalog = try await config.catalog.cameras()
             let id = camera == "default" ? catalog.first?.id : camera
@@ -247,9 +253,14 @@ public actor EngineController: ControlHandling {
             previewEnabled = true
             let preview = previewPublisher()
             let result = try await config.captureRigs.warmCamera(cameraID: id, preview: preview, warning: { _, _ in })
+            guard previewGeneration == generation else {
+                await config.captureRigs.stopPreview()
+                throw ControlFailure(code: "cancelled", message: "camera preview selection cancelled")
+            }
             return .success(id: request.id, result: result)
         case "camera.preview.stop":
             guard active == nil else { throw ControlFailure(code: "wrong-state", message: "camera is recording") }
+            previewGeneration = UUID()
             previewEnabled = false
             await config.captureRigs.stopPreview()
             return .success(id: request.id)
@@ -341,11 +352,15 @@ public actor EngineController: ControlHandling {
     }
 
     private func targetsResult() async throws -> JSONValue {
-        .object([
-            "displays": try JSONValue(encoding: try await config.catalog.displays()),
-            "windows": try JSONValue(encoding: try await config.catalog.windows()),
+        let permission = await config.permissionAdvisor.check(.screen)
+        let displays: [DisplaySource] = permission.state == .allowed ? try await config.catalog.displays() : []
+        let windows: [WindowSource] = permission.state == .allowed ? try await config.catalog.windows() : []
+        return .object([
+            "displays": try JSONValue(encoding: displays),
+            "windows": try JSONValue(encoding: windows),
             "cameras": try JSONValue(encoding: try await config.catalog.cameras()),
             "microphones": try JSONValue(encoding: try await config.catalog.microphones()),
+            "permissions": await permissionsResult(),
         ])
     }
 
@@ -654,7 +669,7 @@ public actor EngineController: ControlHandling {
     // MARK: - record.start
 
     private func recordStart(_ request: ControlRequest) async throws -> ControlResponse? {
-        guard !starting, !finishing else { throw ControlFailure(code: "already-active", message: "a take is preparing or finishing") }
+        guard !starting, !previewStarting, !finishing else { throw ControlFailure(code: "already-active", message: "a take is preparing or finishing") }
         if let current = active {
             throw ControlFailure(
                 code: ControlErrorCode.alreadyActive,
@@ -815,6 +830,7 @@ public actor EngineController: ControlHandling {
         defer { finishing = false }
 
         await recording.rig.stop()
+        if !previewEnabled { await config.captureRigs.stopPreview() }
         do {
             let outcome = try await recording.session.stop()
             return await finish(recording, outcome: outcome)
@@ -839,6 +855,7 @@ public actor EngineController: ControlHandling {
         if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
         active = nil
         await recording.rig.stop()
+        if !previewEnabled { await config.captureRigs.stopPreview() }
         let outcome = try? await recording.session.stopEarly(
             code: "stream-error", message: reason)
         let result: StoppedRecording
@@ -959,7 +976,7 @@ public actor EngineController: ControlHandling {
 
     private func maintain(recordingID: String) async {
         guard let recording = active, recording.recordingID == recordingID else { return }
-        for kind in [TrackKind.microphone, .systemAudio] {
+        for kind in [TrackKind.screen, .microphone, .systemAudio] {
             await recording.session.trackWriter(for: kind)?.tick(nowHostNs: config.hostNowNs())
         }
         if config.volumeProvider(config.recordingsRoot).availableBytes < 1024 * 1024 * 1024 {
@@ -1070,7 +1087,15 @@ public actor EngineController: ControlHandling {
             if let raw = params[key], raw.bool == nil { throw invalid("\(key) must be Boolean") }
         }
         if params["display"] != nil && params["window"] != nil { throw invalid("choose display or window") }
-        let displays = (try? await config.catalog.displays()) ?? []
+        let wantsScreen = params["display"] != nil || params["window"] != nil || params["area"] != nil
+        if wantsScreen {
+            let permission = await config.permissionAdvisor.check(.screen)
+            guard permission.state == .allowed else {
+                throw ControlFailure(code: permission.state == .denied ? "permission-denied" : "permission-not-asked", message: "grant screen recording access explicitly before selecting a target", details: ["permission": .string("screen"), "settings": .string(permission.settingsURL)])
+            }
+        }
+        if params["systemAudio"]?.bool == true && !wantsScreen { throw invalid("system audio requires a display, window or area") }
+        let displays: [DisplaySource] = wantsScreen ? ((try? await config.catalog.displays()) ?? []) : []
         let cameras = (try? await config.catalog.cameras()) ?? []
         let microphones = (try? await config.catalog.microphones()) ?? []
 
