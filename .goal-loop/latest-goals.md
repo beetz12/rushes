@@ -92,7 +92,7 @@ First read docs/process/reader-brief.md completely and follow it exactly. It ove
 Slug: cap
 Clone: ~/Work/reference-repos/loom/CapSoftware__Cap (4,725 files). Licence: AGPL-3.0 for everything EXCEPT crates/camera*, crates/scap-* (MIT) and vendor/* (third-party permissive). Class: copyleft. So: outside the MIT paths, describe behaviour and design only, never reproduce Cap's own internal names, and use clean-room or idea-only. Ideas whose paths are all inside crates/camera* or crates/scap-* may use copy-with-notice.
 
-Cap is the most complete open-source Loom clone. It is large: read selectively (apps/desktop, apps/web, and the crates that matter), and checkpoint PROGRESS.md often. Beyond all 19 feature areas, establish:
+Cap is the most complete open-source Loom clone. It is large: read selectively (apps/desktop, apps/web, and the crates that matter), and checkpoint your .progress/cap.md file often. Beyond all 19 feature areas, establish:
 - Recording modes (for example an instant/share-fast mode versus a studio/edit-later mode): what differs in capture, files and upload.
 - How upload or share-link creation can start while recording is still running, and what the viewer gets first.
 - The web viewer: playback, comments, reactions, view analytics, transcripts.
