@@ -19,6 +19,8 @@ Branch: goal/research-screenity-kap-bloom
 - Steps 1 to 4.
 - Step 5: screenity note pair written; check_research OK (16 ideas), check_clean 0.
 - Step 6: kap note pair written; check_research OK (13 ideas), check_clean 0.
+- Step 7: bloom note pair written; check_research OK (8 ideas), check_clean 0.
+- Step 8: combined gates pass: check_research screenity kap bloom -> OK 3 notes, 37 ideas; check_clean on all six files -> 0.
 
 ## Unverified
 
@@ -29,4 +31,4 @@ Branch: goal/research-screenity-kap-bloom
 
 ## First unfinished step
 
-- Step 7 (bloom).
+- None. Result JSON written after the final commit.

@@ -1,0 +1,220 @@
+{
+  "repo": "video-db/bloom",
+  "sha": "65aa9bf555d2",
+  "licence": "MIT",
+  "features": {
+    "capture-screen": {
+      "present": true,
+      "quality": 3,
+      "summary": "One display per session, picked in a small picker window, captured by VideoDB's closed native binary and streamed to the cloud; the screen track can be paused mid-recording. Resolution, frame rate and codec are not visible in this repo.",
+      "paths": ["src/main/ipc/capture.js", "src/renderer/display-picker.js", "src/main/lib/videodb-patch.js"]
+    },
+    "capture-camera": {
+      "present": true,
+      "quality": 1,
+      "summary": "The camera is only a 640 by 640 getUserMedia preview in an overlay window that the screen capture picks up. It is not a capture channel and is never stored as its own track.",
+      "paths": ["src/renderer/camera.js", "src/main/ipc/camera.js"]
+    },
+    "capture-audio": {
+      "present": true,
+      "quality": 3,
+      "summary": "Microphone and system audio are separate stored channels. Either can be paused and resumed while recording, and channels switched off before start are paused immediately after start.",
+      "paths": ["src/main/ipc/capture.js", "src/renderer/ui/bar.js:330-400"]
+    },
+    "recording-controls": {
+      "present": true,
+      "quality": 3,
+      "summary": "Always-on-top bottom bar that is click-through outside its controls, excluded from capture by content protection and visible over full-screen apps; recording timer, tray menu, Command or Ctrl plus Shift plus R global shortcut, a gearing-up state that blocks double starts, and system notifications.",
+      "paths": ["src/main/index.js:45-89", "src/main/index.js:690-822", "src/renderer/ui/bar.js", "src/renderer/renderer.js:70-130"]
+    },
+    "camera-overlay": {
+      "present": true,
+      "quality": 2,
+      "summary": "Round, draggable, resizable 250 px window at the lower right, shown without taking focus, visible on all spaces; the camera stream stops whenever the window is hidden.",
+      "paths": ["src/main/index.js:225-253", "src/renderer/camera.html", "src/renderer/camera.js"]
+    },
+    "annotation": {
+      "present": false,
+      "quality": 0,
+      "summary": "No drawing, cursor or click effects.",
+      "paths": []
+    },
+    "compositing-render": {
+      "present": false,
+      "quality": 0,
+      "summary": "No local compositing; export happens in VideoDB's cloud.",
+      "paths": []
+    },
+    "editing": {
+      "present": false,
+      "quality": 0,
+      "summary": "No editing; recordings can only be renamed or deleted.",
+      "paths": []
+    },
+    "transcription-captions": {
+      "present": true,
+      "quality": 3,
+      "summary": "After the cloud export, the app asks VideoDB to index spoken words, fetches the transcript text into the local DB, and generates a subtitled HLS stream with a fixed style. No speech is treated as a normal outcome. Transcript downloads as plain text. Everything runs in the cloud.",
+      "paths": ["src/main/services/insights.service.js", "src/main/services/session.service.js", "src/main/ipc/history.js"]
+    },
+    "ai-features": {
+      "present": true,
+      "quality": 2,
+      "summary": "Chat with video opens VideoDB's hosted chat site with the video and collection IDs, and the spoken-word index makes recordings searchable through VideoDB. No AI runs locally and no transcript search exists inside the app.",
+      "paths": ["src/main/ipc/history.js", "src/main/services/insights.service.js"]
+    },
+    "export-formats": {
+      "present": true,
+      "quality": 1,
+      "summary": "Download of the exported MP4 from a temporary cloud URL, and the transcript as a text file. No local encoding or format choice.",
+      "paths": ["src/main/ipc/history.js", "src/main/services/videodb.service.js"]
+    },
+    "project-format": {
+      "present": false,
+      "quality": 0,
+      "summary": "No project file. A local SQLite table stores recording IDs, URLs, names, status and cached transcript only.",
+      "paths": []
+    },
+    "sharing-hosting": {
+      "present": true,
+      "quality": 3,
+      "summary": "Upload to VideoDB happens during recording; after export, a copy-link button mints a fresh player URL (with subtitles once indexed) and copies it. Hosting is VideoDB only, not self-hostable.",
+      "paths": ["src/main/services/videodb.service.js", "src/renderer/history.js:740-800", "src/main/ipc/capture.js"]
+    },
+    "viewer-web": {
+      "present": true,
+      "quality": 2,
+      "summary": "In-app library with an HLS player (hls.js with native fallback), rename, delete with undo and keyboard navigation; VideoDB's hosted player link for sharing.",
+      "paths": ["src/renderer/history.js:620-660", "src/renderer/history.js:495-580"]
+    },
+    "teleprompter-scripts": {
+      "present": false,
+      "quality": 0,
+      "summary": "No teleprompter or scripts.",
+      "paths": []
+    },
+    "platform-packaging": {
+      "present": true,
+      "quality": 2,
+      "summary": "electron-builder DMG for arm64 and x64 plus NSIS for Windows; unsigned macOS build; curl-to-bash installer that strips quarantine; afterPack hook that re-signs the nested capture app and adds privacy usage strings; capture binary copied to a writable folder at runtime.",
+      "paths": ["package.json", "install", "build/afterPack.js", "build/entitlements.mac.plist", "src/main/lib/videodb-patch.js"]
+    },
+    "performance-reliability": {
+      "present": true,
+      "quality": 2,
+      "summary": "Duplicate-start guard, a local row created before capture, a status state machine, re-sync of unfinished recordings at launch and on refresh, polling every 10 seconds for about 10 minutes, and reuse of one capture process. No local copy to fall back on if upload or export fails.",
+      "paths": ["src/main/ipc/capture.js", "src/main/services/session.service.js", "src/main/db/database.js"]
+    },
+    "extensibility-automation": {
+      "present": true,
+      "quality": 2,
+      "summary": "No CLI, MCP server or local API in the repo. Recordings land in one named VideoDB collection with session metadata so external agents can query them through VideoDB's APIs; an env variable overrides the API URL and a setup file enables scripted registration.",
+      "paths": ["src/main/services/videodb.service.js", "src/main/ipc/capture.js", "src/main/index.js:505-564", "src/preload/index.js"]
+    },
+    "privacy-security": {
+      "present": true,
+      "quality": 2,
+      "summary": "Context isolation on for every window and the control bar excluded from capture, with a guided permission flow. But the API key is stored in plain text in SQLite, all media goes to a third-party cloud, the macOS build is unsigned with broad runtime exceptions, and hls.js loads from a CDN at an unpinned version.",
+      "paths": ["src/main/db/database.js", "src/preload/index.js", "src/renderer/ui/permissions.js", "build/entitlements.mac.plist", "src/main/ipc/config.js"]
+    }
+  },
+  "best_ideas": [
+    {
+      "id": "bloom-per-track-pause",
+      "title": "Per-track pause during recording",
+      "area": "capture-audio",
+      "what": "Mic and system audio are separate stored channels; bar toggles pause or resume one track live, and tracks toggled off before start are paused right after start.",
+      "why": "David can mute his mic for a cough or a doorbell without stopping, and keeps separate audio tracks for editing.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["src/renderer/ui/bar.js:330-400", "src/main/ipc/capture.js"],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "bloom-capture-excluded-control-bar",
+      "title": "Control bar that never appears in the video",
+      "area": "recording-controls",
+      "what": "The bar window is content-protected so capture skips it, ignores mouse events except over the bar (with forwarding so hover still works), and stays visible over full-screen apps on every space, while the camera window is deliberately left capturable.",
+      "why": "Clean recordings with always-reachable controls. On macOS native this maps to a window sharing type of none for controls and an exclude list in ScreenCaptureKit.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["src/main/index.js:45-89", "src/main/index.js:690-822", "src/main/index.js:225-253"],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "bloom-row-first-state-machine",
+      "title": "Local row first, then a resumable post-stop state machine",
+      "area": "performance-reliability",
+      "what": "Insert the recording row before capture starts, move it through recording, processing, indexing, ready or failed, and on each launch or refresh re-check unfinished rows by polling for the export or retrying indexing.",
+      "why": "Upload, transcription and thumbnail jobs after stop survive app restarts and crashes, and the library always shows an honest status.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["src/main/services/session.service.js", "src/main/db/database.js", "src/main/ipc/capture.js"],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "bloom-nonblocking-transcript-pipeline",
+      "title": "Transcript pipeline that never blocks playback",
+      "area": "transcription-captions",
+      "what": "Mark the video playable first, then index speech, cache the transcript text locally and generate subtitles in the background; no speech is a normal result.",
+      "why": "Gives David a transcript for search and editing after every take without delaying the share. The same shape works with a local speech model.",
+      "reuse_mode": "idea-only",
+      "paths": ["src/main/services/insights.service.js", "src/main/services/session.service.js"],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "bloom-guided-permissions",
+      "title": "Guided permissions onboarding",
+      "area": "privacy-security",
+      "what": "A modal with one Grant button per permission and an animated preview of the system dialog that switches to a fix-it-in-Settings preview after a denial; it opens the right Settings pane and checks screen permission only after mic is granted so the macOS screen prompt does not fire early.",
+      "why": "macOS permissions are the first-run failure point for any recorder; this flow keeps the user moving.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["src/renderer/ui/permissions.js", "src/renderer/permissions.html", "src/renderer/renderer.js:70-130", "src/main/ipc/permissions.js"],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "bloom-collection-agent-handle",
+      "title": "One named collection plus session metadata as the agent handle",
+      "area": "extensibility-automation",
+      "what": "Every recording goes into one named collection, and each capture session carries the client session ID and start time as metadata, so an outside agent can list recordings and fetch transcripts by stable IDs.",
+      "why": "Suggests David's agent surface: a local index with stable IDs and a JSON CLI over recordings and transcripts.",
+      "reuse_mode": "idea-only",
+      "paths": ["src/main/services/videodb.service.js", "src/main/ipc/capture.js"],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "bloom-copy-link-states",
+      "title": "Copy-link button with clear states",
+      "area": "sharing-hosting",
+      "what": "The button is disabled until the video exists, shows a generating state while a fresh URL is minted, shows copied for 2.5 seconds, then resets; the URL is regenerated on demand so it picks up subtitles once indexing finishes.",
+      "why": "Fast share is the core Loom loop; explicit states stop users pasting a link that is not ready.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["src/renderer/history.js:740-800", "src/main/services/videodb.service.js"],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "bloom-delete-with-undo",
+      "title": "Library delete with a five-second undo",
+      "area": "viewer-web",
+      "what": "Deleting animates the row out, selects the neighbour, shows an undo toast and commits only after five seconds; a second delete commits the first at once.",
+      "why": "Safe library cleanup without a confirmation dialog on every delete.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["src/renderer/history.js:495-580"],
+      "effort": "S",
+      "priority": "could"
+    }
+  ],
+  "weaknesses": [
+    "The local-first claim is not supported by this repo: no media is written locally by the app, downloads come back from the cloud, and every AI step needs VideoDB; a failed upload leaves nothing to recover.",
+    "No CLI, MCP server or local API, and library search matches names only, not transcripts.",
+    "The camera is a screen overlay, not a track; there is no editing, annotation or compositing.",
+    "The API key is stored in plain text in SQLite; the macOS build is unsigned, the installer strips quarantine, entitlements disable library validation, and hls.js loads from a CDN at an unpinned version.",
+    "A runtime patch replaces Node's child-process spawn to run the capture binary from a writable copy, which is fragile across SDK updates.",
+    "Documentation drift: a missing auth IPC file, WebSocket events the code never uses, a different database file name in the reset steps, and a package.json licence that disagrees with LICENSE.",
+    "The indexing service opens the default collection while recordings live in the named collection, so indexing may miss the video (inference, not verified against the SDK)."
+  ]
+}
