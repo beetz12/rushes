@@ -51,7 +51,7 @@ export function ProductionSettings({ run }: { run: Run }) {
           Script
           <textarea
             rows={7}
-            maxLength={100000}
+            maxLength={32768}
             value={prompt.script ?? ''}
             onChange={(event) => setPrompt({ ...prompt, script: event.target.value })}
             placeholder="Paste the words you want to say…"
@@ -252,6 +252,11 @@ export function TeleprompterOverlay() {
     typeof progress.charOffset === 'number' && Number.isFinite(progress.charOffset)
       ? Math.min(script.length, Math.max(0, progress.charOffset))
       : 0;
+  const grapheme =
+    new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+      .segment(script.slice(offset))
+      [Symbol.iterator]()
+      .next().value?.segment ?? '';
   useEffect(
     () => current.current?.scrollIntoView({ block: 'center', behavior: 'smooth' }),
     [offset],
@@ -267,9 +272,9 @@ export function TeleprompterOverlay() {
       <div className="teleprompter-script">
         <span className="spoken">{script.slice(0, offset)}</span>
         <span ref={current} className="current-word">
-          {script.slice(offset, offset + 1)}
+          {grapheme}
         </span>
-        <span>{script.slice(offset + 1)}</span>
+        <span>{script.slice(offset + grapheme.length)}</span>
       </div>
     </div>
   );
