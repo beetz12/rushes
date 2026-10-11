@@ -1,11 +1,12 @@
 import Foundation
 
 extension PostproductionService {
-    public static let commands:Set<String> = ["export","edit.get","edit.set","edit.undo","edit.redo","edit.save","edit.discard","edit.cut","edit.split","thumbnail","layout.frames"]
+    public static let commands:Set<String> = ["export","edit.get","edit.set","edit.undo","edit.redo","edit.save","edit.discard","edit.cut","edit.split","thumbnail","layout.frames","share.assets"]
     public func handle(_ request:ControlRequest) async throws -> JSONValue {
         guard let id=request.param("id")?.string,!id.isEmpty else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"A recording ID is required") }
         switch request.cmd {
         case "edit.get": return try JSONValue(encoding:await getEdit(id:id))
+        case "share.assets": return try JSONValue(encoding:await ShareAssetsService(root:root,postproduction:self).assets(id:id))
         case "layout.frames":
             let override:EditLayout?
             if let value=request.param("layout") { override=try JSONDecoder().decode(EditLayout.self,from:ControlWire.encoder.encode(value)) }

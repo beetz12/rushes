@@ -108,7 +108,7 @@ public struct EditDocument: Codable, Equatable, Sendable {
         }
         guard audio.micGain.isFinite, audio.systemGain.isFinite, (0...4).contains(audio.micGain), (0...4).contains(audio.systemGain),
               layout.bubble.center.count == 2, layout.bubble.center.allSatisfy({ $0.isFinite && (0...1).contains($0) }),
-              layout.bubble.size.isFinite, (0.05...0.8).contains(layout.bubble.size),
+              layout.bubble.size.isFinite, layout.bubble.size > 0, layout.bubble.size <= 1,
               ["circle", "rounded-square", "squircle"].contains(layout.bubble.shape),
               (0...1).contains(layout.bubble.roundness), ["1:1", "16:9", "4:3", "9:16"].contains(layout.cameraAspect),
               ["source", "16:9", "1:1", "9:16"].contains(layout.canvas),

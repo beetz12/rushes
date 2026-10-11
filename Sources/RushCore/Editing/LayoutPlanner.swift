@@ -23,8 +23,8 @@ public enum LayoutPlanner {
         case .overlap:
             return LayoutFrames(screen: CGRect(x: 0.02, y: 0.03, width: 0.92, height: 0.92), camera: CGRect(x: 0.68, y: 0.56, width: 0.30, height: 0.41), roundCamera: false)
         case .bubble:
-            let width = min(0.8, layout.bubble.size / (layout.bubble.shape == "squircle" ? sqrt(max(1, zoomScale)) : 1))
-            let height = min(0.9, width * canvasAspect / cameraAspect)
+            let width = min(1, layout.bubble.size / (layout.bubble.shape == "squircle" ? sqrt(max(1, zoomScale)) : 1))
+            let height = min(1, width * canvasAspect / cameraAspect)
             let center = layout.bubble.center
             return LayoutFrames(screen: full, camera: CGRect(x: min(1-width, max(0, center[0]-width/2)), y: min(1-height, max(0, center[1]-height/2)), width: width, height: height), roundCamera: true)
         }

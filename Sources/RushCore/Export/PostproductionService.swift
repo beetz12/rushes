@@ -35,6 +35,7 @@ public actor PostproductionService {
         else if FileManager.default.fileExists(atPath:saved.path) { edit=try JSONDecoder().decode(EditDocument.self,from:Data(contentsOf:saved)) }
         else {
             edit=EditDocument(durationMs:length,title:manifest.title)
+            try RecordingBubbleSeed.apply(to:&edit,package:package,manifest:manifest)
             if !manifest.tracks.contains(where:{$0.kind == .screen && $0.present}) && manifest.tracks.contains(where:{$0.kind == .camera && $0.present}) { edit.layout.preset = .cameraOnly }
             let input=try PostproductionPaths.file(manifest.input?.file ?? "input.ndjson",in:package.folderURL,requireExists:false)
             if let data=try? Data(contentsOf:input),let text=String(data:data,encoding:.utf8) {
@@ -98,9 +99,12 @@ public actor PostproductionService {
         if FileManager.default.fileExists(atPath:url.path) { try AtomicFileWriter.write(Data(contentsOf:url),to:url.appendingPathExtension("bak")) }
         try AtomicFileWriter.writeEncodable(edit,to:url,encoder:ControlWire.encoder)
     }
-    public func export(id:String,options:ExportOptions = ExportOptions(),to output:URL,progress:(@Sendable (ExportProgress)->Void)? = nil) async throws -> ExportResult {
+    public func export(id:String,options:ExportOptions = ExportOptions(),to output:URL,progress:(@Sendable (ExportProgress)->Void)? = nil,editSnapshot:EditDocument? = nil) async throws -> ExportResult {
         try options.validate()
-        let package=try package(id),manifest=try package.readManifest(),edit=try await getEdit(id:id)
+        let package=try package(id),manifest=try package.readManifest()
+        let edit:EditDocument
+        if let editSnapshot { edit=editSnapshot } else { edit=try await getEdit(id:id) }
+        try edit.validate(sourceDurationMs:try await duration(package,manifest:manifest))
         guard manifest.status == .complete || manifest.status == .recovered else { throw renderFailure("Finalize the recording before exporting it") }
         try protect(output,package:package,manifest:manifest)
         let renderer=NativeRenderer(package:package,manifest:manifest,edit:edit,options:options)
@@ -242,28 +246,20 @@ public actor PostproductionService {
         }
         return .object(["screen":rectangle(frames.screen),"camera":rectangle(frames.camera),"roundCamera":.bool(frames.roundCamera),"canvasAspect":.double(aspect)])
     }
-    public func thumbnail(id:String,to output:URL,atMs:Double = 0,width:Int = 1280,height:Int = 720) async throws -> JSONValue {
+    public func thumbnail(id:String,to output:URL,atMs:Double = 0,width:Int = 1280,height:Int = 720,editSnapshot:EditDocument? = nil) async throws -> JSONValue {
         guard [(1280,720),(1920,1080)].contains(where:{$0.0 == width && $0.1 == height}),atMs.isFinite,atMs>=0,["png","jpg","jpeg"].contains(output.pathExtension.lowercased()) else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"Thumbnail must be PNG/JPG, 1280x720 or 1920x1080, with a nonnegative timestamp") }
         let package=try package(id),manifest=try package.readManifest(); try protect(output,package:package,manifest:manifest)
-        let edit=try await getEdit(id:id)
+        let edit:EditDocument
+        if let editSnapshot { edit=editSnapshot } else { edit=try await getEdit(id:id) }
         guard atMs < edit.durationMs else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"Thumbnail time lies beyond the edit") }
         let renders=try PostproductionPaths.managedDirectory("renders",in:package.folderURL,create:true)
-        let preview=try PostproductionPaths.managedFile("thumbnail-source.mp4",in:renders)
-        _=try await export(id:id,to:preview)
-        let generator=AVAssetImageGenerator(asset:AVURLAsset(url:preview)); generator.appliesPreferredTrackTransform=true
-        generator.requestedTimeToleranceBefore = .zero; generator.requestedTimeToleranceAfter = CMTime(value:1,timescale:30)
-        let source=try await generator.image(at:CMTime(seconds:atMs/1000,preferredTimescale:600_000)).image
-        let context=CIContext(); let input=CIImage(cgImage:source),scale=min(CGFloat(width)/input.extent.width,CGFloat(height)/input.extent.height)
-        let bounds=CGRect(x:0,y:0,width:width,height:height)
-        let scaled=input.transformed(by:CGAffineTransform(scaleX:scale,y:scale)).transformed(by:CGAffineTransform(translationX:(CGFloat(width)-input.extent.width*scale)/2,y:(CGFloat(height)-input.extent.height*scale)/2))
-        let image=scaled.composited(over:CIImage(color:.black).cropped(to:bounds))
-        guard let cg=context.createCGImage(image,from:bounds) else { throw renderFailure("Cannot create thumbnail image") }
-        let data=NSMutableData(),type=output.pathExtension.lowercased() == "png" ? UTType.png.identifier : UTType.jpeg.identifier
-        guard let destination=CGImageDestinationCreateWithData(data,type as CFString,1,nil) else { throw renderFailure("Cannot create thumbnail encoder") }
-        CGImageDestinationAddImage(destination,cg,[kCGImageDestinationLossyCompressionQuality:0.9] as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { throw renderFailure("Thumbnail encoding failed") }
-        try FileManager.default.createDirectory(at:output.deletingLastPathComponent(),withIntermediateDirectories:true)
-        try AtomicFileWriter.write(data as Data,to:output)
+        let preview=try PostproductionPaths.managedFile("thumbnail-source-\(UUID().uuidString).mp4",in:renders)
+        defer {
+            if (try? PostproductionPaths.managedDirectory("renders",in:package.folderURL)) != nil,
+               let own=try? PostproductionPaths.managedFile(preview.lastPathComponent,in:renders) { try? FileManager.default.removeItem(at:own) }
+        }
+        _=try await export(id:id,to:preview,editSnapshot:edit)
+        try await CompositionThumbnail.write(video:preview,to:output,atMs:atMs,width:width,height:height)
         return .object(["id":.string(id),"path":.string(output.path),"width":.int(Int64(width)),"height":.int(Int64(height)),"atMs":.double(atMs)])
     }
 }

@@ -113,8 +113,7 @@ final class NativeRenderer: @unchecked Sendable {
         let screenOffset=manifest.tracks.first(where:{$0.kind == .screen})?.offsetMs ?? 0
         for info in manifest.tracks where info.present && (info.kind == .microphone || info.kind == .systemAudio) {
             let asset=AVURLAsset(url:try safeTrackURL(info.file))
-            guard let source=try await asset.loadTracks(withMediaType:.audio).first,
-                  let track=composition.addMutableTrack(withMediaType:.audio,preferredTrackID:kCMPersistentTrackID_Invalid) else { continue }
+            guard let source=try await asset.loadTracks(withMediaType:.audio).first else { continue }
             let duration=try await asset.load(.duration).seconds * 1000
             let offset=Double(info.offsetMs-screenOffset-(info.latencyMs ?? 0))
             var output=0.0
@@ -122,18 +121,22 @@ final class NativeRenderer: @unchecked Sendable {
                 let availableStart=max(clip.sourceStartMs,offset), availableEnd=min(clip.sourceEndMs,offset+duration)
                 let targetDuration=clip.durationMs
                 if availableEnd > availableStart {
+                    // Give each clip a contiguous decoder segment. A single
+                    // compressed-audio track that seeks backwards for reorder
+                    // can leave AVFoundation's mix reader waiting for EOF.
+                    guard let track=composition.addMutableTrack(withMediaType:.audio,preferredTrackID:kCMPersistentTrackID_Invalid) else { throw renderFailure("Cannot allocate clip audio track") }
                     let start=CMTime(seconds:(availableStart-offset)/1000,preferredTimescale:600_000)
                     let length=CMTime(seconds:(availableEnd-availableStart)/1000,preferredTimescale:600_000)
                     let at=CMTime(seconds:(output+(availableStart-clip.sourceStartMs)/clip.speed)/1000,preferredTimescale:600_000)
                     try track.insertTimeRange(CMTimeRange(start:start,duration:length),of:source,at:at)
                     track.scaleTimeRange(CMTimeRange(start:at,duration:length),toDuration:CMTime(seconds:(availableEnd-availableStart)/clip.speed/1000,preferredTimescale:600_000))
+                    let input=AVMutableAudioMixInputParameters(track:track)
+                    let gain=info.kind == .microphone ? (edit.audio.micMuted ? 0 : edit.audio.micGain) : edit.audio.systemGain
+                    input.setVolume(Float(gain),at:.zero); input.audioTimePitchAlgorithm = .spectral
+                    inputs.append(input)
                 }
                 output += targetDuration
             }
-            let input=AVMutableAudioMixInputParameters(track:track)
-            let gain=info.kind == .microphone ? (edit.audio.micMuted ? 0 : edit.audio.micGain) : edit.audio.systemGain
-            input.setVolume(Float(gain),at:.zero); input.audioTimePitchAlgorithm = .spectral
-            inputs.append(input)
         }
         guard !inputs.isEmpty else { return nil }
         let reader=try AVAssetReader(asset:composition)
