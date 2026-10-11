@@ -20,3 +20,25 @@ Every copied or ported file must start with a header of the form
 "Derived from owner/repo@sha:path (licence). See THIRD_PARTY_NOTICES.md."
 `scripts/check.sh` fails when a file with such a header has no row here, or a
 row names a file that does not exist.
+
+<!-- pinned-npm-notices:start -->
+## Pinned direct npm dependencies
+
+These build and runtime dependencies are included in acknowledgements.
+
+| Package and installed version | Licence | Full licence text |
+|---|---|---|
+| npm: shell/@types/node@22.18.10 | MIT | licenses/npm-types-node-22.18.10.txt |
+| npm: shell/@types/react@19.2.2 | MIT | licenses/npm-types-react-19.2.2.txt |
+| npm: shell/@types/react-dom@19.2.2 | MIT | licenses/npm-types-react-dom-19.2.2.txt |
+| npm: shell/@vitejs/plugin-react@6.1.2 | MIT | licenses/npm-vitejs-plugin-react-6.1.2.txt |
+| npm: shell/electron@44.7.0 | MIT | licenses/npm-electron-44.7.0.txt |
+| npm: shell/electron-builder@26.15.3 | MIT | licenses/npm-electron-builder-26.15.3.txt |
+| npm: shell/esbuild@0.28.2 | MIT | licenses/npm-esbuild-0.28.2.txt |
+| npm: shell/react@19.3.0 | MIT | licenses/npm-react-19.3.0.txt |
+| npm: shell/react-dom@19.3.0 | MIT | licenses/npm-react-dom-19.3.0.txt |
+| npm: shell/typescript@7.0.2 | Apache-2.0 | licenses/npm-typescript-7.0.2.txt |
+| npm: shell/vite@8.3.4 | MIT | licenses/npm-vite-8.3.4.txt |
+| npm: shell/vitest@5.0.3 | MIT | licenses/npm-vitest-5.0.3.txt |
+| npm: shell/zod@4.6.6 | MIT | licenses/npm-zod-4.6.6.txt |
+<!-- pinned-npm-notices:end -->
