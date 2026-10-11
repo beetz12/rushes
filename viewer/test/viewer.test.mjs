@@ -3,10 +3,67 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { readFile } from 'node:fs/promises';
-import { chromium,webkit } from 'playwright';
+import { chromium, webkit } from 'playwright';
 import { viewerPage } from '../../cloud/dist/page.js';
-const ID='abcdefghijklmnopqrstuv';
-for(const [name,type,options] of [['Chrome',chromium,{channel:'chrome'}],['WebKit',webkit,{}]])test(`${name} plays synthetic MP4, processing transition, captions, transcript seeking/speed/chapters and escapes`,async t=>{
- const video=await readFile(new URL('fixtures/video.mp4',import.meta.url));const js=await readFile(new URL('../dist/viewer.js',import.meta.url),'utf8');const css=await readFile(new URL('../dist/viewer.css',import.meta.url),'utf8');let reads=0;let base;const manifest={schema:'rushes.share/1',id:ID,status:'ready',title:'Synthetic viewer fixture',createdAt:'2026-10-11',durationMs:8000,summary:'Playback behavior on generated video',video:{file:'video-abcdef12.mp4',width:320,height:240,bytes:video.length},captions:[{file:'captions-abcdef12.vtt',lang:'en'}],transcript:'transcript-abcdef12.json',chapters:[{startMs:0,title:'Start'},{startMs:3000,title:'Go to chapter'}]};const server=createServer((req,res)=>{const url=new URL(req.url,base);const path=url.pathname;const send=(type,data,status=200,headers={})=>{res.writeHead(status,{'Content-Type':type,...headers});res.end(data);};if(path==='/s/'+ID)return send('text/html',viewerPage(manifest,base));if(path.endsWith('/share.json')){reads++;return send('application/json',JSON.stringify({...manifest,status:reads===1?'processing':'ready'}));}if(path==='/_viewer/v1/viewer.js')return send('text/javascript',js);if(path==='/_viewer/v1/viewer.css')return send('text/css',css);if(path.endsWith('.mp4')){const range=req.headers.range;if(range){const m=/bytes=(\d+)-(\d*)/.exec(range);const start=Number(m[1]),end=m[2]?Math.min(Number(m[2]),video.length-1):video.length-1;return send('video/mp4',video.subarray(start,end+1),206,{'Accept-Ranges':'bytes','Content-Range':`bytes ${start}-${end}/${video.length}`,'Content-Length':String(end-start+1)});}return send('video/mp4',video,200,{'Accept-Ranges':'bytes','Content-Length':String(video.length)});}if(path.endsWith('.vtt'))return send('text/vtt','WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nFirst caption\n\n00:00:03.000 --> 00:00:08.000\nSecond caption\n');if(path.endsWith('.json'))return send('application/json',JSON.stringify({cues:[{startMs:0,endMs:3000,text:'First line'},{startMs:3000,endMs:8000,text:'<script>window.pwned=true</script>'}]}));return send('text/plain','Not found',404);});server.listen(0,'127.0.0.1');await once(server,'listening');base=`http://127.0.0.1:${server.address().port}`;t.after(()=>server.close());const browser=await type.launch({headless:true,...options});t.after(()=>browser.close());t.diagnostic(`${name} version ${browser.version()}, localhost generated 8-second H.264 fixture; no real cloud.`);const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(`${base}/s/${ID}?t=2`);assert.equal(await page.locator('#status').textContent(),'Processing, this page refreshes itself');await page.waitForFunction(()=>!document.getElementById('video').hidden,{timeout:10000});await page.waitForFunction(()=>document.getElementById('video').readyState>=2);assert.ok(Math.abs(await page.locator('video').evaluate(v=>v.currentTime)-2)<0.2);
- await page.locator('video').evaluate(async v=>{v.muted=true;await v.play();});await page.waitForFunction(()=>document.getElementById('video').currentTime>2.2);await page.locator('video').evaluate(v=>v.pause());assert.equal(await page.locator('#transcript button').count(),2);assert.equal(await page.evaluate(()=>window.pwned),undefined);await page.locator('#chapters button').nth(1).click();await page.waitForFunction(()=>Math.abs(document.getElementById('video').currentTime-3)<0.1);await page.locator('#transcript button').first().click();await page.waitForFunction(()=>document.getElementById('video').currentTime<0.1);await page.locator('#speed').selectOption('1.5');assert.equal(await page.locator('video').evaluate(v=>v.playbackRate),1.5);await page.locator('video').evaluate(v=>{v.textTracks[0].mode='showing';});await page.waitForFunction(()=>document.getElementById('video').textTracks[0].cues?.length===2);assert.equal(await page.locator('video').evaluate(v=>v.textTracks[0].mode),'showing');await page.locator('video').evaluate(v=>{v.textTracks[0].mode='disabled';});assert.equal(await page.locator('video').evaluate(v=>v.textTracks[0].mode),'disabled');assert.ok((await page.locator('#download').getAttribute('href')).endsWith('/video-abcdef12.mp4'));await page.setViewportSize({width:390,height:844});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);assert.deepEqual(errors,[]);
-});
+const ID = 'abcdefghijklmnopqrstuv';
+for (const [name, type, options] of [['Chrome', chromium, { channel: 'chrome' }], ['WebKit', webkit, {}]])
+    test(`${name} plays synthetic MP4, processing transition, captions, transcript seeking/speed/chapters and escapes`, async (t) => {
+        const video = await readFile(new URL('fixtures/video.mp4', import.meta.url));
+        const js = await readFile(new URL('../dist/viewer.js', import.meta.url), 'utf8');
+        const css = await readFile(new URL('../dist/viewer.css', import.meta.url), 'utf8');
+        let reads = 0;
+        let base;
+        const manifest = { schema: 'rushes.share/1', id: ID, status: 'ready', title: 'Synthetic viewer fixture', createdAt: '2026-10-11', durationMs: 8000, summary: 'Playback behavior on generated video', video: { file: 'video-abcdef12.mp4', width: 320, height: 240, bytes: video.length }, captions: [{ file: 'captions-abcdef12.vtt', lang: 'en' }], transcript: 'transcript-abcdef12.json', chapters: [{ startMs: 0, title: 'Start' }, { startMs: 3000, title: 'Go to chapter' }] };
+        const server = createServer((req, res) => { const url = new URL(req.url, base); const path = url.pathname; const send = (type, data, status = 200, headers = {}) => { res.writeHead(status, { 'Content-Type': type, ...headers }); res.end(data); }; if (path === '/s/' + ID)
+            return send('text/html', viewerPage(manifest, base)); if (path.endsWith('/share.json')) {
+            reads++;
+            return send('application/json', JSON.stringify({ ...manifest, status: reads === 1 ? 'processing' : 'ready' }));
+        } if (path === '/_viewer/v1/viewer.js')
+            return send('text/javascript', js); if (path === '/_viewer/v1/viewer.css')
+            return send('text/css', css); if (path.endsWith('.mp4')) {
+            const range = req.headers.range;
+            if (range) {
+                const m = /bytes=(\d+)-(\d*)/.exec(range);
+                const start = Number(m[1]), end = m[2] ? Math.min(Number(m[2]), video.length - 1) : video.length - 1;
+                return send('video/mp4', video.subarray(start, end + 1), 206, { 'Accept-Ranges': 'bytes', 'Content-Range': `bytes ${start}-${end}/${video.length}`, 'Content-Length': String(end - start + 1) });
+            }
+            return send('video/mp4', video, 200, { 'Accept-Ranges': 'bytes', 'Content-Length': String(video.length) });
+        } if (path.endsWith('.vtt'))
+            return send('text/vtt', 'WEBVTT\n\n00:00:00.000 --> 00:00:03.000\nFirst caption\n\n00:00:03.000 --> 00:00:08.000\nSecond caption\n'); if (path.endsWith('.json'))
+            return send('application/json', JSON.stringify({ cues: [{ startMs: 0, endMs: 3000, text: 'First line' }, { startMs: 3000, endMs: 8000, text: '<script>window.pwned=true</script>' }] })); return send('text/plain', 'Not found', 404); });
+        server.listen(0, '127.0.0.1');
+        await once(server, 'listening');
+        base = `http://127.0.0.1:${server.address().port}`;
+        t.after(() => server.close());
+        const browser = await type.launch({ headless: true, ...options });
+        t.after(() => browser.close());
+        t.diagnostic(`${name} version ${browser.version()}, localhost generated 8-second H.264 fixture; no real cloud.`);
+        const page = await browser.newPage();
+        const errors = [];
+        page.on('pageerror', e => errors.push(e.message));
+        await page.goto(`${base}/s/${ID}?t=2`);
+        assert.equal(await page.locator('#status').textContent(), 'Processing, this page refreshes itself');
+        await page.waitForFunction(() => !document.getElementById('video').hidden, { timeout: 10000 });
+        await page.waitForFunction(() => document.getElementById('video').readyState >= 2);
+        assert.ok(Math.abs(await page.locator('video').evaluate(v => v.currentTime) - 2) < 0.2);
+        await page.locator('video').evaluate(async (v) => { v.muted = true; await v.play(); });
+        await page.waitForFunction(() => document.getElementById('video').currentTime > 2.2);
+        await page.locator('video').evaluate(v => v.pause());
+        assert.equal(await page.locator('#transcript button').count(), 2);
+        assert.equal(await page.evaluate(() => window.pwned), undefined);
+        await page.locator('#chapters button').nth(1).click();
+        await page.waitForFunction(() => Math.abs(document.getElementById('video').currentTime - 3) < 0.1);
+        await page.locator('#transcript button').first().click();
+        await page.waitForFunction(() => document.getElementById('video').currentTime < 0.1);
+        await page.locator('#speed').selectOption('1.5');
+        assert.equal(await page.locator('video').evaluate(v => v.playbackRate), 1.5);
+        await page.locator('video').evaluate(v => { v.textTracks[0].mode = 'showing'; });
+        await page.waitForFunction(() => document.getElementById('video').textTracks[0].cues?.length === 2);
+        assert.equal(await page.locator('video').evaluate(v => v.textTracks[0].mode), 'showing');
+        await page.locator('video').evaluate(v => { v.textTracks[0].mode = 'disabled'; });
+        assert.equal(await page.locator('video').evaluate(v => v.textTracks[0].mode), 'disabled');
+        assert.ok((await page.locator('#download').getAttribute('href')).endsWith('/video-abcdef12.mp4'));
+        await page.setViewportSize({ width: 390, height: 844 });
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+        assert.deepEqual(errors, []);
+    });

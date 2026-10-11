@@ -5,3 +5,5 @@ export * from './page.js';
 export * from './bucket.js';
 export * from './worker-provider.js';
 export * from './deploy.js';
+export * from './bootstrap.js';
+export * from './socket-import.js';

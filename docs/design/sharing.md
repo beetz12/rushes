@@ -17,3 +17,7 @@ Primary API references opened this turn:
 - https://developers.cloudflare.com/r2/api/workers/workers-api-reference/
 - https://developers.cloudflare.com/d1/worker-api/prepared-statements/
 - https://developers.cloudflare.com/workers/runtime-apis/web-crypto/
+- https://docs.aws.amazon.com/AmazonS3/latest/developerguide/sig-v4-header-based-auth.html (published positive vector)
+- https://developers.cloudflare.com/api/resources/workers/subresources/subdomains/methods/update/ (create absent selected account subdomain only)
+
+The prepared existing-OAuth deploy wrapper defaults to read-only. It verifies an explicit account/email, reports missing workers.dev and disabled R2 state, and requires a selected public subdomain before apply. It never renames an existing account subdomain. Before any cloud mutations, a running app can retain the owner token through its current-user mode0600 socket, with a distinct read-back reopening encrypted settings. If the app is unavailable, AES-GCM bootstrap ciphertext authenticates its resource metadata and its key is verified in macOS Keychain; no plaintext token file is written. Real Keychain and account writes belong to root's authorized apply stage, not local fixture tests.

@@ -1,12 +1,59 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { BucketProvider,WorkerProvider,JsonJobStore,deployWorker,ShareError,type BucketConfig,type WorkerConfig,type ShareReservation,type ReserveInput,type UploadInput,type PublishInput,type MetadataPatch,type DeploymentInput } from './index.js';
+import { BucketProvider, WorkerProvider, JsonJobStore, deployWorker, ShareError, type BucketConfig, type WorkerConfig, type ShareReservation, type ReserveInput, type UploadInput, type PublishInput, type MetadataPatch, type DeploymentInput } from './index.js';
 // Secure caller sends one request on stdin. Credentials never occur in argv, persistent state or stdout.
-async function run():Promise<unknown>{let data='';for await(const chunk of process.stdin){data+=chunk;if(data.length>4*1024*1024)throw new ShareError('REQUEST_TOO_LARGE','Cloud request exceeds 4 MiB.');}const input=JSON.parse(data) as {cmd:string;provider:'bucket'|'worker';config:BucketConfig|WorkerConfig;stateDirectory:string;args:Record<string,unknown>};
- if(input.cmd==='deploy'){if(typeof input.args.ownerToken!=='string'||typeof input.args.sessionSecret!=='string')throw new ShareError('SECURE_CALLER_REQUIRED','Deploy requires pre-created ownerToken and sessionSecret retained by a secure caller.');const result=await deployWorker(input.args as unknown as DeploymentInput);const {ownerToken:_token,sessionSecret:_secret,...safe}=result;return {...safe,secretsReturned:false,message:'Use deployWorker API with a secure caller to retain credentials; CLI does not emit secrets.'};}
- if(!input.stateDirectory||!input.config)throw new ShareError('CONFIG_REQUIRED','Share provider and private state directory are required.');const store=new JsonJobStore(input.stateDirectory);const root=fileURLToPath(new URL('../../',import.meta.url));
- const provider=input.provider==='bucket'?new BucketProvider(input.config as BucketConfig,{store,viewerAssets:{js:await readFile(join(root,'viewer/dist/viewer.js'),'utf8'),css:await readFile(join(root,'viewer/dist/viewer.css'),'utf8')}}):new WorkerProvider(input.config as WorkerConfig,{store});
- if(input.cmd==='setup-check')return provider.setupCheck();if(input.cmd==='reserve')return provider.reserve(input.args as unknown as ReserveInput);const id=String(input.args.id);const share=(await store.read(id))?.reservation;if(!share)throw new ShareError('SHARE_NOT_FOUND','Local share reservation does not exist.');
- if(input.cmd==='upload')return provider.upload(share,input.args as unknown as UploadInput);if(input.cmd==='publish')return provider.publish(share,input.args as unknown as PublishInput);if(input.cmd==='update')return provider.updateMetadata(share,input.args as unknown as MetadataPatch);if(input.cmd==='unshare'){await provider.delete(share);return{deleted:true,id};}throw new ShareError('UNKNOWN_COMMAND','Unknown cloud command.');}
-try{console.log(JSON.stringify({ok:true,result:await run()}));}catch(e){const error=e instanceof ShareError?e:new ShareError('INVALID_REQUEST','Cloud command failed.');console.log(JSON.stringify({ok:false,error:{code:error.code,message:error.message,status:error.status}}));process.exitCode=1;}
+async function run(): Promise<unknown> {
+    let data = '';
+    for await (const chunk of process.stdin) {
+        data += chunk;
+        if (data.length > 4 * 1024 * 1024)
+            throw new ShareError('REQUEST_TOO_LARGE', 'Cloud request exceeds 4 MiB.');
+    }
+    const input = JSON.parse(data) as {
+        cmd: string;
+        provider: 'bucket' | 'worker';
+        config: BucketConfig | WorkerConfig;
+        stateDirectory: string;
+        args: Record<string, unknown>;
+    };
+    if (input.cmd === 'deploy') {
+        if (typeof input.args.ownerToken !== 'string' || typeof input.args.sessionSecret !== 'string')
+            throw new ShareError('SECURE_CALLER_REQUIRED', 'Deploy requires pre-created ownerToken and sessionSecret retained by a secure caller.');
+        const result = await deployWorker(input.args as unknown as DeploymentInput);
+        const { ownerToken: _token, sessionSecret: _secret, ...safe } = result;
+        return { ...safe, secretsReturned: false, message: 'Use deployWorker API with a secure caller to retain credentials; CLI does not emit secrets.' };
+    }
+    if (!input.stateDirectory || !input.config)
+        throw new ShareError('CONFIG_REQUIRED', 'Share provider and private state directory are required.');
+    const store = new JsonJobStore(input.stateDirectory);
+    const root = fileURLToPath(new URL('../../', import.meta.url));
+    const provider = input.provider === 'bucket' ? new BucketProvider(input.config as BucketConfig, { store, viewerAssets: { js: await readFile(join(root, 'viewer/dist/viewer.js'), 'utf8'), css: await readFile(join(root, 'viewer/dist/viewer.css'), 'utf8') } }) : new WorkerProvider(input.config as WorkerConfig, { store });
+    if (input.cmd === 'setup-check')
+        return provider.setupCheck();
+    if (input.cmd === 'reserve')
+        return provider.reserve(input.args as unknown as ReserveInput);
+    const id = String(input.args.id);
+    const share = (await store.read(id))?.reservation;
+    if (!share)
+        throw new ShareError('SHARE_NOT_FOUND', 'Local share reservation does not exist.');
+    if (input.cmd === 'upload')
+        return provider.upload(share, input.args as unknown as UploadInput);
+    if (input.cmd === 'publish')
+        return provider.publish(share, input.args as unknown as PublishInput);
+    if (input.cmd === 'update')
+        return provider.updateMetadata(share, input.args as unknown as MetadataPatch);
+    if (input.cmd === 'unshare') {
+        await provider.delete(share);
+        return { deleted: true, id };
+    }
+    throw new ShareError('UNKNOWN_COMMAND', 'Unknown cloud command.');
+}
+try {
+    console.log(JSON.stringify({ ok: true, result: await run() }));
+}
+catch (e) {
+    const error = e instanceof ShareError ? e : new ShareError('INVALID_REQUEST', 'Cloud command failed.');
+    console.log(JSON.stringify({ ok: false, error: { code: error.code, message: error.message, status: error.status } }));
+    process.exitCode = 1;
+}

@@ -1,9 +1,25 @@
-const enc=new TextEncoder();
-export function randomID(bytes=16):string {return base64url(crypto.getRandomValues(new Uint8Array(bytes)));}
-export function base64url(a:Uint8Array):string {return btoa(String.fromCharCode(...a)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
-function decode(s:string):Uint8Array<ArrayBuffer> {if(!/^[a-zA-Z0-9_-]+$/.test(s))throw new Error('invalid');return Uint8Array.from(atob(s.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0));}
-export async function digest(s:string):Promise<string> {return base64url(new Uint8Array(await crypto.subtle.digest('SHA-256',enc.encode(s))));}
-export function equal(a:string,b:string):boolean {let diff=a.length^b.length;const count=Math.max(a.length,b.length);for(let i=0;i<count;i++)diff|=(a.charCodeAt(i)||0)^(b.charCodeAt(i)||0);return diff===0;}
-export async function passwordHash(password:string,salt:string):Promise<string> {const key=await crypto.subtle.importKey('raw',enc.encode(password),'PBKDF2',false,['deriveBits']);return base64url(new Uint8Array(await crypto.subtle.deriveBits({name:'PBKDF2',salt:decode(salt),iterations:100000,hash:'SHA-256'},key,256)));}
-export async function signGrant(secret:string,payload:Record<string,unknown>):Promise<string> {const data=base64url(enc.encode(JSON.stringify(payload)));const k=await crypto.subtle.importKey('raw',enc.encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);return data+'.'+base64url(new Uint8Array(await crypto.subtle.sign('HMAC',k,enc.encode(data))));}
-export async function verifyGrant(secret:string,token:string):Promise<Record<string,unknown>|null> {try {const [data,mac,...rest]=token.split('.');if(!data||!mac||rest.length)return null;const k=await crypto.subtle.importKey('raw',enc.encode(secret),{name:'HMAC',hash:'SHA-256'},false,['sign']);if(!equal(base64url(new Uint8Array(await crypto.subtle.sign('HMAC',k,enc.encode(data)))),mac))return null;const p=JSON.parse(new TextDecoder().decode(decode(data))) as Record<string,unknown>;if(typeof p.exp!=='number'||p.exp<Date.now())return null;return p;}catch{return null;}}
+const enc = new TextEncoder();
+export function randomID(bytes = 16): string { return base64url(crypto.getRandomValues(new Uint8Array(bytes))); }
+export function base64url(a: Uint8Array): string { return btoa(String.fromCharCode(...a)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+function decode(s: string): Uint8Array<ArrayBuffer> { if (!/^[a-zA-Z0-9_-]+$/.test(s))
+    throw new Error('invalid'); return Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0)); }
+export async function digest(s: string): Promise<string> { return base64url(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(s)))); }
+export function equal(a: string, b: string): boolean { let diff = a.length ^ b.length; const count = Math.max(a.length, b.length); for (let i = 0; i < count; i++)
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0); return diff === 0; }
+export async function passwordHash(password: string, salt: string): Promise<string> { const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']); return base64url(new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: decode(salt), iterations: 100000, hash: 'SHA-256' }, key, 256))); }
+export async function signGrant(secret: string, payload: Record<string, unknown>): Promise<string> { const data = base64url(enc.encode(JSON.stringify(payload))); const k = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']); return data + '.' + base64url(new Uint8Array(await crypto.subtle.sign('HMAC', k, enc.encode(data)))); }
+export async function verifyGrant(secret: string, token: string): Promise<Record<string, unknown> | null> { try {
+    const [data, mac, ...rest] = token.split('.');
+    if (!data || !mac || rest.length)
+        return null;
+    const k = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    if (!equal(base64url(new Uint8Array(await crypto.subtle.sign('HMAC', k, enc.encode(data)))), mac))
+        return null;
+    const p = JSON.parse(new TextDecoder().decode(decode(data))) as Record<string, unknown>;
+    if (typeof p.exp !== 'number' || p.exp < Date.now())
+        return null;
+    return p;
+}
+catch {
+    return null;
+} }
