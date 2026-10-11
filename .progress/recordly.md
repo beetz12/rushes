@@ -6,7 +6,7 @@
 3. Read macOS capture path: native ScreenCaptureKit helper, cursor monitor, main-process recording glue, renderer recorder hook (done).
 4. Read editor: zoom, cursor smoothing, click effects, webcam bubble, timeline, project format (project format done; editor polish delegated to a read-only explore helper, results pending).
 5. Read export pipeline, captions/whisper, annotation (delegated to a read-only explore helper, pending).
-6. Read share service (MIT) and supabase folder (delegated to a read-only explore helper, pending).
+6. Read share service (MIT) and supabase folder (helper report received; key claims spot-checked in wrangler config, uploads, crypto, media, router, HOSTED.md, desktop upload constants).
 7. Write docs/research/recordly.md and .json; run both checks; commit.
 
 ## Done
