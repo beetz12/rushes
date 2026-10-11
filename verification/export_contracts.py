@@ -51,7 +51,11 @@ class ExportRunner(Runner):
         media = json.loads(decoded["stdout"])[0]
         assert abs(media["duration"] - expected_seconds) < .05, media
         if require_video:
-            assert any(t["type"] == "vide" for t in media["decodedTracks"]), media
+            video = [t for t in media["decodedTracks"] if t["type"] == "vide"]
+            assert video, media
+            assert sum(video[0]["firstCenterBGRA"][:3]) > 80, {
+                "contract": "a cut inside nonblack recorded video must begin with recorded content",
+                "decoded": media}
         if fast_start:
             order = boxes(path)
             assert order[:2] == ["ftyp", "moov"], order
@@ -82,6 +86,9 @@ class ExportRunner(Runner):
                     "fps": fps, "path": str(path)})
                 results[path.name] = {"reply": result, "decoded": self.probe_output(
                     path, length, preset != "audio", container == "mp4")}
+                if preset == "youtube":
+                    video = [t for t in results[path.name]["decoded"]["decodedTracks"] if t["type"] == "vide"][0]
+                    assert video["videoSize"] == [1920, 1080] and abs(video["nominalFrameRate"] - 60) < .1, video
                 assert hashes(package) == before, f"{preset} altered originals"
             cached = self.verified_request(engine, "export", {
                 "id": ident, "preset": "share", "path": str(exports / "share-again.mp4")})
@@ -89,7 +96,7 @@ class ExportRunner(Runner):
             original_key = results["share.mp4"]["reply"]["cacheKey"]
             assert cached["cacheKey"] == original_key
             trimmed = self.verified_request(engine, "edit.set", {
-                "id": ident, "startMs": 500, "endMs": 2500, "speed": 2,
+                "id": ident, "startMs": 510, "endMs": 2510, "speed": 2,
                 "title": "Independent trimmed take"})
             assert trimmed["clips"][0]["speed"] == 2
             path = exports / "trimmed.mp4"

@@ -31,6 +31,8 @@ struct ProbeMedia {
                     var end = 0.0
                     var maximumGap = 0.0
                     var previousEnd: Double?
+                    var firstPixelBGRA: [Int]?
+                    var videoSize: [Int]?
                     while let sample = output.copyNextSampleBuffer() {
                         let pts = CMSampleBufferGetPresentationTimeStamp(sample).seconds
                         let sampleDuration = CMSampleBufferGetDuration(sample).seconds
@@ -39,6 +41,19 @@ struct ProbeMedia {
                         if let previousEnd { maximumGap = max(maximumGap, pts - previousEnd) }
                         if type == .video, CMSampleBufferGetImageBuffer(sample) == nil {
                             throw ProbeError.decode
+                        }
+                        if type == .video, firstPixelBGRA == nil,
+                           let pixels = CMSampleBufferGetImageBuffer(sample) {
+                            CVPixelBufferLockBaseAddress(pixels, .readOnly)
+                            if let base = CVPixelBufferGetBaseAddress(pixels) {
+                                let width = CVPixelBufferGetWidth(pixels)
+                                let height = CVPixelBufferGetHeight(pixels)
+                                let center = base.advanced(by: (height / 2) * CVPixelBufferGetBytesPerRow(pixels) + (width / 2) * 4)
+                                    .assumingMemoryBound(to: UInt8.self)
+                                firstPixelBGRA = (0..<4).map { Int(center[$0]) }
+                                videoSize = [width, height]
+                            }
+                            CVPixelBufferUnlockBaseAddress(pixels, .readOnly)
                         }
                         if type == .audio, CMSampleBufferGetDataBuffer(sample) == nil {
                             throw ProbeError.decode
@@ -52,9 +67,13 @@ struct ProbeMedia {
                     guard reader.status == .completed, count > 0 else {
                         throw reader.error ?? ProbeError.empty
                     }
-                    decoded.append(["type": type.rawValue, "samples": count,
-                                    "firstPTS": first!, "lastPTS": last!,
-                                    "sampleEnd": end, "maximumGap": maximumGap])
+                    var detail: [String: Any] = ["type": type.rawValue, "samples": count,
+                                                "firstPTS": first!, "lastPTS": last!,
+                                                "sampleEnd": end, "maximumGap": maximumGap]
+                    if let firstPixelBGRA { detail["firstCenterBGRA"] = firstPixelBGRA }
+                    if let videoSize { detail["videoSize"] = videoSize }
+                    if type == .video { detail["nominalFrameRate"] = try await track.load(.nominalFrameRate) }
+                    decoded.append(detail)
                 }
                 guard duration.isFinite, !decoded.isEmpty else { throw ProbeError.empty }
                 records.append(["path": path, "ok": true, "duration": duration,
