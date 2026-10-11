@@ -619,7 +619,7 @@ case "analyze clap":
 
 default:
     let serviceCommand = invocation.command.replacingOccurrences(of: " ", with: ".")
-    if ExtendedCommandRouter.commands.contains(serviceCommand) || serviceCommand == "recover" {
+    if ExtendedCommandRouter.commands.union(LocalAutomationService.commands).contains(serviceCommand) || serviceCommand == "recover" {
         var args: [String: JSONValue] = [:]
         if let id = invocation.positional.first { args["id"] = .string(id) }
         let strings = ["--preset": "preset", "--output": "path", "--format": "format", "--locale": "locale",

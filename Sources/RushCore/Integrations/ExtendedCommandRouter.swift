@@ -121,10 +121,26 @@ public actor ExtendedCommandRouter {
         let previous = try await index.row(id: id)
         let transcript = try package.validatedMediaURL("transcript.json")
         var shareURL = previous?.shareURL
-        let share = try package.validatedMediaURL("share.json")
-        if FileManager.default.fileExists(atPath: share.path),
-           let object = try JSONSerialization.jsonObject(with: Data(contentsOf: share)) as? [String: Any] {
-            shareURL = object["unshared"] as? Bool == true ? nil : object["url"] as? String
+        let folder = package.folderURL.standardizedFileURL.resolvingSymlinksInPath()
+        let state = folder.appendingPathComponent("share/state.json").standardizedFileURL.resolvingSymlinksInPath()
+        guard state.path.hasPrefix(folder.path + "/share/") else {
+            throw ControlFailure(code: "unsafe-package-path", message: "Share state must remain inside this recording package")
+        }
+        if FileManager.default.fileExists(atPath: state.path) {
+            let data = try Data(contentsOf: state)
+            guard data.count <= 1_048_576,
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  object["schema"] as? String == "rushes.shell-share/1" else {
+                throw ControlFailure(code: "invalid-share-state")
+            }
+            let reservation = object["reservation"] as? [String: Any]
+            shareURL = object["state"] as? String == "unshared" ? nil : reservation?["url"] as? String
+        } else {
+            let legacy = try package.validatedMediaURL("share.json")
+            if FileManager.default.fileExists(atPath: legacy.path),
+               let object = try JSONSerialization.jsonObject(with: Data(contentsOf: legacy)) as? [String: Any] {
+                shareURL = object["unshared"] as? Bool == true ? nil : object["url"] as? String
+            }
         }
         try await index.upsert(.init(id: id, folder: package.folderURL.path, title: manifest.title,
             createdAt: manifest.createdAt ?? "", durationMs: manifest.clock?.durationNs.map { $0 / 1_000_000 },

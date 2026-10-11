@@ -137,6 +137,7 @@ public actor EngineController: ControlHandling {
     private let config: EngineControllerConfig
     private let index: PackageIndex
     private let extended: ExtendedCommandRouter
+    private let automation: LocalAutomationService
     private var startupWarnings: [String] = []
 
     private var active: ActiveRecording?
@@ -164,6 +165,7 @@ public actor EngineController: ControlHandling {
     private var eventSink: (@Sendable (ControlEvent) -> Void)?
 
     public init(config: EngineControllerConfig) throws {
+        automation = LocalAutomationService(directory: (config.socketPath.isEmpty ? config.indexDatabaseURL.deletingLastPathComponent() : URL(fileURLWithPath: config.socketPath).deletingLastPathComponent()).appendingPathComponent("automation"))
         self.config = config
         let index = try PackageIndex(databaseURL: config.indexDatabaseURL)
         self.index = index
@@ -187,6 +189,8 @@ public actor EngineController: ControlHandling {
         } catch {
             startupWarnings.append("Recovery/index refresh failed: \(error)")
         }
+        do { try await automation.restore(tools: automationTools(), handler: automationHandler()) }
+        catch { startupWarnings.append("Local automation startup failed: \(error)") }
     }
 
     /// Installs a test-side event collector.
@@ -202,6 +206,7 @@ public actor EngineController: ControlHandling {
     public func shutdown() async -> StoppedRecording? {
         let result = active != nil ? try? await stopActive() : nil
         await config.captureRigs.stopPreview()
+        await automation.shutdown()
         return result
     }
 
@@ -236,7 +241,17 @@ public actor EngineController: ControlHandling {
     }
 
     private func dispatch(_ request: ControlRequest, context: ControlCommandContext) async throws -> ControlResponse? {
+        if LocalAutomationService.commands.contains(request.cmd) {
+            return .success(id: request.id, result: try await automation.handle(request,
+                tools: automationTools(), handler: automationHandler()))
+        }
         switch request.cmd {
+        case "url.open":
+            guard let text = request.param("url")?.string, let url = URL(string: text) else {
+                throw ControlFailure(code: "invalid-url", message: "url.open requires a rushes:// URL")
+            }
+            let routed = try RushURLRoute.parse(url).request
+            return try await dispatch(.init(id: request.id, cmd: routed.cmd, args: routed.args), context: context)
         case "ping":
             return .success(
                 id: request.id,
@@ -362,6 +377,12 @@ public actor EngineController: ControlHandling {
         case "record.resume":
             try await transition(.resume)
             return .success(id: request.id, result: .object(["state": .string("recording")]))
+        case "library.refresh":
+            _ = try await index.rebuild(root: config.recordingsRoot)
+            for entry in try RecordingPackage.scanManifests(root: config.recordingsRoot) {
+                try await extended.refreshIndex(id: entry.manifest.id)
+            }
+            return .success(id: request.id, result: try await listResult(request))
         case "list":
             return .success(id: request.id, result: try await listResult(request))
         case "show":
@@ -390,6 +411,39 @@ public actor EngineController: ControlHandling {
                 code: ControlErrorCode.unknownCommand,
                 message: "no command named \(request.cmd); run guide")
         }
+    }
+
+    private func automationHandler() -> AutomationDispatcher.CommandHandler {
+        { [weak self] request in
+            guard let self else { throw ControlFailure(code: "engine-unavailable") }
+            return try await self.executeAutomation(request)
+        }
+    }
+
+    private func executeAutomation(_ request: ControlRequest) async throws -> JSONValue {
+        let sink = eventSink
+        let context = ControlCommandContext(reply: { _ in }, broadcast: { event in sink?(event) })
+        guard let response = try await dispatch(request, context: context), response.ok else {
+            throw ControlFailure(code: "command-failed")
+        }
+        return response.result ?? .object([:])
+    }
+
+    private func automationTools() -> [MCPTool] {
+        let reads: Set<String> = ["ping", "version", "guide", "status", "targets", "permissions.check",
+            "permissions.settings", "list", "show", "verify", "edit.get", "transcript.get", "meta.get", "share.status", "jobs.list"]
+        let excluded = LocalAutomationService.commands.union(["permissions.request", "camera.preview.start", "camera.preview.stop", "camera.preview.subscribe", "url.open"])
+        return ControlGuide.make(version: config.version, socketPath: config.socketPath).commands
+            .filter { !excluded.contains($0.name) }.map { doc in
+                var properties: [String: JSONValue] = [:]
+                for param in doc.params {
+                    let type = param.type.contains("boolean") ? "boolean" : (param.type.contains("integer") || param.type.contains("number") ? "number" : "string")
+                    properties[param.name] = .object(["type": .string(type), "description": .string(param.description)])
+                }
+                let schema: JSONValue = .object(["type": .string("object"), "properties": .object(properties),
+                    "required": .array(doc.params.filter(\.required).map { .string($0.name) })])
+                return MCPTool(command: doc.name, description: doc.summary, inputSchema: schema, readOnly: reads.contains(doc.name))
+            }
     }
 
     // MARK: - Read-only commands
@@ -430,6 +484,19 @@ public actor EngineController: ControlHandling {
 
     private func listResult(_ request: ControlRequest) async throws -> JSONValue {
         var rows = try await index.allRows()
+        if let value = request.param("query") {
+            guard let query = value.string, query.count <= 256 else {
+                throw ControlFailure(code: "invalid-params", message: "Library query must be text of at most 256 characters")
+            }
+            if !query.isEmpty {
+                rows = try rows.filter { row in
+                    if (row.title ?? row.id).localizedCaseInsensitiveContains(query) { return true }
+                    guard let package = RecordingPackage.resolve(root: config.recordingsRoot, id: row.id) else { return false }
+                    let text = try package.validatedMediaURL("transcript.txt")
+                    return try RecordingTextSearch.contains(query, file: text)
+                }
+            }
+        }
         if let limit = request.param("limit")?.int, limit > 0 {
             rows = Array(rows.prefix(Int(limit)))
         }

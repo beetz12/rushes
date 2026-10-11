@@ -410,6 +410,8 @@ struct EngineControllerTests {
             "ping", "version", "guide", "status", "targets",
             "record.start", "record.stop", "record.pause", "record.resume",
             "list", "show", "verify", "selftest.sync", "analyze.clap",
+            "export", "share.assets", "transcribe", "captions.export", "meta.generate",
+            "mcp.enable", "mcp.disable", "mcp.status", "url.open", "library.refresh",
         ] {
             #expect(names.contains(expected), "guide is missing \(expected)")
         }
@@ -420,6 +422,36 @@ struct EngineControllerTests {
         #expect(try ControlWire.decoder.decode(ControlGuide.self, from: data) == guide)
     }
 
+    @Test("Engine exposes routed MCP and validates URL routes before state changes")
+    func routedAutomation() async throws {
+        let scratch = try tempDirectory("routed-automation")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let controller = try makeController(root: scratch.appendingPathComponent("root"), indexURL: scratch.appendingPathComponent("index.sqlite"))
+        let exchange = ControlExchange()
+        await controller.handle(.init(id: "enable", cmd: "mcp.enable"), context: exchange.context)
+        let enabled = try #require(exchange.lastResponse)
+        #expect(enabled.ok && enabled.result?["enabled"]?.bool == true)
+        let urlText = try #require(enabled.result?["url"]?.string)
+        let url = try #require(URL(string: urlText))
+        let token = try #require(enabled.result?["token"]?.string)
+        var request = URLRequest(url: url); request.httpMethod = "POST"; request.timeoutInterval = 5
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
+        request.httpBody = try ControlWire.encoder.encode(JSONValue.object(["jsonrpc": .string("2.0"), "id": .int(1), "method": .string("tools/call"),
+            "params": .object(["name": .string("status"), "arguments": .object([:])])]))
+        let (body, response) = try await URLSession.shared.data(for: request)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        let result = try JSONDecoder().decode(JSONValue.self, from: body)
+        #expect(result["result"]?["isError"]?.bool == false)
+        #expect(result["result"]?["content"]?.array?.first?["text"]?.string?.contains("idle") == true)
+        await controller.handle(.init(id: "url", cmd: "url.open", args: .object(["url": .string("rushes://record?unknown=1")])), context: exchange.context)
+        #expect(exchange.lastResponse?.error?.code == "invalid-url")
+        await controller.handle(.init(id: "status", cmd: "status"), context: exchange.context)
+        #expect(exchange.lastResponse?.result?["state"]?.string == "idle")
+        await controller.handle(.init(id: "disable", cmd: "mcp.disable"), context: exchange.context)
+        #expect(exchange.lastResponse?.result?["enabled"]?.bool == false)
+        _ = await controller.shutdown()
+    }
     @Test("Ping, version, status idle and targets answer")
     func readOnlyCommands() async throws {
         let scratch = try tempDirectory("readonly")

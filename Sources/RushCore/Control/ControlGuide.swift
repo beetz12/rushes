@@ -104,6 +104,11 @@ public struct ControlGuide: Codable, Equatable, Sendable {
 
     private static func commandDocs() -> [CommandDoc] {
         [
+            CommandDoc(name: "library.refresh", cli: [], summary: "Rebuild library cache after a reversible move or restore; manifests remain authoritative.", usage: "socket library.refresh", result: "{recordings:[index rows]}"),
+            CommandDoc(name: "mcp.enable", cli: ["mcp enable"], summary: "Enable private loopback MCP; read-only unless allowMutations is explicitly true.", usage: "rushes mcp enable [--args FILE]", params: [.init(name: "allowMutations", type: "boolean", description: "Explicitly permit recording/edit/export/share mutations."), .init(name: "port", type: "integer", description: "0 requests an available loopback port.")], result: "{enabled,allowMutations,url,token}; token only returned on enable"),
+            CommandDoc(name: "mcp.disable", cli: ["mcp disable"], summary: "Stop loopback MCP and disable restoration on next launch.", usage: "rushes mcp disable", result: "{enabled:false}"),
+            CommandDoc(name: "mcp.status", cli: ["mcp status"], summary: "Inspect local automation state without revealing the credential.", usage: "rushes mcp status", result: "{enabled,allowMutations,url?}"),
+            CommandDoc(name: "url.open", cli: [], summary: "Validate and execute a closed-list rushes:// automation route.", usage: "socket url.open {url:string}", result: "underlying command result"),
             CommandDoc(name: "permissions.check", cli: ["permissions check"], summary: "Inspect native permissions without prompting.", usage: "rushes permissions check", result: "{screen,camera,microphone,accessibility,inputMonitoring,details}"),
             CommandDoc(name: "permissions.request", cli: ["permissions request"], summary: "Explicitly request one native permission.", usage: "rushes permissions request PERMISSION", result: "permission states"),
             CommandDoc(name: "permissions.settings", cli: ["permissions settings"], summary: "Get the relevant Settings link.", usage: "rushes permissions settings PERMISSION", result: "{url}"),
