@@ -26,8 +26,11 @@
 - Local captions: whisper-rs + parakeet-rs (desktop-gpui transcription.rs). Camera bubble: round/square/full, 150-600 px, default 230 (camera_window.rs).
 - MIT crates surveyed: camera (enumeration, VID/PID model id, Native vs Compatibility mode, frame-duration pin), camera-avfoundation, camera-effects (Vision / ONNX selfie seg + blur, has two .onnx assets), scap-screencapturekit (thin cidre wrapper), scap-targets (displays/windows/notch), scap-cpal, scap-ffmpeg, scap-direct3d.
 
+- More: comments table types emoji/text/video/audio with timestamp + parent; BYO S3 creds encrypted; Tinybird view events 90-day TTL, geo from Vercel headers; CLI is JSON/NDJSON + MCP + skill; permissions use preflight APIs only; macOS min 12.3; Linux AppImage/deb/rpm; mobile is Expo; render farm for server export; web transcript-cut editing via AssemblyAI words; AVFoundation writer bitrates (~10 Mbps 1080p30 balanced, instant ~3.5 Mbps, keyframe every 0.75 s of frames); OOP muxer over framed stdin with CRC; MIT crates depend on Cap forks of cidre/cpal/rust-ffmpeg + hakari workspace-hack.
+
 ## Unverified
-- (none outstanding)
+- Post-recording sync analyzer (crates/recording/src/sync_calibration.rs) is defined, editor reads the calibration store, but I did not find the analyzer invoked from the apps.
+- ONNX model licences in crates/camera-effects/assets not checked.
 
 ## First unfinished step
-- Step 2 tail: comments/reactions/analytics schema, BYO S3, CLI/MCP/agent API, permissions, packaging, privacy. Then step 4 (write notes).
+- Step 4: write docs/research/cap.md and cap.json.
