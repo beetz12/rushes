@@ -30,5 +30,7 @@ const api: RushesAPI = {
   testCloud: () => invoke('rushes:test-cloud'),
   share: (id) => invoke('rushes:share', id),
   copyLink: (url) => invoke('rushes:copy-link', url),
+  copyText: (text) => invoke('rushes:copy-text', text),
+  drawing: (action, options = {}) => invoke('rushes:drawing', { action, ...options }),
 };
 contextBridge.exposeInMainWorld('rushes', api);

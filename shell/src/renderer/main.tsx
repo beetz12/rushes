@@ -28,7 +28,15 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { normalizedPointer } from '../shared/geometry';
+import {
+  ProductionSettings,
+  TeleprompterOverlay,
+  DrawingOverlay,
+  DrawingTools,
+  RecordingJobs,
+} from './extras';
 import './style.css';
+document.documentElement.dataset.view = location.hash.slice(1) || 'recorder';
 const api = window.rushes;
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
   const icons: Record<string, LucideIcon> = {
@@ -110,6 +118,7 @@ function App() {
       if (e.event === 'error') setError(String(e.message ?? 'Native engine error'));
       if (e.event === 'warning') setNote(String(e.message ?? e.code));
       if (e.event === 'engine-ready') void refresh();
+      if (e.event === 'camera-preview-cleared') setPreview('');
       if (e.event === 'camera-preview') {
         const data = (e.result ?? e) as any;
         if (data.jpeg) setPreview(`data:image/jpeg;base64,${data.jpeg}`);
@@ -224,6 +233,9 @@ function App() {
       </div>
     );
   if (view === 'area') return <AreaSelector />;
+  if (view === 'teleprompter') return <TeleprompterOverlay />;
+  if (view === 'drawing') return <DrawingOverlay />;
+  if (view === 'drawing-tools') return <DrawingTools run={run} error={error} />;
   if (view === 'bar')
     return (
       <div className="floating-bar">
@@ -276,6 +288,12 @@ function App() {
         >
           <Icon name="screen" />
           {systemMuted && <small>×</small>}
+        </button>
+        <button title="Voice teleprompter" onClick={() => run(() => api.window('teleprompter'))}>
+          Aa
+        </button>
+        <button title="Draw on this recording" onClick={() => run(() => api.window('drawing'))}>
+          <Icon name="edit" />
         </button>
         <button className="stop-btn" onClick={() => control('record.stop')}>
           <Icon name="stop" />
@@ -751,18 +769,44 @@ function AreaSelector() {
 function Library({ run, setNote }: any) {
   const [rows, setRows] = useState<any[]>([]),
     [selected, setSelected] = useState<string | null>(null),
-    [filter, setFilter] = useState('');
+    [filter, setFilter] = useState(''),
+    [undo, setUndo] = useState<{ token: string; expires: number } | null>(null);
+  const querySequence = useRef(0);
   const reload = useCallback(async () => {
-    const result = await api.request('list', { limit: 500 });
-    setRows(result.recordings);
-  }, []);
+    const sequence = ++querySequence.current;
+    const result = await api.request('list', { limit: 500, query: filter });
+    if (sequence === querySequence.current) setRows(result.recordings);
+  }, [filter]);
   useEffect(() => {
-    void run(reload);
-    return api.onEvent((e) => {
-      if (e.event === 'recording-stopped') void reload();
-      if (e.event === 'open-recording') setSelected(String(e.id));
-    });
+    const timer = setTimeout(() => void run(reload), 200);
+    return () => {
+      clearTimeout(timer);
+      ++querySequence.current;
+    };
   }, [reload]);
+  useEffect(
+    () =>
+      api.onEvent((e) => {
+        if (e.event === 'recording-stopped') void reload();
+        if (e.event === 'open-recording') setSelected(String(e.id));
+      }),
+    [reload],
+  );
+  useEffect(() => {
+    if (!undo) return;
+    const timer = setTimeout(() => setUndo(null), Math.max(0, undo.expires - Date.now()));
+    return () => clearTimeout(timer);
+  }, [undo]);
+  const trashed = (result: any) => {
+    setUndo({ token: result.undoToken, expires: Date.now() + result.undoWindowMs });
+    setSelected(null);
+    void reload();
+  };
+  const trash = (id: string) =>
+    run(async () => {
+      if (await api.confirm('Move this recording and all its original tracks to macOS Trash?'))
+        trashed(await api.request('library.trash', { id }));
+    });
   if (selected)
     return (
       <Review
@@ -773,6 +817,7 @@ function Library({ run, setNote }: any) {
         }}
         run={run}
         setNote={setNote}
+        trashed={trashed}
       />
     );
   return (
@@ -788,17 +833,43 @@ function Library({ run, setNote }: any) {
           New recording
         </button>
       </div>
+      {undo && (
+        <div className="alert undo-toast" role="status">
+          Moved to macOS Trash.{' '}
+          <button
+            className="text-button"
+            onClick={() =>
+              run(async () => {
+                await api.request('library.undoTrash', { token: undo.token });
+                setUndo(null);
+                await reload();
+              })
+            }
+          >
+            Undo
+          </button>
+        </div>
+      )}
       <div className="library-toolbar">
         <span>
           {rows.length} recording{rows.length === 1 ? '' : 's'}
         </span>
         <input
           aria-label="Search recordings"
-          placeholder="Search your recordings…"
+          placeholder="Search titles and spoken words…"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
         />
-        <button className="icon-button" title="Refresh recordings" onClick={() => run(reload)}>
+        <button
+          className="icon-button"
+          title="Refresh recordings"
+          onClick={() =>
+            run(async () => {
+              await api.request('library.refresh');
+              await reload();
+            })
+          }
+        >
           <Icon name="refresh" />
         </button>
       </div>
@@ -807,18 +878,21 @@ function Library({ run, setNote }: any) {
           <div className="empty-icon">
             <Icon name="library" size={36} />
           </div>
-          <h2>Your first take starts here.</h2>
-          <p>Record something and it will appear here, ready to play and edit.</p>
+          <h2>{filter ? 'No matching recordings.' : 'Your first take starts here.'}</h2>
+          <p>
+            {filter
+              ? 'Try another title or spoken phrase.'
+              : 'Record something and it will appear here, ready to play and edit.'}
+          </p>
           <button className="primary" onClick={() => api.window('recorder')}>
             Record your first video
           </button>
         </div>
       ) : (
         <div className="recording-grid">
-          {rows
-            .filter((r) => (r.title ?? r.id).toLowerCase().includes(filter.toLowerCase()))
-            .map((r) => (
-              <button className="recording-card" key={r.id} onClick={() => setSelected(r.id)}>
+          {rows.map((r) => (
+            <article className="recording-card" key={r.id}>
+              <button className="recording-open" onClick={() => setSelected(r.id)}>
                 <div className="recording-poster">
                   <Icon name="play" size={38} />
                   <span className="duration-badge">{formatDuration(r.durationMs ?? 0)}</span>
@@ -832,13 +906,21 @@ function Library({ run, setNote }: any) {
                   </span>
                 </div>
               </button>
-            ))}
+              <button
+                className="recording-trash"
+                aria-label={`Move ${r.title || 'recording'} to Trash`}
+                onClick={() => trash(r.id)}
+              >
+                <Icon name="trash" size={17} />
+              </button>
+            </article>
+          ))}
         </div>
       )}
     </>
   );
 }
-function Review({ id, back, run, setNote }: any) {
+function Review({ id, back, run, setNote, trashed }: any) {
   const [recording, setRecording] = useState<any>(null),
     [edit, setEdit] = useState<any>(null),
     [urls, setUrls] = useState<Record<string, string>>({}),
@@ -1103,6 +1185,21 @@ function Review({ id, back, run, setNote }: any) {
           ← All recordings
         </button>
         <div className="review-actions">
+          <button
+            className="secondary"
+            title="Move recording to macOS Trash"
+            onClick={() =>
+              run(async () => {
+                if (
+                  await api.confirm('Move this recording and its original tracks to macOS Trash?')
+                )
+                  trashed(await api.request('library.trash', { id }));
+              })
+            }
+          >
+            <Icon name="trash" />
+            Trash
+          </button>
           <button
             className="secondary"
             onClick={() =>
@@ -1631,6 +1728,7 @@ function Review({ id, back, run, setNote }: any) {
           )}
         </div>
         <aside className="review-sidebar">
+          <RecordingJobs id={id} run={run} />
           <h3>Make it yours.</h3>
           <label className="field">
             Layout
@@ -1740,6 +1838,8 @@ function Review({ id, back, run, setNote }: any) {
                 ['diagnostics', 'Diagnostics bundle'],
                 ['thumbnail', 'YouTube thumbnail'],
                 ['vtt', 'WebVTT captions'],
+                ['srt', 'SRT captions'],
+                ['chapters', 'Chapters text'],
                 ['txt', 'Transcript text'],
               ].map(([value, label]) => (
                 <option key={value} value={value}>
@@ -1847,6 +1947,7 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
         </div>
       </div>
       <div className="settings-grid">
+        <ProductionSettings run={run} />
         <section className="settings-card">
           <h2>Permissions</h2>
           <PermissionPanel permissions={permissions} refresh={refresh} run={run} />

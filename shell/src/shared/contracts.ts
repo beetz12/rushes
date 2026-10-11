@@ -45,6 +45,20 @@ export const commands = [
   'meta.generate',
   'meta.set',
   'diagnostics',
+  'teleprompter.set',
+  'teleprompter.get',
+  'camera.blur.set',
+  'camera.blur.get',
+  'mcp.enable',
+  'mcp.disable',
+  'mcp.status',
+  'url.open',
+  'library.refresh',
+  'library.trash',
+  'library.undoTrash',
+  'jobs.list',
+  'jobs.retry',
+  'jobs.cancel',
   'teleprompter.start',
   'teleprompter.stop',
 ] as const;
@@ -59,6 +73,9 @@ export const windowSchema = z
       'recorder',
       'close',
       'area',
+      'drawing',
+      'drawing-hide',
+      'teleprompter',
       'cancel-area',
       'bubble-size',
       'move-bubble',
@@ -169,6 +186,11 @@ export interface RushesAPI {
   testCloud(): Promise<any>;
   share(id: string): Promise<{ url: string; state?: string }>;
   copyLink(url: string): Promise<void>;
+  copyText(text: string): Promise<void>;
+  drawing(
+    action: 'tool' | 'undo' | 'clear' | 'pause',
+    options?: { tool?: string; color?: string; paused?: boolean },
+  ): Promise<void>;
 }
 declare global {
   interface Window {

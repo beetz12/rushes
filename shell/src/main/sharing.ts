@@ -48,6 +48,7 @@ type Snapshot = {
   cacheKey: string;
   cached: boolean;
   editRevision: number;
+  editSnapshot: Record<string, unknown>;
 };
 type State = {
   schema: 'rushes.shell-share/1';
@@ -59,9 +60,15 @@ type State = {
   assets?: Record<string, Asset>;
   generation?: string;
   editRevision?: number;
+  publishedEdit?: Record<string, unknown>;
+  publishedVideoPath?: string;
   lastError?: { code?: string; message: string };
 };
-type Job = { promise: Promise<{ url: string; state: 'ready' }>; abort: AbortController };
+type Job = {
+  kind: 'share' | 'enrich';
+  promise: Promise<{ url: string; state: 'ready' }>;
+  abort: AbortController;
+};
 export class SharingService {
   private running = new Map<string, Job>();
   private reserving = new Map<
@@ -133,6 +140,10 @@ export class SharingService {
   async share(id: string, wait = false): Promise<{ url: string; state: 'processing' | 'ready' }> {
     const existing = this.running.get(id);
     if (existing) {
+      if (existing.kind === 'enrich') {
+        await existing.promise;
+        return this.share(id, wait);
+      }
       if (wait) return existing.promise;
       const show = await this.engine.request('show', { id });
       const state = await this.read(join(show.packagePath, 'share', 'state.json'));
@@ -150,7 +161,7 @@ export class SharingService {
         prepared.provider,
         abort.signal,
       ).finally(() => this.running.delete(id));
-      job = { promise, abort };
+      job = { kind: 'share', promise, abort };
       this.running.set(id, job);
       void promise.catch(() => {});
     }
@@ -163,10 +174,15 @@ export class SharingService {
     path: string,
     provider: ShareProvider,
     signal: AbortSignal,
+    frozen?: { editSnapshot: Record<string, unknown>; publishedVideoPath: string },
   ): Promise<{ url: string; state: 'ready' }> {
     try {
       this.notify({ event: 'share-progress', id, state: 'rendering', url: state.reservation.url });
-      const snapshot: Snapshot = await this.engine.request('share.assets', { id }, 30 * 60 * 1000);
+      const snapshot: Snapshot = await this.engine.request(
+        'share.assets',
+        { id, ...frozen },
+        30 * 60 * 1000,
+      );
       signal.throwIfAborted();
       this.notify({ event: 'share-progress', id, state: 'uploading', url: state.reservation.url });
       const assets: Record<string, Asset> = {};
@@ -221,6 +237,8 @@ export class SharingService {
         assets,
         generation: snapshot.cacheKey,
         editRevision: snapshot.editRevision,
+        publishedEdit: snapshot.editSnapshot,
+        publishedVideoPath: snapshot.videoPath,
         lastError: undefined,
         updatedAt: new Date().toISOString(),
       });
@@ -247,17 +265,50 @@ export class SharingService {
     }
   }
   async enrich(id: string) {
-    const running = this.running.get(id);
-    if (running) await running.promise;
-    const show = await this.engine.request('show', { id }),
-      path = join(show.packagePath, 'share', 'state.json'),
-      state = await this.read(path);
-    if (!state || state.state !== 'ready') return { updated: false };
-    this.checkProvider(state);
-    const result = await this.share(id, true);
-    return { updated: true, url: result.url };
+    if (this.running.has(id) || this.reserving.has(id))
+      throw Object.assign(
+        new Error('Sharing is still processing. Enrichment will retry after publication.'),
+        { code: 'share-processing', retryable: true },
+      );
+    const abort = new AbortController();
+    const promise = (async (): Promise<{ url: string; state: 'ready' }> => {
+      const show = await this.engine.request('show', { id }),
+        path = join(show.packagePath, 'share', 'state.json'),
+        state = await this.read(path);
+      if (!state || state.state === 'unshared')
+        throw Object.assign(new Error('This recording has no active share.'), {
+          code: 'share-not-shared',
+        });
+      if (state.state === 'processing')
+        throw Object.assign(new Error('Sharing is still processing.'), {
+          code: 'share-processing',
+          retryable: true,
+        });
+      this.checkProvider(state);
+      if (!state.publishedEdit || !state.publishedVideoPath)
+        throw Object.assign(
+          new Error(
+            'Share this recording again to save its published edit snapshot before enriching it.',
+          ),
+          { code: 're-share-required' },
+        );
+      return this.publishSnapshot(id, state, path, await this.provider(), abort.signal, {
+        editSnapshot: state.publishedEdit,
+        publishedVideoPath: state.publishedVideoPath,
+      });
+    })().finally(() => this.running.delete(id));
+    this.running.set(id, { kind: 'enrich', promise, abort });
+    try {
+      const result = await promise;
+      return { updated: true, url: result.url };
+    } catch (error) {
+      if ((error as any).code === 'share-not-shared')
+        return { updated: false, reason: 'not-shared' };
+      throw error;
+    }
   }
   async unshare(id: string) {
+    await this.reserving.get(id);
     const running = this.running.get(id);
     if (running) {
       running.abort.abort();

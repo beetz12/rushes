@@ -1209,3 +1209,121 @@ hr {
 .status-pill.offline i {
   background: #de7060;
 }
+:root[data-view='drawing'],
+:root[data-view='teleprompter'],
+:root[data-view='bubble'],
+:root[data-view='area'] {
+  background: transparent;
+}
+textarea {
+  font: inherit;
+  color: inherit;
+  padding: 12px;
+  border: 1px solid #dfe3e6;
+  border-radius: 8px;
+  resize: vertical;
+  min-width: 0;
+}
+textarea:focus-visible {
+  outline: 3px solid #ef786766;
+  outline-offset: 2px;
+}
+.recording-card {
+  position: relative;
+}
+.recording-open {
+  width: 100%;
+  padding: 0;
+  text-align: left;
+  display: block;
+}
+.recording-trash {
+  position: absolute;
+  right: 10px;
+  bottom: 14px;
+  padding: 6px;
+  border-radius: 6px;
+  background: #fff;
+}
+.recording-info {
+  padding-right: 40px;
+}
+.undo-toast {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.teleprompter-pill {
+  padding: 15px 22px;
+  height: 155px;
+  border-radius: 25px;
+  background: #161b20ed;
+  color: #fff;
+  box-shadow: 0 8px 24px #0005;
+  overflow: hidden;
+}
+.teleprompter-status {
+  font-size: 11px;
+  color: #f3ab9d;
+  margin-bottom: 10px;
+}
+.teleprompter-script {
+  max-height: 95px;
+  overflow: hidden;
+  font-size: 24px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.teleprompter-script .spoken {
+  color: #83909b;
+}
+.current-word {
+  background: #e85e4b;
+  border-radius: 2px;
+}
+.drawing-canvas {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+  cursor: crosshair;
+  touch-action: none;
+}
+.drawing-tools {
+  display: flex;
+  place-items: center;
+  gap: 10px;
+  padding: 18px;
+  height: 88px;
+  background: #fff;
+  border: 1px solid #dfe3e6;
+}
+.drawing-tools button {
+  font-size: 12px;
+  padding: 8px 3px;
+}
+.drawing-tools input[type='color'] {
+  padding: 3px;
+  width: 38px;
+  height: 38px;
+}
+.job-status {
+  padding: 16px;
+  border: 1px solid #e6e9eb;
+  border-radius: 12px;
+  margin-bottom: 16px;
+  background: #fff;
+}
+.job-row {
+  display: flex;
+  place-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 0;
+  font-size: 12px;
+  border-top: 1px solid #f0f1f3;
+}
+.job-row small {
+  display: block;
+  color: #a54535;
+  margin-top: 5px;
+}

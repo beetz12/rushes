@@ -62,6 +62,11 @@ let tray: Tray;
 let quitting = false;
 let state = 'idle';
 let currentId: string | undefined;
+let engineReady = false;
+const pendingURLs: string[] = [];
+let promptScript = '';
+let promptEnabled = false;
+let drawingEnabled = false;
 let cloudSettings: CloudSettings = { provider: 'none' };
 const uiFile = join(__dirname, '../renderer/index.html');
 const devURL = app.isPackaged
@@ -92,19 +97,21 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
     old.focus();
     return old;
   }
-  const compact = ['bar', 'bubble', 'area'].includes(view);
+  const compact = ['bar', 'bubble', 'area', 'teleprompter', 'drawing', 'drawing-tools'].includes(
+    view,
+  );
   const w = new BrowserWindow({
-    width: view === 'bar' ? 680 : 1120,
+    width: view === 'bar' ? 800 : 1120,
     height: view === 'bar' ? 104 : 780,
     minWidth: compact ? 100 : 800,
     minHeight: compact ? 60 : 600,
     show: false,
-    title: 'Rushes',
+    title: view === 'drawing' ? 'Rushes Drawing' : 'Rushes',
     backgroundColor: '#f7f8fa',
     titleBarStyle: compact ? 'default' : 'hiddenInset',
     frame: !compact,
     alwaysOnTop: compact,
-    transparent: view === 'bubble' || view === 'area',
+    transparent: ['bubble', 'area', 'drawing', 'teleprompter'].includes(view),
     resizable: !compact,
     skipTaskbar: compact,
     webPreferences: {
@@ -118,21 +125,123 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
   });
   windows.set(view, w);
   if (compact) {
-    w.setContentProtection(true);
+    w.setContentProtection(view !== 'drawing');
     w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     w.setAlwaysOnTop(true, 'floating');
   }
+  if (view === 'drawing') w.on('page-title-updated', (event) => event.preventDefault());
   w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   w.webContents.on('will-navigate', (e) => e.preventDefault());
-  w.on('closed', () => windows.delete(view));
+  let crashRestarts = 0;
+  w.webContents.on('render-process-gone', (_event, details) => {
+    if (!quitting && details.reason !== 'clean-exit' && ++crashRestarts <= 3)
+      w.webContents.reload();
+  });
+  w.on('closed', () => {
+    windows.delete(view);
+    if (view === 'drawing' && drawingEnabled) void hideDrawing();
+  });
   if (view === 'bubble' || view === 'bar') w.on('moved', () => rememberPosition(view, w));
   w.once('ready-to-show', () => {
-    if (view === 'bubble' || view === 'bar') w.showInactive();
+    if (['bubble', 'bar', 'teleprompter', 'drawing', 'drawing-tools'].includes(view))
+      w.showInactive();
     else w.show();
   });
   const url = devURL ? `${devURL}/#${view}` : `${pathToFileURL(uiFile).toString()}#${view}`;
   void w.loadURL(url);
   return w;
+}
+async function routeURL(url: string) {
+  if (!engineReady) {
+    pendingURLs.push(url);
+    return;
+  }
+  try {
+    await supervisor.client.request('url.open', { url });
+    const live = await supervisor.client.request('status');
+    state = live.state;
+    if (['recording', 'paused', 'preparing'].includes(state)) bar();
+    broadcast({ event: 'url-opened' });
+  } catch (error) {
+    windowFor('recorder');
+    broadcast({ event: 'error', message: (error as Error).message });
+  }
+}
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  void routeURL(url);
+});
+async function showTeleprompter() {
+  const config = await supervisor.client.request('teleprompter.get');
+  promptScript = String(config.script ?? '');
+  promptEnabled = config.enabled === true;
+  if (!promptEnabled || !promptScript.trim())
+    throw new Error('Save and enable a teleprompter script in Settings first.');
+  await supervisor.client.request('teleprompter.start');
+  const display = screen.getPrimaryDisplay().bounds;
+  windowFor('teleprompter', {
+    width: 600,
+    height: 160,
+    x: Math.round(display.x + (display.width - 600) / 2),
+    y: display.y + 28,
+    backgroundColor: '#00000000',
+    focusable: false,
+  });
+}
+async function hideDrawing() {
+  drawingEnabled = false;
+  await supervisor.client.request('drawing.hide').catch((error) => {
+    if (supervisor.active) throw error;
+  });
+  windows.get('drawing')?.close();
+  windows.get('drawing-tools')?.close();
+}
+async function showDrawing() {
+  if (!supervisor.active || !currentId)
+    throw new Error('Start a display or area recording before drawing.');
+  const take = await supervisor.client.request('show', { id: currentId });
+  if (!['display', 'area'].includes(take.manifest.sources?.mode))
+    throw new Error('Drawing is available for display and area recordings.');
+  const sourceId = take.manifest.sources?.displayId;
+  const display =
+    screen.getAllDisplays().find((item) => `display-${item.id}` === sourceId) ??
+    screen.getPrimaryDisplay();
+  const overlay = windowFor('drawing', {
+    ...display.bounds,
+    backgroundColor: '#00000000',
+    focusable: true,
+  });
+  if (overlay.webContents.isLoading())
+    await new Promise<void>((resolve) => overlay.webContents.once('did-finish-load', resolve));
+  overlay.setTitle('Rushes Drawing');
+  let candidate;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const targets = await supervisor.client.request('targets');
+    candidate = targets.windows.find(
+      (item: any) =>
+        item.title === 'Rushes Drawing' && item.owningApplication === 'com.nexai.rushes',
+    );
+    if (candidate) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  if (!candidate) {
+    overlay.close();
+    throw new Error('The native engine cannot identify the signed Rushes drawing window.');
+  }
+  try {
+    await supervisor.client.request('drawing.show', { windowID: candidate.id });
+    drawingEnabled = true;
+    windowFor('drawing-tools', {
+      width: 640,
+      height: 88,
+      x: display.workArea.x + 24,
+      y: display.workArea.y + 24,
+      focusable: true,
+    });
+  } catch (error) {
+    overlay.close();
+    throw error;
+  }
 }
 function guard(event: Electron.IpcMainInvokeEvent) {
   const frame = event.senderFrame;
@@ -199,7 +308,7 @@ function bubbleGeometry() {
   return {
     center,
     size: options.bubbleSize,
-    sizeFraction: Math.max(0.05, Math.min(0.8, bounds.width / d.width)),
+    sizeFraction: Math.min(1, bounds.width / d.width),
     visible: true,
   };
 }
@@ -243,7 +352,7 @@ function rememberPosition(view: 'bubble' | 'bar', w: BrowserWindow) {
   }
 }
 function bar() {
-  return windowFor('bar', { ...placement('bar', 680, 104), focusable: false });
+  return windowFor('bar', { ...placement('bar', 800, 104), focusable: false });
 }
 function bubble() {
   return windowFor('bubble', {
@@ -411,24 +520,31 @@ async function ready() {
   });
   trayUpdate();
   app.dock?.hide();
+  if (app.isPackaged) app.setAsDefaultProtocolClient('rushes');
   handle('rushes:bootstrap', () => ({ options, enginePath, packaged: app.isPackaged }));
   handle('rushes:request', async (value) => {
     const request = requestSchema.parse(value);
     if (JSON.stringify(request.args).length > 2 * 1024 * 1024) throw new Error('Request too large');
-    if (['export', 'thumbnail', 'captions.export', 'diagnostics'].includes(request.cmd))
+    if (
+      ['export', 'thumbnail', 'captions.export', 'chapters.export', 'diagnostics'].includes(
+        request.cmd,
+      )
+    )
       throw new Error('Use the native save dialog for file output');
     if (request.cmd === 'record.stop') await syncBubble();
+    if (request.cmd === 'camera.blur.set' && request.args.enabled === true)
+      broadcast({ event: 'camera-preview-cleared' });
     const result = await supervisor.client.request(request.cmd, request.args);
     if (request.cmd === 'permissions.settings' && result.url) {
       const u = new URL(result.url);
       if (u.protocol === 'x-apple.systempreferences:') await shell.openExternal(result.url);
     }
-    if (['transcript.run', 'meta.set', 'meta.generate'].includes(request.cmd) && request.args.id)
-      void shares
-        .enrich(String(request.args.id))
-        .catch((error) =>
-          broadcast({ event: 'warning', code: 'share-enrichment-pending', message: String(error) }),
-        );
+    if (request.cmd === 'teleprompter.set') {
+      promptScript = String(request.args.script ?? '');
+      promptEnabled = request.args.enabled === true;
+      broadcast({ event: 'teleprompter-config', script: promptScript, enabled: promptEnabled });
+      if (!promptEnabled) windows.get('teleprompter')?.close();
+    }
     if (request.cmd === 'camera.preview.start') {
       bubble();
     }
@@ -507,6 +623,12 @@ async function ready() {
       case 'recorder':
         windowFor(v.action);
         return;
+      case 'drawing':
+        return showDrawing();
+      case 'drawing-hide':
+        return hideDrawing();
+      case 'teleprompter':
+        return showTeleprompter();
       case 'close':
         return windows.get('recorder')?.hide();
       case 'area': {
@@ -552,6 +674,24 @@ async function ready() {
         return;
     }
   });
+  handle('rushes:copy-text', (value) => clipboard.writeText(z.string().max(20000).parse(value)));
+  handle('rushes:drawing', async (value) => {
+    const v = z
+      .object({
+        action: z.enum(['tool', 'undo', 'clear', 'pause']),
+        tool: z.enum(['pen', 'highlighter', 'arrow', 'rectangle']).optional(),
+        color: z
+          .string()
+          .regex(/^#[0-9a-fA-F]{6}$/)
+          .optional(),
+        paused: z.boolean().optional(),
+      })
+      .strict()
+      .parse(value);
+    if (v.action === 'pause')
+      windows.get('drawing')?.setIgnoreMouseEvents(v.paused === true, { forward: true });
+    broadcast({ event: 'drawing-action', ...v });
+  });
   handle('rushes:preview-file', async (value) => {
     const id = z.string().min(1).max(200).parse(value);
     const show = await supervisor.client.request('show', { id });
@@ -581,24 +721,27 @@ async function ready() {
           'txt',
           'thumbnail',
           'diagnostics',
+          'chapters',
         ]),
         atMs: z.number().nonnegative().optional(),
       })
       .parse(value);
     const extension =
-      v.preset === 'audio-wav'
-        ? 'wav'
-        : v.preset === 'audio'
-          ? 'm4a'
-          : v.preset === 'full'
-            ? 'mov'
-            : v.preset === 'thumbnail'
-              ? 'png'
-              : ['srt', 'vtt', 'txt'].includes(v.preset)
-                ? v.preset
-                : v.preset === 'diagnostics'
-                  ? 'zip'
-                  : 'mp4';
+      v.preset === 'chapters'
+        ? 'txt'
+        : v.preset === 'audio-wav'
+          ? 'wav'
+          : v.preset === 'audio'
+            ? 'm4a'
+            : v.preset === 'full'
+              ? 'mov'
+              : v.preset === 'thumbnail'
+                ? 'png'
+                : ['srt', 'vtt', 'txt'].includes(v.preset)
+                  ? v.preset
+                  : v.preset === 'diagnostics'
+                    ? 'zip'
+                    : 'mp4';
     let path: string | undefined;
     if (v.preset === 'editor-tracks') {
       const d = await dialog.showOpenDialog({
@@ -622,6 +765,8 @@ async function ready() {
         format: v.preset,
         outputPath: path,
       });
+    else if (v.preset === 'chapters')
+      result = await supervisor.client.request('chapters.export', { id: v.id, outputPath: path });
     else if (v.preset === 'thumbnail')
       result = await supervisor.client.request('thumbnail', {
         id: v.id,
@@ -696,6 +841,10 @@ async function ready() {
       state = 'recording';
       currentId = e.recordingId;
       bar();
+      if (promptEnabled)
+        void showTeleprompter().catch((error) =>
+          broadcast({ event: 'warning', message: String(error) }),
+        );
       if (!windows.has('bubble'))
         void supervisor.client
           .request('show', { id: currentId })
@@ -712,6 +861,9 @@ async function ready() {
     if (e.event === 'state-changed' && typeof e.state === 'string') state = e.state;
     if (e.event === 'recording-stopped') {
       state = 'idle';
+      broadcast({ event: 'camera-preview-cleared' });
+      void hideDrawing().catch(() => {});
+      windows.get('teleprompter')?.close();
       windows.get('bar')?.close();
       windows.get('bubble')?.close();
       void supervisor.client.request('camera.preview.stop').catch(() => {});
@@ -736,12 +888,20 @@ async function ready() {
   );
   try {
     await supervisor.start();
+    engineReady = true;
+    for (const url of pendingURLs.splice(0)) void routeURL(url);
     const live = await supervisor.client.request('status');
     state = live.state;
     supervisor.active = ['recording', 'paused', 'preparing', 'finishing'].includes(state);
+    const prompt = await supervisor.client.request('teleprompter.get').catch(() => undefined);
+    if (prompt) {
+      promptScript = prompt.script ?? '';
+      promptEnabled = prompt.enabled === true;
+    }
     if (supervisor.active) {
       currentId = live.recording?.recordingID;
       bar();
+      if (promptEnabled) void showTeleprompter().catch(() => {});
     }
     broadcast({ event: 'engine-ready' });
     if (cloudSettings.provider !== 'none')
@@ -802,6 +962,43 @@ async function ready() {
           `({title:document.title,text:document.body.innerText,api:typeof window.rushes,require:typeof window.require})`,
         );
         let cycle: any;
+        const waitFor = async (predicate: () => Promise<boolean>) => {
+          for (let i = 0; i < 80; i++) {
+            if (await predicate()) return;
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          throw new Error('UI recording smoke state timed out');
+        };
+
+        if (process.env.RUSHES_SMOKE_EXTRAS === '1') {
+          const settings = windowFor('settings');
+          await waitFor(async () =>
+            Boolean(
+              await settings.webContents.executeJavaScript(
+                `document.querySelector('.settings-grid')`,
+              ),
+            ),
+          );
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          const checks = [];
+          for (const width of [1120, 900]) {
+            settings.setSize(width, 900);
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            checks.push(
+              await settings.webContents.executeJavaScript(
+                `({width:innerWidth,scrollWidth:document.documentElement.scrollWidth,text:document.body.innerText})`,
+              ),
+            );
+            if (process.env.RUSHES_SMOKE_SCREENSHOT)
+              await writeFile(
+                process.env.RUSHES_SMOKE_SCREENSHOT.replace('.png', '-' + width + '.png'),
+                (await settings.webContents.capturePage()).toPNG(),
+              );
+          }
+          if (checks.some((check: any) => check.scrollWidth > check.width))
+            throw new Error('Settings overflow');
+          cycle = { capture: 'none', settings: checks };
+        }
         if (process.env.RUSHES_SMOKE_REVIEW_ID) {
           const id = process.env.RUSHES_SMOKE_REVIEW_ID;
           const library = windowFor('library');
@@ -839,13 +1036,6 @@ async function ready() {
           await w.webContents.executeJavaScript(
             `[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Start recording')).click()`,
           );
-          const waitFor = async (predicate: () => Promise<boolean>) => {
-            for (let i = 0; i < 80; i++) {
-              if (await predicate()) return;
-              await new Promise((r) => setTimeout(r, 100));
-            }
-            throw new Error('UI recording smoke state timed out');
-          };
           await waitFor(async () => {
             const s = await supervisor.client.request('status');
             return s.state === 'recording';
@@ -870,7 +1060,7 @@ async function ready() {
             ),
           );
           await library.webContents.executeJavaScript(
-            `document.querySelector('.recording-card')?.click()`,
+            `document.querySelector('.recording-open')?.click()`,
           );
           await waitFor(async () =>
             Boolean(
@@ -907,7 +1097,11 @@ async function ready() {
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', () => windowFor('recorder'));
+  app.on('second-instance', (_event, argv) => {
+    const url = argv.find((value) => value.startsWith('rushes:'));
+    if (url) void routeURL(url);
+    else windowFor('recorder');
+  });
   void app.whenReady().then(ready);
 }
 app.on('window-all-closed', () => {});
@@ -915,11 +1109,22 @@ app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   quitting = true;
-  void supervisor.quit().finally(async () => {
-    await writeOptions().catch((error) =>
-      console.error('[Rushes] Could not save window positions', String(error)),
-    );
-    globalShortcut.unregisterAll();
-    app.quit();
-  });
+  void supervisor
+    .quit()
+    .then(async () => {
+      await writeOptions().catch((error) =>
+        console.error('[Rushes] Could not save window positions', String(error)),
+      );
+      globalShortcut.unregisterAll();
+      app.quit();
+    })
+    .catch((error) => {
+      quitting = false;
+      void dialog.showMessageBox({
+        type: 'error',
+        message: 'Rushes could not confirm that the recording finished.',
+        detail: (error as Error).message,
+      });
+      if (supervisor.active) bar();
+    });
 });

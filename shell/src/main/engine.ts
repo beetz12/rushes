@@ -14,6 +14,7 @@ export class EngineClient extends EventEmitter {
   async connect(path: string): Promise<void> {
     await new Promise<void>((resolve, reject) => {
       const socket = createConnection(path);
+      socket.setEncoding('utf8');
       socket.once('error', reject);
       socket.once('connect', () => {
         socket.off('error', reject);
@@ -148,6 +149,7 @@ export class EngineSupervisor {
     });
     await new Promise<void>((resolve, reject) => {
       let ready = '';
+      let booted = false;
       const timer = setTimeout(
         () => reject(new Error('Native engine did not become ready in 10 seconds')),
         10_000,
@@ -157,10 +159,20 @@ export class EngineSupervisor {
         reject(e);
       });
       this.child!.stdout?.on('data', (data) => {
+        if (booted) return;
         ready += data.toString();
-        for (const line of ready.split('\n')) {
+        if (ready.length > 65536) {
+          clearTimeout(timer);
+          reject(new Error('Oversized engine startup message'));
+          return;
+        }
+        const lines = ready.split('\n');
+        ready = lines.pop() ?? '';
+        for (const line of lines) {
           try {
             if (JSON.parse(line).event === 'ready') {
+              booted = true;
+              ready = '';
               clearTimeout(timer);
               resolve();
               return;

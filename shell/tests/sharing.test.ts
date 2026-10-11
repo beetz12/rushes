@@ -51,6 +51,11 @@ function rig(root: string) {
           chapters: [{ startMs: 0, title: 'Edited chapter' }],
           cacheKey: 'fixture-key',
           editRevision: 2,
+          editSnapshot: {
+            schema: 'rushes.edit/1',
+            revision: 2,
+            clips: [{ sourceStartMs: 100, sourceEndMs: 1200, speed: 2 }],
+          },
           cached: true,
         };
       }
@@ -178,9 +183,31 @@ describe('stable share state', () => {
     expect(r.provider.upload).not.toHaveBeenCalled();
     const state = JSON.parse(await readFile(join(root, 'share', 'state.json'), 'utf8'));
     expect(state.state).toBe('processing');
+    await expect(r.service.enrich('take')).rejects.toMatchObject({ code: 'share-processing' });
     const waiting = r.service.share('take', true);
     release();
     expect(await waiting).toEqual({ url: immediate.url, state: 'ready' });
+    await rm(root, { recursive: true });
+  });
+  it('late enrichment reuses the successfully published video and frozen edit', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rushes-frozen-'));
+    const r = rig(root);
+    await r.service.share('take', true);
+    const state = JSON.parse(await readFile(join(root, 'share', 'state.json'), 'utf8'));
+    expect(await r.service.enrich('take')).toMatchObject({ updated: true });
+    expect(r.engine.request).toHaveBeenLastCalledWith(
+      'share.assets',
+      {
+        id: 'take',
+        editSnapshot: state.publishedEdit,
+        publishedVideoPath: state.publishedVideoPath,
+      },
+      1800000,
+    );
+    const saved = JSON.parse(await readFile(join(root, 'share', 'state.json'), 'utf8'));
+    delete saved.publishedEdit;
+    await writeFile(join(root, 'share', 'state.json'), JSON.stringify(saved));
+    await expect(r.service.enrich('take')).rejects.toMatchObject({ code: 're-share-required' });
     await rm(root, { recursive: true });
   });
 });
