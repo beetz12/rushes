@@ -8,9 +8,11 @@ final class NativeRenderer: @unchecked Sendable {
     let manifest: RecordingManifest
     let edit: EditDocument
     let options: ExportOptions
+    let derivedCamera:URL?
     let context = CIContext(options: [.cacheIntermediates: false])
-    init(package: RecordingPackage, manifest: RecordingManifest, edit: EditDocument, options: ExportOptions) {
+    init(package: RecordingPackage, manifest: RecordingManifest, edit: EditDocument, options: ExportOptions,derivedCamera:URL? = nil) {
         self.package=package; self.manifest=manifest; self.edit=edit; self.options=options
+        self.derivedCamera=derivedCamera
     }
     private struct VideoSource {
         let asset: AVURLAsset
@@ -85,7 +87,9 @@ final class NativeRenderer: @unchecked Sendable {
     }
     private func source(_ kind: TrackKind) async throws -> VideoSource? {
         guard let track=manifest.tracks.first(where:{$0.kind == kind && $0.present}) else { return nil }
-        let url=try safeTrackURL(track.file)
+        let url:URL
+        if kind == .camera,let derivedCamera { url=derivedCamera }
+        else { url=try safeTrackURL(track.file) }
         let asset=AVURLAsset(url:url)
         guard let media=try await asset.loadTracks(withMediaType:.video).first else { throw renderFailure("No video stream in \(track.file)") }
         return VideoSource(asset:asset,track:media,offsetMs:Double(track.offsetMs-(manifest.tracks.first(where:{$0.kind == .screen})?.offsetMs ?? 0)),transform:try await media.load(.preferredTransform),durationMs:try await asset.load(.duration).seconds*1000)

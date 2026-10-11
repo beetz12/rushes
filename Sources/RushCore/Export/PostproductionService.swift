@@ -107,8 +107,11 @@ public actor PostproductionService {
         try edit.validate(sourceDurationMs:try await duration(package,manifest:manifest))
         guard manifest.status == .complete || manifest.status == .recovered else { throw renderFailure("Finalize the recording before exporting it") }
         try protect(output,package:package,manifest:manifest)
-        let renderer=NativeRenderer(package:package,manifest:manifest,edit:edit,options:options)
-        let key=try cacheKey(package:package,manifest:manifest,edit:edit,options:options)
+        // Freeze historical package policy once, including throughout remux.
+        let effects=options.preset == .audio || options.preset == .editorTracks ? ProductionEffectsPolicy() : try ProductionEffectsPolicy.read(from:package.folderURL)
+        let derived=options.preset == .audio || options.preset == .editorTracks ? nil : try await CameraBlurDerivedSource.shared.prepare(package:package,manifest:manifest,policy:effects)
+        let renderer=NativeRenderer(package:package,manifest:manifest,edit:edit,options:options,derivedCamera:derived?.url)
+        let key=try cacheKey(package:package,manifest:manifest,edit:edit,options:options,effects:effects,derived:derived)
         guard activeExports.insert(key).inserted else { throw ControlFailure(code:"render-in-progress",message:"This export is already running") }
         defer { activeExports.remove(key) }
         if options.preset == .editorTracks { return try editorTracks(package:package,manifest:manifest,edit:edit,key:key,to:output) }
@@ -136,7 +139,7 @@ public actor PostproductionService {
         let dimensions:(Int,Int)
         if options.preset == .full {
             var siblingOptions=options; siblingOptions.container=options.container == "mov" ? "mp4" : "mov"
-            let siblingKey=try cacheKey(package:package,manifest:manifest,edit:edit,options:siblingOptions)
+            let siblingKey=try cacheKey(package:package,manifest:manifest,edit:edit,options:siblingOptions,effects:effects,derived:derived)
             let sibling=try PostproductionPaths.managedFile("\(siblingKey).\(siblingOptions.container)",in:renders)
             let siblingStamp=try PostproductionPaths.managedFile("\(siblingKey).json",in:renders)
             if let data=try? Data(contentsOf:siblingStamp),
@@ -157,10 +160,12 @@ public actor PostproductionService {
         try AtomicFileWriter.writeEncodable(result,to:stamp,encoder:ControlWire.encoder)
         try install(cache,to:output); return result
     }
-    private func cacheKey(package:RecordingPackage,manifest:RecordingManifest,edit:EditDocument,options:ExportOptions) throws -> String {
+    private func cacheKey(package:RecordingPackage,manifest:RecordingManifest,edit:EditDocument,options:ExportOptions,effects:ProductionEffectsPolicy,derived:CameraBlurDerivedVideo?) throws -> String {
         var hasher=SHA256()
         var canonical=edit; canonical.revision=0; canonical.export.lastPath=nil
-        hasher.update(data:Data("rushes.native-render/1".utf8)); hasher.update(data:try ControlWire.encoder.encode(canonical)); hasher.update(data:try ControlWire.encoder.encode(options))
+        hasher.update(data:Data("rushes.native-render/2".utf8)); hasher.update(data:try ControlWire.encoder.encode(canonical)); hasher.update(data:try ControlWire.encoder.encode(options))
+        hasher.update(data:try ControlWire.encoder.encode(effects))
+        if let derived { hasher.update(data:Data(derived.result.sha256.utf8)) }
         hasher.update(data:try ControlWire.encoder.encode(manifest.tracks))
         let renderer=NativeRenderer(package:package,manifest:manifest,edit:edit,options:options)
         for track in manifest.tracks where track.present {
