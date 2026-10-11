@@ -50,12 +50,14 @@ public struct TranscriptDocument: Codable, Equatable, Sendable {
     public var text: String { words.map(\.text).joined(separator: " ") }
     public func validate() throws {
         guard schema == "rushes.transcript/1", durationMs.isFinite, durationMs >= 0,
+              Int(exactly: durationMs.rounded()) != nil,
               Set(words.map(\.id)).count == words.count else {
             throw ControlFailure(code: "invalid-transcript", message: "Invalid transcript schema, duration or duplicate word identifiers.")
         }
         var previousStart = -Double.infinity, previousEnd = -Double.infinity
         for word in words {
             guard word.startMs.isFinite, word.endMs.isFinite, word.startMs >= 0,
+                  Int(exactly: word.startMs.rounded()) != nil, Int(exactly: word.endMs.rounded()) != nil,
                   word.endMs > word.startMs, !word.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                   word.startMs >= previousStart else {
                 throw ControlFailure(code: "invalid-transcript", message: "Word times must be finite, ordered and nonempty.")
@@ -66,6 +68,7 @@ public struct TranscriptDocument: Codable, Equatable, Sendable {
         let ids = Set(words.map(\.id))
         for cue in cues {
             guard cue.startMs.isFinite, cue.endMs.isFinite, cue.startMs >= 0,
+                  Int(exactly: cue.startMs.rounded()) != nil, Int(exactly: cue.endMs.rounded()) != nil,
                   cue.startMs > previousStart, cue.endMs > previousEnd, cue.endMs > cue.startMs,
                   cue.endMs - cue.startMs <= 4000, cue.text.count <= 42,
                   cue.wordIds.allSatisfy(ids.contains) else {
@@ -152,6 +155,31 @@ public enum TranscriptFiles {
 
 /// Shared sidecar/source defense: resolving a package path never opens a symlink outside that package.
 enum TranscriptPackageIO {
+    static func validatedExport(_ path: String, extension expected: String, packageURL: URL) throws -> URL {
+        guard path.hasPrefix("/") else {
+            throw ControlFailure(code: "invalid-params", message: "Export path must be absolute.")
+        }
+        let destination = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+        guard destination.pathExtension.lowercased() == expected else {
+            throw ControlFailure(code: "invalid-params", message: "Export requires a .\(expected) destination.")
+        }
+        let current = packageURL.standardizedFileURL.resolvingSymlinksInPath()
+        var ancestor = destination.deletingLastPathComponent()
+        while ancestor.path != "/" {
+            let isCurrent = ancestor.path == current.path
+            let manifest = ancestor.appendingPathComponent("manifest.json")
+            let isRecording = FileManager.default.fileExists(atPath: manifest.path)
+                && (try? RecordingManifest.parse(Data(contentsOf: manifest))) != nil
+            if isCurrent || isRecording {
+                let renders = ancestor.appendingPathComponent("renders").path + "/"
+                guard destination.path.hasPrefix(renders) else {
+                    throw ControlFailure(code: "protected-master", message: "Export outside recording packages or into their renders folder.")
+                }
+            }
+            ancestor = ancestor.deletingLastPathComponent()
+        }
+        return destination
+    }
     static func validatedSource(_ filename: String, in packageURL: URL) throws -> URL {
         guard !filename.isEmpty, filename == (filename as NSString).lastPathComponent, !filename.hasPrefix(".") else {
             throw ControlFailure(code: "invalid-params", message: "A direct package filename is required.")

@@ -9,7 +9,7 @@ struct MetadataTests {
     func wholeRecording() async throws {
         let words = (0..<600).map { TranscriptWord(id: "\($0)", text: "Topic\($0)", startMs: Double($0 * 1000), endMs: Double($0 * 1000 + 600)) }
         let doc = try TranscriptDocument(locale: "en", inputFile: "mic.mov", durationMs: 600_000, words: words)
-        let metadata = await MetadataService.generate(transcript: doc, preferLanguageModel: false)
+        let metadata = try await MetadataService.generate(transcript: doc, preferLanguageModel: false)
         #expect(metadata.engine == "extractive-fallback")
         #expect(metadata.chapters.first?.startMs == 0)
         #expect(try #require(metadata.chapters.last?.startMs) > 420_000)
@@ -33,6 +33,12 @@ struct MetadataTests {
         let hour = try ChapterExport.youtube([.init(startMs: 0, title: "Start"), .init(startMs: 3_661_000, title: "Later")])
         #expect(hour.contains("01:01:01 Later"))
     }
+    @Test("Oversized finite chapter time is rejected before integer formatting")
+    func oversizedChapter() throws {
+        #expect(throws: ControlFailure.self) {
+            try ChapterExport.youtube([.init(startMs: 0, title: "Start"), .init(startMs: 1e30, title: "Later")])
+        }
+    }
     @Test("User metadata roundtrips and never alters source media")
     func metadataPersistence() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -52,7 +58,7 @@ struct LiveMetadataTests {
         let path = try #require(ProcessInfo.processInfo.environment["RUSHES_SPEECH_FIXTURE"])
         let transcript = try await TranscriptService.transcribe(audioURL: URL(fileURLWithPath: path))
         let availability = SystemLanguageModel.default.availability
-        let result = await MetadataService.generate(transcript: transcript)
+        let result = try await MetadataService.generate(transcript: transcript)
         print("LIVE_METADATA availability=\(availability) engine=\(result.engine) title=\(result.title) warning=\(result.warning ?? "none")")
         if availability == .available {
             #expect(result.engine == "Apple FoundationModels (on-device)")

@@ -21,6 +21,7 @@ public struct RecordingMetadata: Codable, Equatable, Sendable {
         var prior = -1.0
         for chapter in chapters {
             guard chapter.startMs.isFinite, chapter.startMs >= 0, chapter.startMs > prior,
+                  Int(exactly: (chapter.startMs / 1000).rounded(.down)) != nil,
                   !chapter.title.isEmpty, chapter.title.count <= 240,
                   !chapter.title.contains(where: \.isNewline),
                   durationMs.map({ chapter.startMs < $0 || ($0 == 0 && chapter.startMs == 0) }) ?? true else {
@@ -41,8 +42,8 @@ private struct GeneratedMetadata {
 
 public enum MetadataService {
     /// Apple Intelligence runs locally. The fallback never describes itself as AI generation.
-    public static func generate(transcript: TranscriptDocument, preferLanguageModel: Bool = true) async -> RecordingMetadata {
-        var fallback = extractive(transcript: transcript)
+    public static func generate(transcript: TranscriptDocument, preferLanguageModel: Bool = true) async throws -> RecordingMetadata {
+        var fallback = try extractive(transcript: transcript)
         guard preferLanguageModel else { fallback.warning = "On-device language model was not requested."; return fallback }
         guard SystemLanguageModel.default.availability == .available else {
             fallback.warning = "Apple Intelligence is unavailable: \(SystemLanguageModel.default.availability). Using extractive transcript metadata."
@@ -71,7 +72,8 @@ public enum MetadataService {
             return fallback
         }
     }
-    public static func extractive(transcript: TranscriptDocument) -> RecordingMetadata {
+    public static func extractive(transcript: TranscriptDocument) throws -> RecordingMetadata {
+        try transcript.validate()
         let words = transcript.words
         guard !words.isEmpty else {
             return .init(title: "Recording", summary: "No speech was detected.", chapters: [], engine: "extractive-fallback")
@@ -127,7 +129,7 @@ public enum MetadataCommands {
         switch request.cmd {
         case "meta.get": return try JSONValue(encoding: MetadataService.read(from: packageURL))
         case "meta.generate":
-            let metadata = await MetadataService.generate(transcript: try TranscriptFiles.read(from: packageURL))
+            let metadata = try await MetadataService.generate(transcript: try TranscriptFiles.read(from: packageURL))
             try MetadataService.write(metadata, to: packageURL); return try JSONValue(encoding: metadata)
         case "meta.set":
             var metadata = (try? MetadataService.read(from: packageURL)) ?? .init(title: "Recording", summary: "", chapters: [])
@@ -143,7 +145,8 @@ public enum MetadataCommands {
         case "chapters.export":
             let text = try ChapterExport.youtube(MetadataService.read(from: packageURL).chapters)
             if let path = args["output"]?.string ?? args["outputPath"]?.string {
-                try AtomicFileWriter.write(Data(text.utf8), to: URL(fileURLWithPath: path))
+                let destination = try TranscriptPackageIO.validatedExport(path, extension: "txt", packageURL: packageURL)
+                try AtomicFileWriter.write(Data(text.utf8), to: destination)
                 return .object(["path": .string(path)])
             }
             return .object(["text": .string(text)])

@@ -38,6 +38,55 @@ struct TranscriptionTests {
                 words: [speechWord(0, start: 0, end: 500), speechWord(0, start: 500, end: 900)])
         }
     }
+    @Test("Finite but unrepresentable subtitle timestamps fail without integer traps")
+    func oversizedTimes() throws {
+        #expect(throws: ControlFailure.self) {
+            try TranscriptDocument(locale: "en", inputFile: "mic.mov", durationMs: 1e20,
+                words: [speechWord(0, start: 1e19, end: 1e19 + 2048)])
+        }
+        var document = try TranscriptDocument(locale: "en", inputFile: "mic.mov", durationMs: 1000,
+            words: [speechWord(0, start: 100, end: 400)])
+        document.durationMs = 1e30
+        #expect(throws: ControlFailure.self) { try TranscriptFiles.export(document, format: .srt) }
+        #expect(throws: ControlFailure.self) { try MetadataService.extractive(transcript: document) }
+    }
+    @Test("Text output protects current and other recording packages, including symlink aliases")
+    func protectedExports() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let current = try RecordingPackage.create(root: root)
+        let other = try RecordingPackage.create(root: root, date: Date().addingTimeInterval(10))
+        let master = Data("unchanged master".utf8)
+        let doc = try TranscriptDocument(locale: "en", inputFile: "mic.mov", durationMs: 1000,
+            words: [speechWord(0, "Hello", start: 100, end: 400)])
+        try TranscriptFiles.write(doc, to: current.folderURL)
+        try MetadataService.write(.init(title: "Take", summary: "", chapters: [.init(startMs: 0, title: "Start")]), to: current.folderURL)
+        for package in [current, other] {
+            try package.writeManifest(.init(id: package.id, status: .complete, tracks: [.init(kind: .screen)]))
+            let protected = package.folderURL.appendingPathComponent("important.txt")
+            try master.write(to: protected)
+            let alias = root.appendingPathComponent("alias-\(package.id).txt")
+            try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: protected)
+            for output in [protected, alias, package.trackURL(for: .screen)] {
+                for command in ["captions.export", "chapters.export"] {
+                    let request = ControlRequest(id: "guard", cmd: command,
+                        args: .object(["format": .string("txt"), "output": .string(output.path)]))
+                    await #expect(throws: (any Error).self) {
+                        if command == "captions.export" {
+                            _ = try await TranscriptCommands.handle(request: request, packageURL: current.folderURL)
+                        } else {
+                            _ = try await MetadataCommands.handle(request: request, packageURL: current.folderURL)
+                        }
+                    }
+                }
+            }
+            #expect(try Data(contentsOf: protected) == master)
+        }
+        let output = root.appendingPathComponent("outside.vtt")
+        _ = try await TranscriptCommands.handle(request: .init(id: "ok", cmd: "captions.export",
+            args: .object(["format": .string("vtt"), "output": .string(output.path)])), packageURL: current.folderURL)
+        #expect(try Data(contentsOf: output) == TranscriptFiles.export(doc, format: .vtt))
+    }
     @Test("Subtitle formats are valid and saved atomically without altering masters")
     func subtitleFormats() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -199,7 +248,7 @@ struct LongTranscriptionTests {
         #expect(elapsed < 180)
         #expect(document.words.last?.startMs ?? 0 > 570_000)
         try document.validate()
-        let metadata = await MetadataService.generate(transcript: document)
+        let metadata = try await MetadataService.generate(transcript: document)
         print("LONG_METADATA engine=\(metadata.engine) chapters=\(metadata.chapters.count) lastStartMs=\(metadata.chapters.last?.startMs ?? -1)")
         #expect(metadata.chapters.first?.startMs == 0)
         #expect(metadata.chapters.last?.startMs ?? 0 > 420_000)

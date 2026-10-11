@@ -173,7 +173,8 @@ public enum TranscriptCommands {
             guard let format = TranscriptFormat(rawValue: args["format"]?.string ?? "vtt") else { throw ControlFailure(code: "invalid-params", message: "Format must be json, srt, vtt or txt.") }
             let doc = try TranscriptFiles.read(from: packageURL), data = try TranscriptFiles.export(doc, format: format)
             if let path = args["output"]?.string ?? args["outputPath"]?.string {
-                try AtomicFileWriter.write(data, to: URL(fileURLWithPath: path))
+                let destination = try TranscriptPackageIO.validatedExport(path, extension: format.rawValue, packageURL: packageURL)
+                try AtomicFileWriter.write(data, to: destination)
                 return .object(["path": .string(path), "format": .string(format.rawValue)])
             }
             return .object(["text": .string(String(decoding: data, as: UTF8.self)), "format": .string(format.rawValue)])
