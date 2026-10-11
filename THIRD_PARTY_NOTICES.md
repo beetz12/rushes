@@ -42,3 +42,14 @@ These build and runtime dependencies are included in acknowledgements.
 | npm: shell/vitest@5.0.3 | MIT | licenses/npm-vitest-5.0.3.txt |
 | npm: shell/zod@4.6.6 | MIT | licenses/npm-zod-4.6.6.txt |
 <!-- pinned-npm-notices:end -->
+
+## Sharing toolchain dependencies
+
+All files in cloud/, viewer/ and worker/ are original implementations. No reference-clone source was opened or copied. These direct development dependencies are pinned in each applicable package-lock.json; the browser viewer and Worker have no runtime third-party dependencies.
+
+| Dependency | Version | Used by | License text |
+|---|---|---|---|
+| TypeScript | 5.9.3 | cloud, viewer, worker build | Apache-2.0 (licenses/Apache-2.0-TypeScript-5.9.3.txt) |
+| @types/node | 22.15.30 | cloud, worker type checking | MIT (licenses/MIT-types-node-22.15.30.txt) |
+| esbuild | 0.27.0 | worker self-contained bundle | MIT (licenses/MIT-esbuild-0.27.0.txt) |
+| Playwright | 1.61.1 | viewer local-browser behavior tests only | Apache-2.0 (licenses/Apache-2.0-playwright-1.61.1.txt) |

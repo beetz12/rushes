@@ -1,0 +1,21 @@
+# Rushes sharing SDK
+
+Node 22.22.0 (each package has `.nvmrc`). Runtime code uses only Node standard libraries. Credentials are constructor inputs held in memory. Desktop callers must use Electron safeStorage/Keychain and must not serialize constructors or log tokens. A `JsonJobStore` private directory stores reservations and upload evidence only.
+
+From repo root: `npm ci --prefix cloud && npm run build --prefix cloud`; build viewer before bucket use. Import `cloud/dist/index.js` from Electron main. If copied into app resources, include a `package.json` with `{"type":"module"}` in the folder containing `index.js`.
+
+`BucketProvider(config, {store,viewerAssets:{js,css}})` accepts `{endpoint,region,bucket,accessKeyId,secretAccessKey,publicBaseURL,sessionToken?}`. `WorkerProvider({workerURL,token},{store})` accepts a user-deployed Worker. Both expose:
+
+- `reserve({id?,title,durationMs?,password?,expiresAt?})` → `{id,url,manifest}`. Keep this reservation per recording to preserve its link. Bucket password/expiry require Worker mode.
+- `upload(reservation,{path,kind,signal?,onProgress?})` → `{file,bytes,sha256,kind}`. Kind: video/poster/captions/transcript. Upload each sidecar then reference its returned filename via metadata. Video must be an MP4 export, not a master MOV.
+- `publish(reservation,{video,width,height,durationMs,title?,poster?})` → updated reservation.
+- `updateMetadata(reservation,{title?,summary?,chapters?,captions?,transcript?,durationMs?})` → updated reservation.
+- `delete(reservation)` confirms storage removal; `setupCheck()` proves the configured service's connection.
+
+SDK errors carry `code`, optional HTTP `status`, and safe messages without signed queries or credentials. `cloud/dist/cli.js` accepts one JSON request from a secure caller on stdin (`cmd`, `provider`, `config`, `stateDirectory`, `args`) and emits JSON. Commands: setup-check, reserve, upload, publish, update, unshare. It does not read or scan environment secrets. CLI deploy requires caller-supplied ownerToken/sessionSecret retained securely before it runs. SDK `deployWorker` returns generated secrets only to its secure caller and never persists them.
+
+Local gates: `npm run check --prefix cloud`; Worker and browser gates are documented in their READMEs. No configured service is inferred from a successful local fixture test.
+
+One-click artifact wrapper: `node cloud/scripts/deploy.mjs --account-id <selected-id> --workers-subdomain <existing-subdomain>`. A secure caller sends `{apiToken,ownerToken,sessionSecret}` on stdin; the API credential can be an existing Wrangler OAuth token. The wrapper reads built Worker/schema artifacts, never reads credentials from argv or scans environment/files, and returns only non-secret deployment metadata. Credentials must already be retained in the caller's secure store. No actual deploy was run in this build lane.
+
+Existing Wrangler OAuth wrapper (dry-run default): `node cloud/scripts/deploy-wrangler.mjs --account-id <selected-id> --expected-email <verified-email>`. It captures `whoami` without printing raw output, verifies the requested email/account, reads only the explicitly configured Wrangler OAuth file, resolves the existing workers.dev subdomain, and performs read-only R2 preflight. Its public output includes selected resources, artifact/schema paths and exact proposed Cloudflare mutations. R2-disabled output includes the plan with `writesStarted:false`. Only `--apply --bootstrap-path <owner-private-path>` permits changes, and root/user authorization is still required. New secrets are encrypted before writes; their AES-GCM encryption key lives only in macOS Keychain. The owner0600 bootstrap contains ciphertext and public metadata. `readBootstrap(path)` returns credentials only in memory to a secure main-process importer; call `removeBootstrap(path)` only after safeStorage import plus non-secret state read-back. Never print its return value. These Keychain/apply paths are prepared but have not been invoked in this build lane.
