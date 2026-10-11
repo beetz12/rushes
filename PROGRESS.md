@@ -85,3 +85,17 @@ continues untilStop thenclosesindependently ofGUI. Cancelchecks beforeacquisitio
 andafterwarm avoidreopening afterGUIloss. Partialpreviewwritefailure closespeer
 rather thancorrupting followingNDJSON. Targeted20controller/fdtests passed; full
 umbrella held perroot awaiting knownlaunchOnDemand testpipe helperfix. Source0.
+
+Drawing/library checkpoint: dedicated "Rushes Drawing" shell window can be
+included with CaptureRig.setDrawingWindow(windowID:) only in display/area mode.
+Production ScreenSource revalidates live native window ID/title/bundle ownership
+and updates its existing SCStream filter; all other own-app windows stay excluded.
+Idle requests never enumerate screen content. Root owns the command routes.
+RecordingTrashService moves whole terminal packages using native macOS Trash;
+five-second undo is collision-safe and checks original root + trashed inode/device.
+Expiry forgets only the token. Active/interrupted packages and symlinks are refused.
+13 targeted drawing/Trash/routing tests passed using owned scratch fixtures only;
+source clean scan0 and diff whitespace clean. No native drawing/UI/device or real
+macOS Trash operation was performed by these tests. Full gate still parent-held.
+SCREEN-only soak minute35: 101985 frames,64drops, pending0, no writer errors,
+physicalFootprint17302368B, RSSproxy47742976B. Final evidence still pending minute60.

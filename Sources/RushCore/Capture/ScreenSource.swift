@@ -182,6 +182,13 @@ internal protocol ScreenStreamDriving: AnyObject {
     ) async throws
     func startCapture() async throws
     func stopCapture() async throws
+    func updateContentFilter(_ filter: SCContentFilter) async throws
+}
+
+extension ScreenStreamDriving {
+    func updateContentFilter(_ filter: SCContentFilter) async throws {
+        throw ControlFailure(code: "drawing-update-unavailable", message: "this capture stream cannot update its filter")
+    }
 }
 
 extension SCStream: ScreenStreamDriving {
@@ -238,6 +245,7 @@ public final class ScreenSource: @unchecked Sendable {
         let displayFrame: CGRect
         let window: SCWindow?
         let excludedApplications: [SCRunningApplication]
+        var windows: [SCWindow] = []
     }
 
     /// The plan's values for the take (sizing, frame rate, queue depth,
@@ -254,6 +262,13 @@ public final class ScreenSource: @unchecked Sendable {
     private var streamStorage: (any ScreenStreamDriving)?
     private var startedFlag = false
     private var retainedOutputs: [ScreenStreamOutputForwarder] = []
+    private struct ActiveSurface {
+        let surface: ScreenSurface
+        let exclusion: ScreenExclusionList
+        let selftest: Bool
+    }
+    private var activeSurface: ActiveSurface?
+    private var filterUpdatePending = false
 
     /// The routing sink the session's writers install into.
     internal let routingSink = WriterRoutingSink()
@@ -347,7 +362,53 @@ public final class ScreenSource: @unchecked Sendable {
         }
         lock.withLock { retainedOutputs = outputs }
         try await stream.startCapture()
-        install(stream: stream)
+        install(stream: stream, surface: .init(surface: surface, exclusion: exclusion, selftest: selftest))
+    }
+
+    /// Updates only the existing stream's filter. The dedicated shell drawing
+    /// window is revalidated against current native metadata; no window opens
+    /// here and regular own-app windows remain excluded.
+    public func setDrawingWindow(windowID: String?) async throws {
+        let current = try lock.withLock { () throws -> (any ScreenStreamDriving, ActiveSurface) in
+            guard let stream = streamStorage, let surface = activeSurface, startedFlag else {
+                throw ControlFailure(code: "wrong-state", message: "drawing requires an active screen recording")
+            }
+            guard !filterUpdatePending else {
+                throw ControlFailure(code: "drawing-update-busy", message: "a drawing filter update is in progress")
+            }
+            filterUpdatePending = true
+            return (stream, surface)
+        }
+        defer { lock.withLock { filterUpdatePending = false } }
+        let (stream, active) = current
+        guard !active.selftest else {
+            throw ControlFailure(code: "drawing-mode-not-supported", message: "drawing inclusion is unavailable during capture diagnostics")
+        }
+        let mode: String
+        switch active.surface {
+        case .display: mode = "display"
+        case .area: mode = "area"
+        case .window:
+            throw ControlFailure(code: "drawing-mode-not-supported", message: "drawing requires display or area capture")
+        }
+        let resolved = try await resolver.resolve(surface: active.surface, excludingBundleIDs: active.exclusion.bundleIDs(selftest: false))
+        var drawingWindows: [SCWindow] = []
+        if let windowID {
+            let metadata = resolved.windows.map { window in
+                WindowSource(id: SourceIds.window(Int(window.windowID)), title: window.title ?? "",
+                             owningApplication: window.owningApplication?.bundleIdentifier ?? "",
+                             displayID: SourceIds.display(resolved.display.displayID))
+            }
+            let number = try DrawingCaptureInclusion.validate(windowID: windowID, windows: metadata,
+                                                             shellBundleID: active.exclusion.shellBundleID, mode: mode)
+            guard let drawing = resolved.windows.first(where: { $0.windowID == number }) else {
+                throw ControlFailure(code: "drawing-window-not-found", message: "drawing window disappeared")
+            }
+            drawingWindows = [drawing]
+        }
+        let stillActive = lock.withLock { startedFlag && streamStorage === stream }
+        guard stillActive else { throw ControlFailure(code: "wrong-state", message: "screen recording ended during the drawing update") }
+        try await stream.updateContentFilter(Self.makeFilter(resolved: resolved, surface: active.surface, drawingWindows: drawingWindows))
     }
 
     /// Stops capture. Safe to call twice; a stream that never started is a
@@ -371,10 +432,11 @@ public final class ScreenSource: @unchecked Sendable {
 
     // Synchronous state helpers (called from the async surface; keeping the
     // lock out of async frames satisfies strict concurrency).
-    private func install(stream: any ScreenStreamDriving) {
+    private func install(stream: any ScreenStreamDriving, surface: ActiveSurface) {
         lock.lock()
         streamStorage = stream
         startedFlag = true
+        activeSurface = surface
         lock.unlock()
     }
 
@@ -384,6 +446,7 @@ public final class ScreenSource: @unchecked Sendable {
         startedFlag = false
         let stream = streamStorage
         streamStorage = nil
+        activeSurface = nil
         return stream
     }
 
@@ -391,13 +454,13 @@ public final class ScreenSource: @unchecked Sendable {
     /// display and area use the display filter that excludes our own
     /// applications; window uses the desktop-independent window filter; the
     /// area's source rectangle rides the configuration, not the filter.
-    static func makeFilter(resolved: ResolvedContent, surface: ScreenSurface) -> SCContentFilter {
+    static func makeFilter(resolved: ResolvedContent, surface: ScreenSurface, drawingWindows: [SCWindow] = []) -> SCContentFilter {
         switch surface {
         case .display, .area:
             return SCContentFilter(
                 display: resolved.display,
                 excludingApplications: resolved.excludedApplications,
-                exceptingWindows: [])
+                exceptingWindows: drawingWindows)
         case .window:
             if let window = resolved.window {
                 return SCContentFilter(desktopIndependentWindow: window)
@@ -465,6 +528,7 @@ internal struct SystemScreenContentResolver: ScreenSource.ContentResolving {
             display: display,
             displayFrame: display.frame,
             window: resolvedWindow,
-            excludedApplications: excluded)
+            excludedApplications: excluded,
+            windows: content.windows)
     }
 }

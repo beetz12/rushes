@@ -68,6 +68,7 @@ public protocol CaptureRig: Sendable {
     /// so no sample races a finalizing writer.
     func stop() async
     func adoptClock(_ clock: SessionClock) async
+    func setDrawingWindow(windowID: String?) async throws
 }
 
 /// Builds the capture for one armed session. The production factory wires
@@ -82,6 +83,7 @@ public protocol CaptureRigFactory: Sendable {
 
 extension CaptureRig {
     public func adoptClock(_ clock: SessionClock) async {}
+    public func setDrawingWindow(windowID: String?) async throws {}
 }
 
 extension CaptureRigFactory {
@@ -292,6 +294,13 @@ private final class ProductionCaptureRig: CaptureRig, @unchecked Sendable {
 
     func adoptClock(_ clock: SessionClock) async {
         stateLock.withLock { recorder?.adoptClock(clock) }
+    }
+
+    func setDrawingWindow(windowID: String?) async throws {
+        guard let screenSource else {
+            throw ControlFailure(code: "drawing-mode-not-supported", message: "drawing requires an active display or area recording")
+        }
+        try await screenSource.setDrawingWindow(windowID: windowID)
     }
 
     /// Synchronous lock-confined accessors: the async surface must not hold
