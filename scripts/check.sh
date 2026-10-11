@@ -9,9 +9,33 @@ swift build
 echo "== swift test =="
 swift test
 
+js_paths=()
+for surface in shell cloud viewer worker; do
+  if [ -f "$surface/package.json" ]; then
+    if [ ! -f "$surface/.nvmrc" ]; then
+      echo "Missing pinned Node runtime: $surface/.nvmrc" >&2
+      exit 1
+    fi
+    node_pin=$(tr -d '[:space:]' < "$surface/.nvmrc")
+    node_pin=${node_pin#v}
+    node_dir="$HOME/.nvm/versions/node/v$node_pin/bin"
+    if [ ! -x "$node_dir/node" ]; then
+      echo "Install Node $node_pin declared by $surface/.nvmrc before running this gate" >&2
+      exit 1
+    fi
+    echo "== $surface: Node $node_pin install/build/tests =="
+    PATH="$node_dir:$PATH" npm --prefix "$surface" ci --no-audit --no-fund
+    PATH="$node_dir:$PATH" npm --prefix "$surface" run build
+    PATH="$node_dir:$PATH" npm --prefix "$surface" test
+    if [ -d "$surface/src" ]; then
+      js_paths+=("$surface/src")
+    fi
+  fi
+done
+
 echo "== clean-room check on our source =="
 python3 tools/checks/test_clean_inputs.py
-clean_output=$(python3 -I tools/checks/check_clean.py Sources Tests)
+clean_output=$(python3 -I tools/checks/check_clean.py Sources Tests "${js_paths[@]}")
 echo "$clean_output"
 first=${clean_output%%$'\n'*}
 [ "$first" = "0" ] || { echo "check_clean reported $first"; exit 1; }
