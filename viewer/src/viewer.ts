@@ -13,7 +13,7 @@ interface Manifest {
         file: string;
         lang: string;
     }>;
-    transcript?: string;
+    transcript?: string | null;
     chapters?: Array<{
         startMs: number;
         title: string;
@@ -123,15 +123,22 @@ async function render(m: Manifest): Promise<void> {
     if (m.transcript && m.transcript !== transcriptVersion) {
         const r = await fetch(asset(m.transcript), { cache: 'no-store' });
         if (r.ok) {
-            cues = safeCues(await r.json());
+            const nextCues = safeCues(await r.json());
+            if (currentManifest !== m)
+                return;
+            cues = nextCues;
             transcriptVersion = m.transcript;
             const panel = element('transcript');
             panel.replaceChildren();
             cueButtons = cues.map(c => line(panel, c.text, c.startMs));
         }
     }
-    else if (!m.transcript)
+    else if (!m.transcript) {
+        transcriptVersion = '';
+        cues = [];
+        cueButtons = [];
         element('transcript').textContent = 'A transcript will appear here when available.';
+    }
     if (worker) {
         element('feedback').hidden = false;
         await feedback();
