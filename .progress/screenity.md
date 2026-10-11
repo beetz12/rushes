@@ -18,6 +18,7 @@ Branch: goal/research-screenity-kap-bloom
 
 - Steps 1 to 4.
 - Step 5: screenity note pair written; check_research OK (16 ideas), check_clean 0.
+- Step 6: kap note pair written; check_research OK (13 ideas), check_clean 0.
 
 ## Unverified
 
@@ -28,4 +29,4 @@ Branch: goal/research-screenity-kap-bloom
 
 ## First unfinished step
 
-- Step 6 (kap).
+- Step 7 (bloom).
