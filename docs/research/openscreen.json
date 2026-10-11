@@ -1,0 +1,462 @@
+{
+  "repo": "getopenscreen/openscreen",
+  "sha": "2896c1f7b9ad",
+  "licence": "MIT",
+  "features": {
+    "capture-screen": {
+      "present": true,
+      "quality": 4,
+      "summary": "Native capture helper per platform, each a child process taking one JSON request and emitting NDJSON events: Swift ScreenCaptureKit on macOS (H.264 fragmented MP4 via AVAssetWriter, size from the content filter rect times point-pixel scale, 0.1 bit per pixel per frame, 1 s keyframes), C++ Windows Graphics Capture with Media Foundation fragmented MP4, and Rust PipeWire through the ScreenCast portal on Linux (VAAPI, Vulkan, OpenH264 ladder, plain MP4). Display or window, 60 fps target (Linux helper default 30), system pointer hidden for the editable cursor. Browser getDisplayMedia plus MediaRecorder WebM is the fallback.",
+      "paths": [
+        "electron/native/screencapturekit/Sources/OpenScreenScreenCaptureKitHelper/ScreenCaptureRecorder.swift",
+        "electron/native/screencapturekit/Sources/OpenScreenCaptureCore/CaptureSizing.swift",
+        "electron/native/pipewire-capture/src/main.rs",
+        "electron/native/pipewire-capture/src/portal.rs",
+        "electron/native/pipewire-capture/src/encoder.rs",
+        "electron/native/wgc-capture/src/mf_encoder.cpp",
+        "technical-documentation/architecture/recording.md",
+        "src/hooks/useScreenRecorder.ts"
+      ]
+    },
+    "capture-camera": {
+      "present": true,
+      "quality": 3,
+      "summary": "The webcam always lands as its own file beside the screen file. macOS and Linux record it in the renderer with MediaRecorder (WebM, H.264 preferred) and stream chunks to disk over IPC; Windows records it natively with Media Foundation and a DirectShow fallback. Presets 1080p, 1440p, 2160p at 30 fps (default 2160p). A whole-millisecond offset between webcam start and confirmed native screen start is stored as webcamOffsetMs and cameraTrack.offsetMs with the camera's pixel size. The CLI cannot record a camera.",
+      "paths": [
+        "src/lib/recordingSession.ts",
+        "src/hooks/useScreenRecorder.ts",
+        "src/hooks/webcamCaptureTarget.ts",
+        "electron/ipc/recordingStream.ts",
+        "src/lib/ai-edition/schema/index.ts"
+      ]
+    },
+    "capture-audio": {
+      "present": true,
+      "quality": 4,
+      "summary": "Microphone and system audio on all three platforms, mixed into a single AAC track inside the screen file (192 kbit/s on macOS). Mixers are driven by a clock rather than by sample arrival, fill silence, and report undelivered and dropped seconds, which fixed track-shortening and drift bugs. macOS microphone via ScreenCaptureKit needs macOS 15; Linux uses the sink monitor; Windows adds a 19 kHz keep-alive tone for headsets. No separate mic and system tracks.",
+      "paths": [
+        "technical-documentation/architecture/recording.md",
+        "electron/native/screencapturekit/Sources/OpenScreenScreenCaptureKitHelper/ScreenCaptureRecorder.swift",
+        "src/hooks/useScreenRecorder.ts"
+      ]
+    },
+    "recording-controls": {
+      "present": true,
+      "quality": 3,
+      "summary": "Click-through floating HUD with record, pause, restart, stop, source, microphone, system audio, webcam, cursor mode and settings; source picker window (portal picker on Linux, Apple system picker on macOS 15.2+); countdown overlay; tray menu; a global shortcut to open the app; 500 MB disk-space preflight; display sleep blocked while recording. HUD is content-protected out of captures. No floating camera bubble during recording.",
+      "paths": [
+        "src/components/launch/HudControls.tsx",
+        "src/components/launch/LaunchWindow.tsx",
+        "technical-documentation/architecture/recording.md",
+        "electron/recording/diskSpaceCheck.ts",
+        "electron/recording/displaySleepBlocker.ts"
+      ]
+    },
+    "camera-overlay": {
+      "present": true,
+      "quality": 4,
+      "summary": "Editor-time camera compositing: picture-in-picture with free position and size (15 to 60 percent), rectangle, circle, square or rounded mask, mirroring, shrink when the screen zooms, side-by-side and top/bottom block layouts welded to the screen, timed full-camera regions that morph the bubble to the whole frame, and on-device background removal, blur or replacement using an ONNX selfie segmentation model. Rendered by the native compositor in preview and export.",
+      "paths": [
+        "src/lib/compositeLayout.ts",
+        "src/components/video-editor/types.ts",
+        "crates/compositor/src/scene.rs",
+        "crates/compositor/src/segmentation.rs",
+        "technical-documentation/architecture/native-compositor.md"
+      ]
+    },
+    "annotation": {
+      "present": true,
+      "quality": 3,
+      "summary": "Post-recording annotations stored in the project: text with font, colour, background and six entrance animations; arrows in eight directions; images; blur or mosaic privacy masks (rectangle, oval, freehand) that stay on the zoomed content. Text and figures hold still while the content zooms. No live drawing while recording.",
+      "paths": [
+        "src/lib/ai-edition/schema/index.ts",
+        "technical-documentation/architecture/native-compositor.md",
+        "crates/compositor/src/scene.rs"
+      ]
+    },
+    "compositing-render": {
+      "present": true,
+      "quality": 5,
+      "summary": "One Rust compositor with D3D11/HLSL, Metal/MSL and wgpu/Vulkan backends plus a CPU fallback renders both the live preview and the export from the same scene JSON: gradient, image or colour backgrounds with optional motion and blur, SDF shadows, rounded and cropped screen, zoom with chained pans and cursor follow, 3D tilt and orbit camera, velocity motion blur, device frames, sprite cursor with smoothing and click bounce, webcam with masks and segmentation, annotations and captions. Exposed to Electron through a napi-rs addon.",
+      "paths": [
+        "crates/compositor/src/scene.rs",
+        "crates/compositor/src/regions.rs",
+        "crates/compositor-view-napi/src/lib.rs",
+        "electron/native-bridge/services/compositorViewService.ts",
+        "technical-documentation/architecture/native-compositor.md",
+        "technical-documentation/architecture/preview.md"
+      ]
+    },
+    "editing": {
+      "present": true,
+      "quality": 4,
+      "summary": "Multi-clip timeline over one JSON document: clip reorder, duplicate, source in/out, clip-anchored trims, speed regions, per-clip crop, zooms with easing, imported voiceover and music lanes with gain, fades and looping, transcript word deletion that writes trims with 70 ms breath padding, click-planned auto-zoom, 50-step snapshot undo, snapping and waveform. Every editing surface and the agent mutate the same document.",
+      "paths": [
+        "src/lib/ai-edition/schema/index.ts",
+        "src/lib/ai-edition/timeline/cut-breath.ts",
+        "src/lib/ai-edition/timeline/zoom-suggestions.ts",
+        "technical-documentation/architecture/document-model.md"
+      ]
+    },
+    "transcription-captions": {
+      "present": true,
+      "quality": 4,
+      "summary": "Fully local speech to text: a whisper.cpp helper served on 127.0.0.1, the small multilingual q8_0 model (about 264 MB) and Silero VAD downloaded once from pinned Hugging Face revisions with SHA-256 checks, optional wav2vec2 CTC aligners (English, French) for word timing, whisper.cpp choosing Metal or Vulkan at runtime with a CPU retry, and an automatic one-job-at-a-time queue. Captions are derived from the transcript, 1 to 12 words per cue, burned in by the compositor; optional LLM translation. No SRT or VTT output.",
+      "paths": [
+        "electron/stt/modelManager.ts",
+        "electron/stt/whisperServer.ts",
+        "technical-documentation/architecture/transcription-and-captions.md",
+        "electron/ai-edition/caption-translate.ts"
+      ]
+    },
+    "ai-features": {
+      "present": true,
+      "quality": 4,
+      "summary": "Optional bring-your-own-key chat agent (Anthropic, OpenAI, Gemini, Mistral, OpenRouter, MiniMax, any OpenAI-compatible URL) built on LangChain that can only call a fixed set of Zod-validated document tools (trims, word removal, zooms, speed, annotations, camera regions, clip moves). Per-turn checkpoints, an edit-consent switch, history compaction near 70 percent of an 80k-token estimate, keys in safeStorage. Non-LLM AI: on-device webcam segmentation and deterministic click-based auto-zoom.",
+      "paths": [
+        "technical-documentation/architecture/ai-agent.md",
+        "technical-documentation/architecture/llm-providers.md",
+        "electron/ai-edition/llm-config-store.ts",
+        "crates/compositor/src/segmentation.rs"
+      ]
+    },
+    "export-formats": {
+      "present": true,
+      "quality": 3,
+      "summary": "MP4 H.264 (H.265 encodable but not offered) at 24, 30 or 60 fps from the GUI and 60 fps from the CLI, sized 720p, 1080p or source, with aspect presets including Auto; bitrate 0.15 bit per pixel per frame. GIF through the same addon with median-cut palette and Floyd-Steinberg dithering. Export cancels between frames and publishes atomically from a staged file. No WebM output and no subtitle sidecar.",
+      "paths": [
+        "technical-documentation/architecture/export-pipeline.md",
+        "src/lib/exporter/mp4ExportSettings.ts",
+        "crates/compositor-view-napi/src/lib.rs",
+        "src/components/ai-edition/ExportDialog.tsx"
+      ]
+    },
+    "project-format": {
+      "present": true,
+      "quality": 4,
+      "summary": "The .openscreen file is a Zod-validated JSON document at schema version 8 (assets with camera track, per-asset transcripts, clips, clip-anchored trims and modifiers, audio tracks, a passthrough settings envelope) with forward-only load-time migrations from a legacy version 2 envelope that the CLI still writes. Saves are temp file, fsync, rename behind a per-project queue. Sidecars: cursor JSON, session manifest, chat sessions, and a fingerprint registry used to relink moved media. A pack command bundles project and media.",
+      "paths": [
+        "src/lib/ai-edition/schema/index.ts",
+        "src/components/video-editor/projectPersistence.ts",
+        "electron/ai-edition/document-service.ts",
+        "electron/media/mediaLinksRegistry.ts",
+        "electron/media/projectMediaRelinker.ts",
+        "src/lib/recordingSession.ts"
+      ]
+    },
+    "sharing-hosting": {
+      "present": false,
+      "quality": 0,
+      "summary": "Absent. No upload, share link, cloud or self-hosted storage code in the app; output is a local file only.",
+      "paths": []
+    },
+    "viewer-web": {
+      "present": false,
+      "quality": 0,
+      "summary": "Absent. The website folder is a Docusaurus documentation and marketing site, not a video player or share page.",
+      "paths": []
+    },
+    "teleprompter-scripts": {
+      "present": true,
+      "quality": 2,
+      "summary": "A separate Notes window with rich text and a teleprompter mode that auto-scrolls at a speed of 10 to 100 (default 40), with font size 14 to 48 and a mirror option, settings kept in local storage. The window is excluded from screen captures. No script-to-recording linkage.",
+      "paths": [
+        "src/components/launch/notesTeleprompter.ts",
+        "src/components/launch/NotesWindow.tsx"
+      ]
+    },
+    "platform-packaging": {
+      "present": true,
+      "quality": 4,
+      "summary": "Signed, hardened-runtime and notarized macOS DMG (macOS 13 floor, notarization in CI), Microsoft Store and NSIS builds for x64 and ARM64, AppImage, deb, rpm, pacman, a Nix flake with NixOS and Home Manager modules, and electron-updater on all platforms. Bundled ffmpeg is an LGPL shared build gated by a fail-closed licence check so the app stays MIT.",
+      "paths": [
+        "electron-builder.json5",
+        "macos.entitlements",
+        "electron/auto-updater.ts",
+        "README.md",
+        "technical-documentation/architecture/export-pipeline.md"
+      ]
+    },
+    "performance-reliability": {
+      "present": true,
+      "quality": 4,
+      "summary": "Fragmented MP4 on macOS and Windows with a box-walking salvage pass after a failed stop, MediaRecorder chunks streamed straight to disk, WebM duration and index repair by remux, Windows stop watchdog with per-step budgets, disk-space preflight, display-sleep blocker, GPU backend probe with an explicit CPU fallback notice, and shared GPU textures for the Windows preview. Linux output is not fragmented.",
+      "paths": [
+        "electron/recording/nativeMacCaptureSalvage.ts",
+        "electron/ipc/recordingStream.ts",
+        "electron/recording/webm-seek-index.ts",
+        "electron/recording/diskSpaceCheck.ts",
+        "technical-documentation/architecture/recording.md"
+      ]
+    },
+    "extensibility-automation": {
+      "present": true,
+      "quality": 4,
+      "summary": "Headless CLI in the app binary (record, sources, export, captions, pack, info) with NDJSON events on stdout, diagnostics on stderr, exit codes 0/1/2, stdin or signal stop, and atomic output files; a local MCP server that exposes the in-app agent's tools plus checkpoints to Claude Code or Codex; style presets as shareable files. Gaps: no webcam in CLI record, no codec flags, no export cancel, recording and export are not MCP tools.",
+      "paths": [
+        "electron/cli/cliMain.ts",
+        "website/docs/cli.md",
+        "src/cli/CliExportRunner.tsx",
+        "electron/mcp/openscreen-mcp-server.ts",
+        "electron/ai-edition/style-preset-service.ts"
+      ]
+    },
+    "privacy-security": {
+      "present": true,
+      "quality": 4,
+      "summary": "Local-first: transcription and segmentation run on the device, nothing reaches an LLM until the user adds a key, keys and the MCP token are encrypted with safeStorage, the MCP server is loopback-only with bearer token and Host/Origin checks and read-only by default, the HUD is content-protected, and the main process only serves media from the recordings folders or user-approved paths. macOS permissions are read through a fresh helper to avoid cached answers. Weak spot: editor and CLI windows disable web security to load file URLs.",
+      "paths": [
+        "electron/mcp/openscreen-mcp-server.ts",
+        "electron/ai-edition/llm-config-store.ts",
+        "electron/ipc/handlers.ts",
+        "electron/permissions/macPermissions.ts"
+      ]
+    }
+  },
+  "best_ideas": [
+    {
+      "id": "openscreen-separate-camera-file-int-offset",
+      "title": "Separate camera file with a whole-millisecond start offset",
+      "area": "capture-camera",
+      "what": "Screen and webcam are always written as two files. The webcam recorder start time and the native helper's confirmed start are read from the same monotonic clock; their difference is rounded to whole milliseconds and saved as webcamOffsetMs in the session and as cameraTrack.offsetMs on the asset, along with the camera's real pixel width and height.",
+      "why": "Exactly matches David's editor input (screen file, camera file, offset) and keeps the camera re-framable later. The rounding detail is load-bearing: a fractional offset once failed an integer schema and silently dropped the camera.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "src/hooks/useScreenRecorder.ts:130-235",
+        "src/lib/recordingSession.ts",
+        "src/lib/ai-edition/schema/index.ts:129-157"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "openscreen-fragmented-mp4-salvage",
+      "title": "One-second fragmented MP4 plus a box-walking salvage pass",
+      "area": "performance-reliability",
+      "what": "The ScreenCaptureKit writer sets a one-second movie fragment interval. When stop fails or the helper dies, a recovery step reads MP4 box headers at their own offsets, truncates a torn trailing fragment, counts surviving video samples and keeps the take; Windows uses the fragmented Media Foundation sink for the same reason.",
+      "why": "A crash or a hung stop costs about the last second instead of the whole recording, which is the main trust promise of a quick recorder.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "electron/recording/nativeMacCaptureSalvage.ts:1-60",
+        "electron/native/screencapturekit/Sources/OpenScreenScreenCaptureKitHelper/ScreenCaptureRecorder.swift:775-830",
+        "technical-documentation/architecture/recording.md"
+      ],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "openscreen-stdio-capture-helper-contract",
+      "title": "Capture helper as a child process: JSON request in, NDJSON events out",
+      "area": "capture-screen",
+      "what": "Electron resolves source, devices and output paths, launches the platform helper with one JSON argument, sends pause, resume and stop lines on stdin, and reads ready, recording-started, warning and recording-stopped events as JSON lines on stdout. The helper owns capture, timing and encoding; the app owns orchestration and persistence.",
+      "why": "Keeps the ScreenCaptureKit code in a small Swift binary that can be tested and run alone, isolates crashes from the UI, and the same protocol is directly usable by a CLI or an agent.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "electron/native/README.md",
+        "technical-documentation/architecture/recording.md",
+        "electron/native/pipewire-capture/src/main.rs:1-60"
+      ],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "openscreen-headless-cli-ndjson",
+      "title": "Headless CLI inside the app binary with an NDJSON protocol",
+      "area": "extensibility-automation",
+      "what": "Subcommands (record, sources, export, captions, pack, info) boot without HUD, tray or dock icon, reuse the GUI's recording and export code through a hidden window, write only JSON events to stdout with diagnostics on stderr, survive closed pipes, exit 0/1/2 instead of showing error dialogs, stop on SIGINT, SIGTERM or a stop line on stdin (not on stdin EOF), and write output files atomically.",
+      "why": "Gives an AI agent record, caption and export with machine-readable progress, and because it reuses the GUI pipeline there is no second code path to drift.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "electron/cli/cliMain.ts",
+        "website/docs/cli.md",
+        "src/cli/CliExportRunner.tsx:1-120"
+      ],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "openscreen-local-mcp-shared-tools",
+      "title": "Loopback MCP server reusing the in-app agent's tool table",
+      "area": "extensibility-automation",
+      "what": "Streamable HTTP on 127.0.0.1 with a 32-byte bearer token kept in safeStorage and compared in constant time, Host and Origin checks against DNS rebinding, read-only until a separate edit switch is turned on, checkpoint and restore tools, revision-guarded writes to the open project that land as one undo step, and file writes to closed projects only after a checkpoint.",
+      "why": "Lets Claude Code or Codex edit recordings safely on David's machine, and a single tool table means the built-in agent and external agents never diverge.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "electron/mcp/openscreen-mcp-server.ts:400-480",
+        "electron/mcp/mcp-settings-store.ts",
+        "technical-documentation/architecture/mcp-server.md"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "openscreen-cursor-as-telemetry-sidecar",
+      "title": "Record the cursor as data in a sidecar and redraw it",
+      "area": "compositing-render",
+      "what": "Capture hides the system pointer and writes <video>.cursor.json with time, normalised position, interaction type, OS cursor type and deduplicated cursor bitmaps whose hotspots are fractions of the image. The compositor redraws a sprite per cursor type with spring smoothing, size scaling, click bounce and motion blur; on macOS a listen-only event tap supplies left clicks and cursor shapes.",
+      "why": "Unlocks restyled cursors, click highlights and click-driven zooms, which are the features that make a recording look produced rather than raw.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "electron/media/cursorSidecar.ts:1-70",
+        "technical-documentation/architecture/cursor.md",
+        "electron/native/screencapturekit/Sources/OpenScreenMacOSCursorHelper/main.swift:1-40"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "openscreen-click-planned-auto-zoom",
+      "title": "Deterministic auto-zoom planned from recorded clicks",
+      "area": "editing",
+      "what": "A pure planner turns clicks into shots: start wide for 2.5 s, merge clicks within 3 s that fit one frame, be fully zoomed 0.5 s before the first click, hold 1.5 s after the last and at least 1.8 s overall, keep 1.5 s wide between zooms, end wide 1 s before the end, ignore the stop click, choose 1.25x to 1.8x with a 12 percent margin, and never move zooms the user placed.",
+      "why": "A cheap, explainable auto-zoom with tuned constants David can start from, no model required, and it composes with manual zooms.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "src/lib/ai-edition/timeline/zoom-suggestions.ts:1-70"
+      ],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "openscreen-clock-driven-audio-mixer",
+      "title": "Clock-driven audio mixer that fills silence",
+      "area": "capture-audio",
+      "what": "The mixed mic-plus-system track's write position is advanced by the host clock on a 10 ms timer, filling silence where no source delivered, writing a source off for a chunk only after 250 ms without data, freezing during pause, and reporting undelivered and dropped seconds for each take.",
+      "why": "Prevents the common bug where system audio that starts silent shifts the whole track earlier and the audio ends shorter than the video, which would break David's offset-based alignment.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "technical-documentation/architecture/recording.md",
+        "electron/native/screencapturekit/Sources/OpenScreenScreenCaptureKitHelper/ScreenCaptureRecorder.swift:830-850"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "openscreen-capture-sizing-bitrate-gop",
+      "title": "Output size from the content filter, bitrate per pixel, one-second GOP",
+      "area": "capture-screen",
+      "what": "Stream size is the content filter rect times its point-to-pixel scale, scaled by one factor to a ceiling and forced even; video bitrate is 0.1 bit per pixel per frame clamped to 2 to 60 Mbit/s; the keyframe interval equals the frame rate.",
+      "why": "Avoids the Retina black-box and ultrawide letterbox bugs, keeps files sensible at 1080p, and keeps editor scrubbing fast.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "electron/native/screencapturekit/Sources/OpenScreenCaptureCore/CaptureSizing.swift"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "openscreen-local-whisper-pinned-models",
+      "title": "On-device Whisper served on loopback with pinned, hash-checked models",
+      "area": "transcription-captions",
+      "what": "A whisper.cpp helper listens on 127.0.0.1 at a free port; the small q8_0 model and Silero VAD come from pinned Hugging Face revisions with SHA-256 verification and atomic rename; optional CTC aligners re-time words; a queue transcribes every asset automatically, one at a time, and remembers assets that have no audio.",
+      "why": "Private, offline transcripts that feed both captions and text-based editing, with downloads that cannot silently change under the user.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "electron/stt/modelManager.ts:1-150",
+        "electron/stt/whisperServer.ts:1-40",
+        "technical-documentation/architecture/transcription-and-captions.md"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "openscreen-transcript-cuts-breath",
+      "title": "Transcript deletions become trims with breath padding",
+      "area": "editing",
+      "what": "Deleting words writes source-time trim ranges and leaves the transcript text alone; the edge of a cut next to kept speech is pulled back 70 ms, never past the middle of the gap, while cuts drawn by hand on the timeline are left exactly as drawn.",
+      "why": "Makes text-based editing sound natural instead of clipped, and keeps the transcript usable for re-cutting.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "src/lib/ai-edition/timeline/cut-breath.ts:1-25",
+        "technical-documentation/architecture/ai-agent.md"
+      ],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "openscreen-fingerprint-media-relink",
+      "title": "Head-and-tail fingerprint registry to relink moved recordings",
+      "area": "project-format",
+      "what": "File size plus 64 KiB samples from the start and end of the screen video key a registry entry holding the webcam path, webcam offset and cursor sidecar path. Lookups try the adjacent sidecar files first, then the registry, and relink only when the recorded size matches.",
+      "why": "Projects keep their camera and cursor after recordings are moved or renamed, without hashing gigabytes of video.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "electron/media/mediaLinksRegistry.ts:1-80",
+        "electron/media/projectMediaRelinker.ts:1-40"
+      ],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "openscreen-clip-anchored-atomic-document",
+      "title": "Clip-anchored JSON document with atomic, queued saves",
+      "area": "project-format",
+      "what": "Every modifier stores the clip id and source window it belongs to, with ruler times only as a derived cache; the schema carries a version literal with forward-only migrations at load; saves write a unique temp file, fsync, then rename behind a per-project queue; a truncated file is refused rather than partly loaded.",
+      "why": "A robust, agent-editable project format that survives reorders and duplicate clips; David can adopt the shape nearly as is.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "src/lib/ai-edition/schema/index.ts:60-637",
+        "electron/ai-edition/document-service.ts:586-629",
+        "technical-documentation/architecture/document-model.md"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "openscreen-fresh-permission-read",
+      "title": "Fresh-process Screen Recording check plus an asked-before note",
+      "area": "privacy-security",
+      "what": "Screen Recording status is read by spawning the capture helper with a status flag each time, because the system preflight answer is cached for the life of a process; the app also stores whether it already prompted, so it knows when to open System Settings instead of prompting again.",
+      "why": "Reliable macOS permission onboarding on recent macOS versions, where re-prompts are frequent and an in-process check goes stale.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "electron/permissions/macPermissions.ts:1-50",
+        "electron/native/README.md"
+      ],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "openscreen-one-compositor-fractional-scene",
+      "title": "One renderer for preview and export, driven by a fractional scene JSON",
+      "area": "compositing-render",
+      "what": "The same native compositor and the same scene description drive the canvas preview and the encoder; sizes travel as fractions of a reference box; preview frames carry a generation number so an unchanged frame is never copied; on Windows frames can travel as shared GPU textures.",
+      "why": "Removes preview-versus-export mismatches by construction; useful as an architecture target even if David's first build renders with AVFoundation and Core Image.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "crates/compositor-view-napi/src/lib.rs:1-240",
+        "electron/native-bridge/services/compositorViewService.ts:620-750",
+        "crates/compositor/src/scene.rs:760-830"
+      ],
+      "effort": "L",
+      "priority": "could"
+    },
+    {
+      "id": "openscreen-staged-export-publish",
+      "title": "Staged export file renamed into place only when finished",
+      "area": "export-formats",
+      "what": "The MP4 is muxed to a staged file next to the destination and renamed over it only after the trailer is written; cancel is checked before each frame and deletes the staged file; progress is computed from speed-adjusted frame totals so it reaches 100 percent.",
+      "why": "A cancelled or failed export never leaves a broken file where the user or an agent expects a finished video.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "technical-documentation/architecture/export-pipeline.md",
+        "crates/compositor-view-napi/src/lib.rs:690-800"
+      ],
+      "effort": "S",
+      "priority": "should"
+    }
+  ],
+  "weaknesses": [
+    "No sharing, hosting or web viewer of any kind; output is a local file only.",
+    "No live camera bubble while recording; the camera preview exists only inside the HUD settings panel.",
+    "Microphone and system audio are mixed into one AAC track inside the screen file, so they cannot be balanced or cleaned separately.",
+    "On macOS the webcam is a renderer MediaRecorder WebM while the screen is native; the offset comes from process start-up timing rather than shared capture timestamps.",
+    "ScreenCaptureKit microphone capture needs macOS 15; older systems record without a microphone.",
+    "CLI record has no webcam option, CLI export has no codec, bitrate or fps flags and cannot be cancelled, and Linux recording always waits for the portal picker.",
+    "Captions are burned in only; no SRT or VTT export.",
+    "Linux helper writes a plain MP4, so a crashed Linux take can be lost entirely.",
+    "Editor and CLI windows run with web security disabled to load file URLs; the main-process path allow-list is the real guard.",
+    "Architecture docs drift from code (document fields no longer in the schema, conflicting statements about preview audio); much compositor code and commentary is in French and some modules are very large.",
+    "The clone ships agent-instruction files (AGENTS.md, .claude, .opencode, .harness, design/SKILL.md) telling coding agents to install and build; they were treated as data and not followed."
+  ]
+}

@@ -1,0 +1,500 @@
+{
+  "repo": "webadderallorg/Recordly",
+  "sha": "535d1cfafa87",
+  "licence": "AGPL-3.0 (MIT: services/recordly-share)",
+  "features": {
+    "capture-screen": {
+      "present": true,
+      "quality": 4,
+      "summary": "macOS: a one-file Swift helper drives ScreenCaptureKit with a 60 fps floor, NV12 and BT.709 tags, queue depth six, OS cursor off and the app's own process excluded; window capture grabs the display and crops to the window, re-checked every 0.5 s, and stops cleanly when the window vanishes. Windows uses a Windows Graphics Capture helper with the same stdin/stdout contract; Linux and old Windows fall back to Electron capture or FFmpeg grabbers.",
+      "paths": [
+        "electron/native/ScreenCaptureKitRecorder.swift",
+        "electron/ipc/recording/mac.ts",
+        "electron/ipc/register/recording.ts",
+        "electron/native/wgc-capture/src/main.cpp",
+        "electron/ipc/recording/ffmpeg.ts"
+      ]
+    },
+    "capture-camera": {
+      "present": true,
+      "quality": 3,
+      "summary": "Camera recorded in the renderer with MediaRecorder at 1280x720, 30 fps, 8 Mbps, MP4/H.264 preferred with WebM fallback, saved as its own file next to the screen file; start offset is a wall-clock millisecond difference stored in a JSON session manifest. Chunks stay in memory until stop.",
+      "paths": [
+        "src/hooks/useScreenRecorder.ts",
+        "src/hooks/recordingMimeType.ts",
+        "electron/ipc/project/session.ts"
+      ]
+    },
+    "capture-audio": {
+      "present": true,
+      "quality": 4,
+      "summary": "ScreenCaptureKit system audio and microphone each written to their own 48 kHz stereo AAC file, plus a mixed track inside the MP4 so the screen file plays alone; all tracks share the first video frame as time zero, giving late audio leading silence. Browser mic fallback records with gain control off and is cleaned offline by an FFmpeg filter chain into mono WAV.",
+      "paths": [
+        "electron/native/ScreenCaptureKitRecorder.swift",
+        "electron/ipc/recording/audioFilters.ts",
+        "electron/ipc/register/recording.ts",
+        "electron/ipc/recording/mac.ts"
+      ]
+    },
+    "recording-controls": {
+      "present": true,
+      "quality": 4,
+      "summary": "Transparent always-on-top control bar with source, mic, camera and countdown popovers, pause/resume, recording tray icon, resizable floating camera preview (120-480 px), countdown with a warm-started paused pipeline, and default exclusion of the bar from capture.",
+      "paths": [
+        "src/components/launch/floatingWebcamPreview.ts",
+        "src/lib/hudCaptureProtection.ts",
+        "electron/windows.ts",
+        "src/hooks/useScreenRecorder.ts"
+      ]
+    },
+    "camera-overlay": {
+      "present": true,
+      "quality": 4,
+      "summary": "Bubble composited at edit time: superellipse shape with roundness control, nine anchor presets or custom position, mirroring, two-layer shadow, size relative to the frame with a 56 px floor, and an optional mode that shrinks it while the screen is zoomed. Playback re-seeks the camera when drift passes a small threshold.",
+      "paths": [
+        "src/components/video-editor/webcamOverlay.ts",
+        "src/lib/geometry/squircle.ts",
+        "src/components/video-editor/videoPlayback/webcamSync.ts",
+        "src/components/video-editor/VideoPlayback.tsx"
+      ]
+    },
+    "annotation": {
+      "present": true,
+      "quality": 3,
+      "summary": "Timeline annotations of four kinds: text, image, arrow and blur, sized and placed in percentages and rendered inside the zoomed layer; blur re-composites already-rendered pixels with a tint inside a rounded box.",
+      "paths": [
+        "src/lib/exporter/annotationRenderer.ts",
+        "src/components/video-editor/types.ts",
+        "src/lib/exporter/modernFrameRenderer.ts"
+      ]
+    },
+    "compositing-render": {
+      "present": true,
+      "quality": 5,
+      "summary": "One PixiJS scene model for preview and export: spring-smoothed camera, directional and radial motion blur during zoom moves, re-drawn vector cursor with spring smoothing, speed tilt, click squash, click rings and motion blur, plus wallpaper or gradient backdrops, padding, rounded corners, shadow and background blur scaled so preview matches export.",
+      "paths": [
+        "src/components/video-editor/videoPlayback/cursorRenderer.ts",
+        "src/components/video-editor/videoPlayback/motionSmoothing.ts",
+        "src/components/video-editor/videoPlayback/zoomTransform.ts",
+        "src/components/video-editor/videoPlayback/sceneEffects.ts",
+        "src/lib/exporter/frameRenderer.ts",
+        "src/lib/exporter/modernFrameRenderer.ts"
+      ]
+    },
+    "editing": {
+      "present": true,
+      "quality": 4,
+      "summary": "Clip-sequence timeline where each clip keeps its source in-point and speed; trims are uncovered ranges; zoom, annotation, caption and audio blocks snap within 8 screen pixels; crop, aspect ratio, undo; automatic zoom suggestions from click clusters on fresh recordings, with a safe-zone follow camera and connected zooms that pan.",
+      "paths": [
+        "docs/timeline-sequence.md",
+        "src/components/video-editor/timeline/zoomSuggestionUtils.ts",
+        "src/components/video-editor/videoPlayback/zoomRegionUtils.ts",
+        "src/components/video-editor/videoPlayback/cursorFollowCamera.ts",
+        "src/components/video-editor/hooks/useFreshRecordingAutoZoom.ts",
+        "src/lib/exporter/videoTimelineSegments.ts"
+      ]
+    },
+    "transcription-captions": {
+      "present": true,
+      "quality": 4,
+      "summary": "Local whisper.cpp with the small ggml model fetched on demand; audio source order prefers the mic sidecar; mic and system transcribed separately and merged with mic priority; phrases re-split at word gaps or FFmpeg-detected silence, short captions merged, words inside silence dropped; SRT and VTT sidecars plus burned-in captions with word highlighting.",
+      "paths": [
+        "electron/ipc/captions/generate.ts",
+        "electron/ipc/captions/segment.ts",
+        "electron/ipc/captions/mergeSources.ts",
+        "electron/ipc/captions/silence.ts",
+        "electron/ipc/register/exportCaptionSidecars.ts",
+        "electron/ipc/constants.ts"
+      ]
+    },
+    "ai-features": {
+      "present": false,
+      "quality": 0,
+      "summary": "No LLM, summary, chapter, filler-word or other generative feature in the desktop app; auto-zoom is a rule-based heuristic and Whisper transcription is covered under captions. The share worker schema has summary, chapter and speaker columns, but the desktop never fills them.",
+      "paths": [
+        "src/components/video-editor/timeline/zoomSuggestionUtils.ts",
+        "services/recordly-share/worker/schema.sql"
+      ]
+    },
+    "export-formats": {
+      "present": true,
+      "quality": 4,
+      "summary": "MP4 (H.264 High falling back to Main and Baseline, AAC) at 24/30/60 fps and GIF at 15-30 fps. Default route renders with PixiJS, encodes with a hardware-preferred WebCodecs encoder and lets FFmpeg remux; fallbacks include a pure WebCodecs route, FFmpeg with probed hardware encoders, and Windows CUDA or D3D11 static-layout compositors. Bitrate tiers 8/12/45 Mbps for 720p/1080p/4K at source quality, scaled by mode and frame rate. No WebM, HEVC or ProRes output.",
+      "paths": [
+        "src/lib/exporter/exportBitrate.ts",
+        "src/lib/exporter/backendPolicy.ts",
+        "src/lib/exporter/modernVideoExporter.ts",
+        "src/lib/exporter/muxer.ts",
+        "electron/ipc/nativeVideoExport.ts",
+        "src/lib/exporter/gifExporter.ts",
+        "src/lib/exporter/exportTuning.ts"
+      ]
+    },
+    "project-format": {
+      "present": true,
+      "quality": 4,
+      "summary": "Versioned JSON project file with its own extension (registered as a macOS document type) pointing at source media and holding all editor state; sidecars for cursor telemetry (version 2, normalised 30 Hz samples), the camera link and offset, and companion audio; atomic saves keep one backup generation; PNG previews beside each project.",
+      "paths": [
+        "electron/ipc/project/atomicSave.ts",
+        "electron/ipc/project/session.ts",
+        "electron/ipc/project/manager.ts",
+        "electron/ipc/constants.ts",
+        "electron/ipc/cursor/telemetry.ts",
+        "electron-builder.json5"
+      ]
+    },
+    "sharing-hosting": {
+      "present": true,
+      "quality": 3,
+      "summary": "MIT Cloudflare Worker on D1 and R2: reserve, single PUT or 25 MiB multipart upload, metadata publish, 64-hex-character share codes, range streaming, PBKDF2 passwords, expiry cron, owner library, hosted quotas and locks. Desktop sends only a dedicated MP4 render, title, notes and a poster after the fact, to a build-time endpoint limited to the vendor origin or localhost.",
+      "paths": [
+        "services/recordly-share/worker/src/uploads.js",
+        "services/recordly-share/worker/src/hostedUploads.js",
+        "services/recordly-share/worker/src/media.js",
+        "services/recordly-share/worker/wrangler.jsonc",
+        "services/recordly-share/worker/schema.sql",
+        "electron/ipc/register/cloudShare.ts",
+        "electron/ipc/cloudShareContract.ts",
+        "docs/cloud-sharing.md"
+      ]
+    },
+    "viewer-web": {
+      "present": true,
+      "quality": 4,
+      "summary": "Astro and React viewer: custom player with speed, picture-in-picture, keyboard shortcuts and start-at-time links; timestamped comments and reactions as clustered timeline markers; transcript tab with click-to-seek; chapters and summary tab; end-of-video call-to-action; password gate; bare embed page; Open Graph player card for crawlers.",
+      "paths": [
+        "services/recordly-share/worker/web/src/components/SharePlayer.tsx",
+        "services/recordly-share/worker/web/src/components/ShareFeedback.tsx",
+        "services/recordly-share/worker/web/src/components/SharePage.tsx",
+        "services/recordly-share/worker/web/src/pages/embed.astro",
+        "services/recordly-share/worker/src/router.js"
+      ]
+    },
+    "teleprompter-scripts": {
+      "present": false,
+      "quality": 0,
+      "summary": "Absent: no teleprompter, script or speaker-notes feature found.",
+      "paths": []
+    },
+    "platform-packaging": {
+      "present": true,
+      "quality": 4,
+      "summary": "electron-builder: DMG and ZIP per architecture with hardened runtime and entitlements, usage strings for camera, mic and audio capture, NSIS on Windows, AppImage on Linux, GitHub publishing with update channels, a Homebrew cask and winget workflow; Swift helpers built with swiftc for a macOS 14 target and committed as prebuilt binaries.",
+      "paths": [
+        "electron-builder.json5",
+        "recordly.rb",
+        "scripts/build-native-helpers.mjs",
+        "electron/updater.ts",
+        ".github/workflows/release.yml"
+      ]
+    },
+    "performance-reliability": {
+      "present": true,
+      "quality": 4,
+      "summary": "Defensive helper finalisation (bounded encoder wait, skip tail frame, writer state checks, failure on half-written files), FFmpeg decode test of each new recording, capture diagnostics, adaptive export queues and timeouts, many export fallbacks, and a large unit and Playwright test suite. Gap: classic MP4 finalised only at stop, camera and fallback mic held in memory.",
+      "paths": [
+        "electron/native/ScreenCaptureKitRecorder.swift",
+        "electron/ipc/recording/diagnostics.ts",
+        "src/lib/exporter/exportTuning.ts",
+        "src/lib/exporter/finalizationTimeout.ts",
+        "electron/ipc/project/atomicSave.ts"
+      ]
+    },
+    "extensibility-automation": {
+      "present": true,
+      "quality": 2,
+      "summary": "A documented extension API exists, but the in-app extension manager is a placeholder saying extensions are disabled. Automation is limited to an environment-variable headless export test mode that opens a recording or project, exports MP4 and writes a JSON report. No CLI or JSON control API.",
+      "paths": [
+        "EXTENSIONS.md",
+        "src/components/video-editor/ExtensionManager.tsx",
+        "src/components/video-editor/export/useSmokeExportAutomation.ts",
+        "electron/windows.ts",
+        "electron/main.ts"
+      ]
+    },
+    "privacy-security": {
+      "present": true,
+      "quality": 4,
+      "summary": "Local-first storage; loopback media server on a random port serving only approved real paths (but with wildcard CORS); trusted-origin and header checks on share responses; control bar hidden from capture; opt-in, previewed, allowlisted export-error reports with no identity and 30-day retention; permission prompts that open the matching System Settings pane.",
+      "paths": [
+        "electron/mediaServer.ts",
+        "electron/ipc/cloudShareContract.ts",
+        "src/lib/feedback/exportErrorReporting.ts",
+        "services/supabase/functions/_shared/exportErrorReport.ts",
+        "electron/ipc/register/permissions.ts",
+        "src/lib/hudCaptureProtection.ts"
+      ]
+    }
+  },
+  "best_ideas": [
+    {
+      "id": "recordly-line-protocol-capture-helper",
+      "title": "Capture helper as a small line-protocol child process",
+      "area": "capture-screen",
+      "what": "Run capture in a separate native process started with a JSON config argument; send pause, resume and stop as text lines on stdin; read readiness, state changes and the final output path as stdout lines and error tokens on stderr; treat end of stdin as stop so the file is finalised even if the parent app dies.",
+      "why": "Isolates fragile capture code, gives an AI agent or CLI an obvious control surface, survives a parent crash, and lets macOS and Windows helpers share one contract.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "electron/native/ScreenCaptureKitRecorder.swift",
+        "electron/ipc/recording/mac.ts",
+        "electron/native/wgc-capture/src/main.cpp"
+      ],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "recordly-shared-time-zero-separate-tracks",
+      "title": "One time zero for every track, separate audio files",
+      "area": "capture-audio",
+      "what": "Use the first video frame the writer accepts as time zero for all outputs; drop audio before it and shift late audio so its file gains leading silence; write system audio and microphone to their own AAC files and also a mixed track inside the screen file; subtract paused spans using the next video frame as the anchor.",
+      "why": "Gives David separately editable sources that already line up, which is what his editor takes as input, while the screen file still plays alone.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "electron/native/ScreenCaptureKitRecorder.swift",
+        "electron/ipc/recording/macCompanionAudio.ts"
+      ],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "recordly-camera-offset-manifest",
+      "title": "Camera file plus offset manifest",
+      "area": "project-format",
+      "what": "Record the camera to its own file and write a tiny versioned JSON next to the screen file naming the screen file, the camera file and the start offset in milliseconds, with a predictable filename suffix as a fallback link.",
+      "why": "Maps directly onto David's screen-file plus camera-file plus offset editor input. Improve it by deriving the offset from capture timestamps rather than wall-clock start times.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "electron/ipc/project/session.ts",
+        "src/hooks/useScreenRecorder.ts"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "recordly-warm-start-countdown",
+      "title": "Warm-start the pipeline during the countdown",
+      "area": "recording-controls",
+      "what": "Start the capture helper before the countdown, pause it immediately, show the countdown, then resume; signal readiness only after the writer has accepted a real frame; start the camera recorder right after resume.",
+      "why": "Loom-style instant start: no lost first second and no visible lag between the countdown ending and recording.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "src/hooks/useScreenRecorder.ts",
+        "electron/native/ScreenCaptureKitRecorder.swift"
+      ],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "recordly-cursor-telemetry-rerender",
+      "title": "Record the cursor as data and re-render it",
+      "area": "compositing-render",
+      "what": "Turn the OS cursor off in capture; sample normalised cursor positions at about 30 Hz with a pausable clock, take clicks from a listen-only event tap and the cursor shape from a 50 ms poll; at render time draw a vector cursor that follows the samples through a spring, tilts with speed, squashes briefly on click, can draw click rings and motion blur, and snaps rather than springs across large time jumps.",
+      "why": "Most of the polished look comes from this, and keeping the cursor as data lets users restyle or hide it after recording.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "electron/native/NativeCursorMonitor.swift",
+        "electron/ipc/cursor/telemetry.ts",
+        "src/components/video-editor/videoPlayback/cursorRenderer.ts",
+        "src/components/video-editor/cursorMotionPresets.ts"
+      ],
+      "effort": "L",
+      "priority": "should"
+    },
+    {
+      "id": "recordly-click-cluster-auto-zoom",
+      "title": "Click-cluster auto-zoom with a safe-zone camera",
+      "area": "editing",
+      "what": "Group clicks that are under 2.5 s apart into one zoom region padded by half a second each side, default depth about 1.8x, focused on the strongest click; while zoomed, move the view only when the cursor leaves an inner box inset 25 percent per side; merge zooms that sit close together into one pan; drive scale and position through a slightly overdamped spring with an ease-out target curve.",
+      "why": "Auto-zoom is the headline feature users praise, and these rules avoid jittery cursor-chasing.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "src/components/video-editor/timeline/zoomSuggestionUtils.ts",
+        "src/components/video-editor/videoPlayback/cursorFollowCamera.ts",
+        "src/components/video-editor/videoPlayback/zoomRegionUtils.ts",
+        "src/components/video-editor/hooks/useFreshRecordingAutoZoom.ts"
+      ],
+      "effort": "L",
+      "priority": "should"
+    },
+    {
+      "id": "recordly-zoom-reactive-squircle-bubble",
+      "title": "Edit-time camera bubble that reacts to zoom",
+      "area": "camera-overlay",
+      "what": "Keep the camera separate and composite it in the editor as a squircle with adjustable roundness, a two-layer shadow, anchor presets, mirroring and size relative to the frame; optionally divide its size by the current zoom so it shrinks when the screen zooms in.",
+      "why": "A Loom-style bubble that can still be moved, resized or removed after recording, and stays balanced during zooms.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "src/components/video-editor/webcamOverlay.ts",
+        "src/lib/geometry/squircle.ts",
+        "src/components/video-editor/VideoPlayback.tsx"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "recordly-exclude-own-ui-from-capture",
+      "title": "Keep the app's own controls out of the recording",
+      "area": "recording-controls",
+      "what": "Pass the app's own process id to the ScreenCaptureKit content filter as an excluded application and turn on window content protection for the control bar while recording, so the bar and the floating camera preview stay visible to the user but never appear in the take.",
+      "why": "Removes a common recorder annoyance without asking the user to hide controls.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "src/lib/hudCaptureProtection.ts",
+        "electron/windows.ts",
+        "electron/native/ScreenCaptureKitRecorder.swift"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "recordly-defensive-finalisation-decode-test",
+      "title": "Defensive writer finalisation and a post-stop decode test",
+      "area": "performance-reliability",
+      "what": "On stop, wait at most about one second for the encoder queue before adding the optional tail frame and skip it if still busy; only end the session if the writer is still writing; report any writer that did not complete as a failure; then decode one frame with FFmpeg and check the duration before opening the editor.",
+      "why": "Long high-resolution recordings are where recorders lose files; this turns silent corruption into a clear error.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "electron/native/ScreenCaptureKitRecorder.swift",
+        "electron/ipc/recording/diagnostics.ts",
+        "electron/ipc/recording/mac.ts"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "recordly-gpu-encode-ffmpeg-remux",
+      "title": "Hardware encode in the renderer, FFmpeg only remuxes",
+      "area": "export-formats",
+      "what": "Render each output frame with the same scene code as the preview, encode H.264 with a hardware-preferred WebCodecs encoder in Annex B form, batch chunks to an FFmpeg process that copies them into MP4 without re-encoding, and fall back once to a pure WebCodecs route; size decode and encode queues from core count and pixel rate.",
+      "why": "Fast exports with no custom native encoder and guaranteed preview/export parity.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "src/lib/exporter/backendPolicy.ts",
+        "src/lib/exporter/modernVideoExporter.ts",
+        "electron/ipc/nativeVideoExport.ts",
+        "src/lib/exporter/exportTuning.ts"
+      ],
+      "effort": "L",
+      "priority": "could"
+    },
+    {
+      "id": "recordly-r2-d1-share-worker",
+      "title": "Self-hosted share worker on Cloudflare R2 and D1",
+      "area": "sharing-hosting",
+      "what": "Reuse the MIT worker: reserve a recording, upload with one PUT or resumable 25 MiB R2 multipart parts, post metadata to publish; links are /s/ plus 64 hex characters from 32 random bytes; range streaming from R2; PBKDF2 password hashing with an HMAC unlock cookie; daily expiry cron; Open Graph card for link previews; hosted mode adds quotas, idempotent upload sessions and locks.",
+      "why": "Near drop-in for share links on storage David controls, under a permissive licence.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "services/recordly-share/worker/src/uploads.js",
+        "services/recordly-share/worker/src/hostedUploads.js",
+        "services/recordly-share/worker/src/media.js",
+        "services/recordly-share/worker/src/crypto.js",
+        "services/recordly-share/worker/wrangler.jsonc",
+        "services/recordly-share/LICENSE"
+      ],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "recordly-timestamped-feedback-viewer",
+      "title": "Viewer with timestamped comments, reactions and transcript",
+      "area": "viewer-web",
+      "what": "Reuse the MIT viewer: custom player with speed and keyboard control, comments pinned to playback time and drawn as clustered timeline markers, emoji reactions, a transcript tab with click-to-seek, start-at-time links, an end card and a bare embed page.",
+      "why": "Delivers the Loom viewing and feedback experience in a small static bundle served by the same worker.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "services/recordly-share/worker/web/src/components/SharePlayer.tsx",
+        "services/recordly-share/worker/web/src/components/ShareFeedback.tsx",
+        "services/recordly-share/worker/web/src/scripts/shareModel.ts",
+        "services/recordly-share/worker/web/src/pages/embed.astro"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "recordly-local-whisper-clean-captions",
+      "title": "Local Whisper captions with silence-aware re-segmentation",
+      "area": "transcription-captions",
+      "what": "Run whisper.cpp locally with a model downloaded on first use; prefer the mic file; transcribe mic and system audio separately and keep mic words where they overlap; split phrases at long word gaps or detected silence, pad edges slightly, merge very short neighbours, and discard words lying wholly inside silence; write SRT and VTT next to the export.",
+      "why": "Private offline captions that read better than raw Whisper output and suppress hallucinated text in quiet stretches.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "electron/ipc/captions/generate.ts",
+        "electron/ipc/captions/segment.ts",
+        "electron/ipc/captions/mergeSources.ts",
+        "electron/ipc/captions/silence.ts"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "recordly-atomic-project-save",
+      "title": "Atomic project save with one backup generation",
+      "area": "project-format",
+      "what": "Write the project to a synced temporary file in the same folder, copy the current file to a backup name, rename the temporary file over the target, sync the folder, and serialise saves per path.",
+      "why": "Projects survive crashes or power loss mid-save, and the previous version is always recoverable.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "electron/ipc/project/atomicSave.ts"
+      ],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "recordly-dry-mic-offline-cleanup",
+      "title": "Capture the mic dry and clean it offline",
+      "area": "capture-audio",
+      "what": "When the browser mic path is used, record without real-time automatic gain control and run an offline FFmpeg chain afterwards (declip, declick, band limiting, light spectral denoise, speech normalisation or a limiter) into a mono 48 kHz WAV, keeping a timing JSON beside it.",
+      "why": "Avoids crackle that live gain control causes on some headsets while still delivering usable voice level.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "electron/ipc/recording/audioFilters.ts",
+        "electron/ipc/register/recording.ts"
+      ],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "recordly-headless-export-agent-seam",
+      "title": "Headless export mode as the seed of an agent CLI",
+      "area": "extensibility-automation",
+      "what": "An environment-driven start mode opens a given recording or project in the editor, exports with given settings, writes a JSON result file and closes.",
+      "why": "Shows the minimum an agent needs; David's recorder should expose the same as a documented CLI with a stable JSON contract for record, stop, export and share.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "src/components/video-editor/export/useSmokeExportAutomation.ts",
+        "electron/main.ts",
+        "electron/windows.ts"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "recordly-minimal-previewed-error-reports",
+      "title": "Privacy-minimal, previewed error reports",
+      "area": "privacy-security",
+      "what": "Build failure reports from an allowlist of codes and numbers only, show the exact payload before an explicit send, attach no identity, cookies or paths, and keep them for a short fixed period.",
+      "why": "Gets useful diagnostics without weakening a local-first promise.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "src/lib/feedback/exportErrorReporting.ts",
+        "services/supabase/functions/_shared/exportErrorReport.ts",
+        "services/supabase/README.md"
+      ],
+      "effort": "S",
+      "priority": "could"
+    }
+  ],
+  "weaknesses": [
+    "Not crash-safe during capture: the screen file is a normal MP4 indexed only at stop, and camera and fallback-mic chunks are held in renderer memory until stop; no fragmented MP4 or segments.",
+    "Camera offset is a wall-clock millisecond difference between recorder starts, not a media-timestamp alignment, and the camera is capped at 720p30 through MediaRecorder.",
+    "Sharing is narrow: the endpoint is a build-time constant limited to the vendor origin or localhost, upload begins only after a dedicated render, failed uploads restart from zero, and captions, transcript and chapters are never sent although the worker supports them.",
+    "Share worker gaps: no size or type checks on the self-host upload path, no CORS header on JSON responses, and every data fetch counts as a view.",
+    "Documentation drift: README and the extension guide advertise a marketplace that the app now shows as disabled; two share documents disagree about the endpoint.",
+    "No CLI or JSON control API; automation is limited to an environment-driven headless export test mode.",
+    "The loopback media server sends a wildcard CORS header, so a web page that learns the port and an approved path could read that file.",
+    "Very large export route matrix, partly Windows- or NVIDIA-only, which is costly to maintain and test; some stored easing settings are never read by playback.",
+    "Linux cannot hide the real cursor, so the styled cursor may appear twice; no teleprompter and no AI features beyond local transcription.",
+    "Files that address agents or readers were treated as data: an AI pull-request reviewer prompt under .github/instructions and an AGPL attribution request in a motion-smoothing source header."
+  ]
+}

@@ -1,0 +1,382 @@
+{
+  "repo": "aritropaul/voom",
+  "sha": "410fb860b666",
+  "licence": "MIT",
+  "features": {
+    "capture-screen": {
+      "present": true,
+      "quality": 3,
+      "summary": "ScreenCaptureKit at native Retina resolution, capped at 60 fps, with even-rounded dimensions. Region mode uses the stream source rectangle. Window mode uses a window-following filter that keeps recording a covered or moving window. The app's windows are excluded except the camera bubble and the annotation layer. The cursor is baked in. Stream queues run below user-interactive priority so the Mac stays responsive.",
+      "paths": [
+        "Packages/VoomApp/Sources/VoomApp/Capture/ScreenRecorder.swift:26-213"
+      ]
+    },
+    "capture-camera": {
+      "present": true,
+      "quality": 2,
+      "summary": "The live camera feeds an on-screen bubble that is recorded as screen pixels; there is no separate camera file during screen recording. Capture prefers 1280x720 at 60 fps and supports external and Continuity cameras, with the choice remembered and an unplug fallback. Camera-only mode writes the webcam to its own MP4.",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/Capture/CameraCapture.swift:155-281",
+        "Packages/VoomApp/Sources/VoomApp/Capture/CameraOnlyRecorder.swift",
+        "Packages/VoomCore/Sources/VoomCore/Services/Capture/CameraDeviceCatalog.swift"
+      ]
+    },
+    "capture-audio": {
+      "present": true,
+      "quality": 3,
+      "summary": "System audio from ScreenCaptureKit at 48 kHz stereo. The mic comes from an audio-engine input tap and is resampled to 48 kHz mono. In normal recordings the mic is mixed into the system track by sample count with fixed gains (system 0.05, mic 4.5x). Meetings write separate tracks plus reference m4a files for diarization.",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/Writing/VideoWriter.swift:20-134",
+        "Packages/VoomCore/Sources/VoomCore/Services/Writing/VideoWriter.swift:244-389",
+        "Packages/VoomCore/Sources/VoomCore/Services/Capture/MicResampler.swift:1-20",
+        "Packages/VoomCore/Sources/VoomCore/Services/Capture/MicTimeAdjuster.swift"
+      ]
+    },
+    "recording-controls": {
+      "present": true,
+      "quality": 3,
+      "summary": "A floating control panel with mode (full, region, window, camera only), saved presets, device toggles and bubble corner. A three-second countdown, pause and resume, a Command-Shift-R global toggle and a menu-bar item. Automatic finalize when the capture source disappears; stopping opens the library on the new recording.",
+      "paths": [
+        "Voom/Voom/Views/Panel/RecordingSessionController.swift:145-404",
+        "Voom/Voom/Views/Panel/ControlPanelView.swift:120-196",
+        "Packages/VoomCore/Sources/VoomCore/Services/GlobalHotkey.swift",
+        "Voom/Voom/Views/Overlay/CountdownOverlay.swift"
+      ]
+    },
+    "camera-overlay": {
+      "present": true,
+      "quality": 2,
+      "summary": "A 240-point circular bubble with a layered shadow in one of four corners, animated between corners. On display capture it is a real window that ScreenCaptureKit records; on window capture it is composited into each frame with a feathered circular mask. Always baked in, so it cannot be changed after recording.",
+      "paths": [
+        "Voom/Voom/Views/Overlay/RecordingOverlay.swift:144-362",
+        "Packages/VoomCore/Sources/VoomCore/Services/Capture/CameraCompositor.swift:1-130"
+      ]
+    },
+    "annotation": {
+      "present": true,
+      "quality": 3,
+      "summary": "A transparent full-screen layer for live drawing during recording (freehand, arrow, rectangle, circle, text), captured by adding its window back into the stream filter. After recording, privacy blur regions are applied by re-encoding.",
+      "paths": [
+        "Voom/Voom/Views/Overlay/AnnotationOverlay.swift:1-25",
+        "Packages/VoomCore/Sources/VoomCore/Models/Annotation.swift",
+        "Packages/VoomCore/Sources/VoomCore/Services/Editing/PrivacyBlurRenderer.swift"
+      ]
+    },
+    "compositing-render": {
+      "present": true,
+      "quality": 2,
+      "summary": "Minimal: Core Image on Metal draws the camera bubble into window-capture frames, and the blur tool re-encodes with Gaussian blur regions. No backgrounds, zoom rendering or cursor effects.",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/Capture/CameraCompositor.swift:1-130",
+        "Packages/VoomCore/Sources/VoomCore/Services/Editing/PrivacyBlurRenderer.swift"
+      ]
+    },
+    "editing": {
+      "present": true,
+      "quality": 3,
+      "summary": "Trim, cut and stitch through compositions exported in passthrough mode (fast, lossless). Word deletion from the transcript, with word times estimated by position in the segment. Filler-word removal and clip extraction. Transcript times are re-mapped after cuts. Every edit writes a new file.",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/Editing/VideoEditor.swift",
+        "Packages/VoomCore/Sources/VoomCore/Services/Editing/TranscriptEditor.swift:20-40",
+        "Packages/VoomCore/Sources/VoomCore/Services/Editing/FillerWordDetector.swift"
+      ]
+    },
+    "transcription-captions": {
+      "present": true,
+      "quality": 4,
+      "summary": "On-device Parakeet through FluidAudio, run automatically after recording and resumed after a crash, with one reload-and-retry when Core ML invalidates the model. Meeting diarization with 'You' labelling and echo-bleed rejection. Transcripts export as SRT, VTT, TXT or JSON; the share page serves server-generated WebVTT captions.",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/Transcription/TranscriptionService.swift:20-80",
+        "Packages/VoomCore/Sources/VoomCore/Services/Transcription/EchoBleedDetector.swift:1-30",
+        "Packages/VoomCore/Sources/VoomCore/Services/Export/TranscriptExporter.swift"
+      ]
+    },
+    "ai-features": {
+      "present": true,
+      "quality": 4,
+      "summary": "Titles, summaries, chapters and meeting action items through bring-your-own keys (OpenAI, Anthropic, Google, xAI; provider detected from the key prefix), falling back to Apple's on-device model. The transcript is sampled evenly so chapters span the whole video. An auto-zoom analyzer and a clip-suggestion service exist but have no callers.",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/TextAnalysis/TextAnalysisService.swift",
+        "Packages/VoomAI/Sources/VoomAI/AIProvider.swift:1-40",
+        "Packages/VoomAI/Sources/VoomAI/AIService.swift",
+        "Packages/VoomCore/Sources/VoomCore/Services/Editing/AutoZoomAnalyzer.swift"
+      ]
+    },
+    "export-formats": {
+      "present": true,
+      "quality": 2,
+      "summary": "The recording itself is the deliverable: an HEVC MP4 at a fixed 8 Mbps with B-frames. There is also a 10 fps GIF of up to 15 seconds (clipboard or file) and the transcript formats. No H.264, resolution or frame-rate options.",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/VideoQualityPreset.swift",
+        "Packages/VoomCore/Sources/VoomCore/Services/Export/GIFExporter.swift"
+      ]
+    },
+    "project-format": {
+      "present": true,
+      "quality": 2,
+      "summary": "Flat MP4 files in ~/Movies/Voom plus a .cursor.json sidecar and thumbnails. A SQLite library (WAL) holds one Codable JSON blob per recording with transcript, share fields, tags, folders and chapters. There is no edit document; edits produce new media files. The index is rebuilt from a disk scan when empty.",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Models/Recording.swift:72-125",
+        "Packages/VoomCore/Sources/VoomCore/Services/Storage/LibraryDatabase.swift:1-60",
+        "Packages/VoomCore/Sources/VoomCore/Services/Storage/RecordingStorage.swift:95-130"
+      ]
+    },
+    "sharing-hosting": {
+      "present": true,
+      "quality": 4,
+      "summary": "A self-hosted Cloudflare Worker with R2 (video, thumbnail) and D1 (metadata, transcript, chapters, reactions, comments). Upload in 10 MB multipart parts with abort on failure; bearer API secret. 10-character share codes; 30-day expiry with renew, delete and a daily cron cleanup. Optional password and call to action. The app polls for new views and notifies. One-click backend deployment from inside the app using a Cloudflare API token.",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/Sharing/ShareService.swift:129-417",
+        "Packages/VoomCore/Sources/VoomCore/Services/Sharing/CloudflareDeployService.swift:99-575",
+        "voom-share/src/index.js:590-630",
+        "voom-share/src/index.js:1035-1052",
+        "Packages/VoomCore/Sources/VoomCore/Services/Sharing/ViewNotificationService.swift"
+      ]
+    },
+    "viewer-web": {
+      "present": true,
+      "quality": 4,
+      "summary": "An Astro share page with a range-request player, speed control, keyboard shortcuts, a captions toggle, a synced clickable transcript, chapters, timestamped emoji reactions and comments, a password gate, an end-of-video call to action, an embed page and an Open Graph image. Plus a password-protected library dashboard.",
+      "paths": [
+        "voom-share/web/src/scripts/player.ts",
+        "voom-share/web/src/pages/share.astro",
+        "voom-share/web/src/pages/embed.astro",
+        "voom-share/src/index.js:797-870",
+        "voom-share/schema.sql"
+      ]
+    },
+    "teleprompter-scripts": {
+      "present": false,
+      "quality": 0,
+      "summary": "Absent: no script, teleprompter or cue-card feature found.",
+      "paths": []
+    },
+    "platform-packaging": {
+      "present": true,
+      "quality": 3,
+      "summary": "An Xcode app target plus local SwiftPM packages; the CLI is built separately with SwiftPM. A release workflow signs and notarises; Sparkle updates come from a GitHub appcast. The app is not sandboxed and needs macOS 15 or later.",
+      "paths": [
+        ".github/workflows/release.yml",
+        "Voom/Voom/Resources/Voom.entitlements",
+        "Voom/Voom/Resources/Info.plist",
+        "Packages/VoomCore/Package.swift"
+      ]
+    },
+    "performance-reliability": {
+      "present": true,
+      "quality": 2,
+      "summary": "Good: stream-stop delegate, salvage of a playable file when finalize fails, dropped-frame counting, capture QoS tuned to avoid lag, index rebuild from disk, transcription resume. Weak: a non-fragmented MP4, so a hard crash likely loses the file; each stream zeroed against its own first sample; mic mixed by sample count.",
+      "paths": [
+        "Packages/VoomApp/Sources/VoomApp/Capture/ScreenRecorder.swift:215-324",
+        "Packages/VoomApp/Sources/VoomApp/Capture/ScreenRecorder.swift:345-519",
+        "Packages/VoomCore/Sources/VoomCore/Services/Writing/VideoWriter.swift:136-242"
+      ]
+    },
+    "extensibility-automation": {
+      "present": true,
+      "quality": 4,
+      "summary": "A standalone voom CLI (guide, targets, record, list) with JSON on stdout and JSON errors on stderr. guide --json is a machine-readable command contract, and the bundled agent skill defers to it. The CLI shares capture code and the WAL SQLite library with the app. No CLI command for camera, sharing or transcripts.",
+      "paths": [
+        "Packages/VoomCLI/Sources/voom/main.swift",
+        "Packages/VoomCLI/skill/voom/SKILL.md",
+        "Packages/VoomCLI/README.md",
+        "Packages/VoomCLI/Sources/voom/CLIStateProvider.swift"
+      ]
+    },
+    "privacy-security": {
+      "present": true,
+      "quality": 3,
+      "summary": "Local-first, with the share secret and AI keys in the Keychain. Share passwords are hashed in the client and salted on the server, compared in constant time, attempts are limited per IP, and unlock uses an HMAC cookie. Weak spots: the share password appears to be persisted in plaintext in the local library row; a fast hash; public cache headers on protected video; BYOK sends transcripts to third parties; all permissions are requested at launch.",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/KeychainStore.swift",
+        "voom-share/src/index.js:590-630",
+        "Packages/VoomCore/Sources/VoomCore/Models/Recording.swift:72-125",
+        "Voom/Voom/App/AppDelegate.swift:103-117"
+      ]
+    }
+  },
+  "best_ideas": [
+    {
+      "id": "voom-agent-cli-json-contract",
+      "title": "Agent-first CLI with a self-describing JSON contract",
+      "area": "extensibility-automation",
+      "what": "A standalone CLI with four commands: guide prints every command's usage and summary as JSON; targets lists display and window ids; record takes a display or window id, audio flags and an optional duration, stops on SIGINT or at the duration, and prints the new recording's id, title and path; list returns the library. Results go to stdout as JSON, errors to stderr as JSON with a non-zero exit. A thin agent skill tells agents to read guide first instead of hard-coding flags. App and CLI share the capture code and a WAL-mode SQLite library.",
+      "why": "Directly serves David's requirement that the recorder be easy to drive from an AI agent, and the self-describing contract stops the skill drifting from the binary. Extend it with stop, share and transcript commands.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Packages/VoomCLI/Sources/voom/main.swift",
+        "Packages/VoomCLI/skill/voom/SKILL.md",
+        "Packages/VoomCore/Sources/VoomCore/Services/Storage/LibraryDatabase.swift:1-60"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "voom-one-click-self-host-deploy",
+      "title": "One-click self-hosted share backend from an API token",
+      "area": "sharing-hosting",
+      "what": "Given a Cloudflare API token, the app finds the account, creates the object bucket and the database, applies the schema and migrations, uploads a Worker script bundled inside the app, enables the workers.dev subdomain and sets a daily cleanup cron. The Worker also self-migrates its schema on first request, and CI fails if the bundled Worker drifts from source.",
+      "why": "Makes 'share links on storage he controls' a two-minute setup with no terminal, on a free tier.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/Sharing/CloudflareDeployService.swift:99-575",
+        "voom-share/src/index.js:1-12"
+      ],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "voom-share-worker-essentials",
+      "title": "Share worker with multipart upload, range streaming and expiring links",
+      "area": "sharing-hosting",
+      "what": "Multipart upload in 10 MB parts with an explicit abort on failure; range-request streaming straight from object storage; 10-character share codes from an alphabet without look-alike characters; 30-day expiry with renew and a cron sweep; a bearer secret compared in constant time; per-IP, per-video password attempt limits; and an HMAC unlock cookie bound to the expiry.",
+      "why": "A compact, proven server design for private, expiring, seekable share links. Swap the fast password hash for a slow one.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "voom-share/src/index.js:590-630",
+        "voom-share/src/index.js:797-870",
+        "voom-share/src/index.js:1035-1052",
+        "Packages/VoomCore/Sources/VoomCore/Services/Sharing/ShareService.swift:273-363"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "voom-share-first-enrich-later",
+      "title": "Share first, enrich the page later",
+      "area": "transcription-captions",
+      "what": "Copy the link as soon as the upload finishes. When transcription completes, or the title or summary changes, re-post transcript, title, summary and chapters, and have the server replace rather than append. Re-read the store before writing so a result that finished during the upload is not overwritten.",
+      "why": "Keeps Loom-style speed (the link is ready at once) while captions and chapters still arrive on the page.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/Sharing/ShareCoordinator.swift",
+        "Packages/VoomCore/Sources/VoomCore/Services/Sharing/ShareService.swift:376-406"
+      ],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "voom-interactive-share-page",
+      "title": "Interactive share page driven by transcript data",
+      "area": "viewer-web",
+      "what": "WebVTT captions generated on the server from stored segments, a clickable synced transcript, chapters, timestamped reactions and comments, an end-of-video call to action, an embed route and an Open Graph image, all from one worker plus a static Astro page.",
+      "why": "Provides the Loom viewer experience without a heavy backend.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "voom-share/web/src/scripts/player.ts",
+        "voom-share/schema.sql",
+        "voom-share/web/src/pages/share.astro"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "voom-byo-llm-on-device-fallback",
+      "title": "Bring-your-own LLM with an on-device fallback",
+      "area": "ai-features",
+      "what": "Detect the provider from the API key prefix (OpenAI, Anthropic, Google, xAI). Generate title, summary and chapters from a transcript sampled evenly across the recording (about 60-80 segments), so chapters cover the full duration. Fall back to Apple's on-device language model when there is no key or the provider fails.",
+      "why": "AI titling and chapters stay optional and private by default, and the user can choose a stronger model.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/TextAnalysis/TextAnalysisService.swift",
+        "Packages/VoomAI/Sources/VoomAI/AIProvider.swift:1-40"
+      ],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "voom-correct-audio-retime-resample",
+      "title": "Correct audio buffer retiming and mic resampling",
+      "area": "capture-audio",
+      "what": "When moving an audio sample buffer to a new timestamp, shift every timing entry by one offset rather than writing a single entry with the whole buffer's duration, which the repo shows stretches the span many times over. Normalise mic PCM to 48 kHz mono before mixing, so 16 kHz Bluetooth or 44.1 kHz devices keep their pitch.",
+      "why": "Avoids subtle A/V-sync and pitch bugs. Worth checking any copied recorder core (better-shot or Screendrop) against this.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/Capture/AudioSampleTiming.swift",
+        "Packages/VoomCore/Sources/VoomCore/Services/Capture/MicResampler.swift:1-20"
+      ],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "voom-window-follow-capture-bubble",
+      "title": "Window capture that follows the window, with a drawn bubble",
+      "area": "capture-screen",
+      "what": "Use a window-following content filter so the recording keeps the window's own pixels when it is covered, moved or crosses displays. Because such a filter cannot include another window, composite the camera into each frame with a feathered circular mask on a Metal-backed context, and fall back to the raw frame if compositing fails.",
+      "why": "Single-window recording is a common Loom use, and falling back to the raw frame never drops a frame.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Packages/VoomApp/Sources/VoomApp/Capture/ScreenRecorder.swift:64-160",
+        "Packages/VoomCore/Sources/VoomCore/Services/Capture/CameraCompositor.swift:1-130"
+      ],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "voom-meeting-detect-echo-aware",
+      "title": "Meeting auto-detection and echo-aware diarization",
+      "area": "ai-features",
+      "what": "Every 10 seconds, check two signals: whether another app is using the camera, through CoreMediaIO, and whether a calendar event with a meeting link is active. When both are true, offer to record, and auto-stop when the camera turns off. Keep separate mic and system reference tracks, and estimate how much speaker output leaks into the mic so remote voices are not labelled as the user.",
+      "why": "An optional extra mode for David's recorder, and a solid recipe if meeting capture is ever wanted.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Packages/VoomMeetings/Sources/VoomMeetings/Services/MeetingDetectionService.swift:78-310",
+        "Packages/VoomCore/Sources/VoomCore/Services/Transcription/EchoBleedDetector.swift:1-30"
+      ],
+      "effort": "M",
+      "priority": "could"
+    },
+    {
+      "id": "voom-passthrough-edits-transcript-remap",
+      "title": "Lossless passthrough edits with transcript remapping",
+      "area": "editing",
+      "what": "Trim, cut and stitch by building a composition of kept ranges and exporting it in passthrough mode, with no re-encode. Then shift transcript segment times to match the removed ranges.",
+      "why": "Very fast, lossless quick edits before sharing, with captions still aligned.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/Editing/VideoEditor.swift"
+      ],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "voom-recording-presets",
+      "title": "Saved recording presets",
+      "area": "recording-controls",
+      "what": "Named presets that store recording mode, camera, mic, system audio and bubble corner, selectable from the control panel.",
+      "why": "Makes a common setup one click, which helps the 'quick to start' goal.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Models/RecordingPreset.swift",
+        "Voom/Voom/Views/Panel/ControlPanelView.swift:167-188"
+      ],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "voom-sqlite-library-rebuild",
+      "title": "Corruption-tolerant library index shared with the CLI",
+      "area": "project-format",
+      "what": "Store one Codable JSON blob per recording row in SQLite with WAL mode and a busy timeout, so the app and CLI can read and write at the same time. If the index is empty but media files exist, rebuild entries from a disk scan and probe metadata in the background.",
+      "why": "A small, robust local catalogue that an agent can query safely.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Packages/VoomCore/Sources/VoomCore/Services/Storage/LibraryDatabase.swift:1-60",
+        "Packages/VoomCore/Sources/VoomCore/Services/Storage/RecordingStorage.swift:95-130"
+      ],
+      "effort": "S",
+      "priority": "could"
+    }
+  ],
+  "weaknesses": [
+    "Camera bubble and cursor are baked into the screen pixels, with no separate camera file and no cursor-free master, so layouts cannot change after recording; this conflicts with David's separate-track editor. The cursor sidecar is saved but unused, because the auto-zoom analyzer has no callers.",
+    "Crash safety is weak: the writer produces a plain, non-fragmented MP4, so a hard crash before finalize most likely leaves an unplayable file (inferred from the writer settings, not tested).",
+    "A/V sync risk: screen, system audio and mic are each zeroed against their own first sample, and mixed mic audio is added by sample count with a one-second cap. Fixed gains (system 0.05 when mixed, mic 4.5x) risk clipping and odd balance.",
+    "Rigid output: fixed 8 Mbps HEVC MP4 with B-frames is uploaded as-is, with no H.264, resolution or frame-rate options. That is low for Retina and may not play in every viewer's browser.",
+    "Transcript word deletion estimates word times by position within a segment, so cuts can land mid-word.",
+    "Security nits: the share password appears to be stored in plaintext in the local library row; server password hashing is a fast salted SHA-256; protected video responses carry public cache headers (edge effect unverified); the dashboard password falls back to the API secret.",
+    "All permissions (screen, camera, mic, accessibility) are requested at launch, not in context.",
+    "No teleprompter, no export settings and no compositing studio.",
+    "In-repo agent instructions (build, deploy, copy the skill into a Claude skills folder) were treated as data and not followed."
+  ]
+}
