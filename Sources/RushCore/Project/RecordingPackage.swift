@@ -4,7 +4,7 @@ import Foundation
 /// a macOS bundle, so Finder and David's editor open the files directly
 /// (docs/PLAN.md, Package layout).
 ///
-/// The folder name is the start time plus the first six characters of the
+/// The folder name is the start time plus the full
 /// recording id; the id is a ULID that sorts by creation time. A new take
 /// always gets a new package, so one recording can never overwrite the last
 /// one.
@@ -15,6 +15,7 @@ public struct RecordingPackage: Equatable, Sendable {
         case folderAlreadyExists(path: String)
         case notADirectory(path: String)
         case rootNotFolder(path: String)
+        case unsafeMediaPath(file: String)
 
         public var description: String {
             switch self {
@@ -24,6 +25,8 @@ public struct RecordingPackage: Equatable, Sendable {
                 return "package path is not a folder: \(path)"
             case .rootNotFolder(let path):
                 return "recordings root exists and is not a folder: \(path)"
+            case .unsafeMediaPath(let file):
+                return "media file must be a direct file inside the recording package: \(file)"
             }
         }
     }
@@ -44,6 +47,22 @@ public struct RecordingPackage: Equatable, Sendable {
     /// The package folder itself.
     public let folderURL: URL
 
+    /// Metadata is untrusted. Refuse traversal and symlink escapes before any
+    /// probe, recovery, export or transcription opens a manifest-named file.
+    public func validatedMediaURL(_ filename: String) throws -> URL {
+        guard !filename.isEmpty, filename != ".", filename != "..",
+              !filename.contains("/"), !filename.contains("\\"), !filename.contains("\0") else {
+            throw PackageError.unsafeMediaPath(file: filename)
+        }
+        let folder = Self.canonicalRoot(folderURL).standardizedFileURL
+        let candidate = folder.appendingPathComponent(filename)
+            .standardizedFileURL.resolvingSymlinksInPath()
+        guard candidate.deletingLastPathComponent().path == folder.path else {
+            throw PackageError.unsafeMediaPath(file: filename)
+        }
+        return candidate
+    }
+
     // MARK: - Naming
 
     /// The track file names per the plan's package layout.
@@ -56,14 +75,13 @@ public struct RecordingPackage: Equatable, Sendable {
         }
     }
 
-    /// `<date>_<id prefix>`: the start time in `yyyy-MM-dd_HH-mm-ss` plus the
-    /// first six characters of the recording id.
+    /// `<date>_<id>`: the full ULID keeps rapid starts in one second unique.
     public static func folderName(for date: Date, id: String, timeZone: TimeZone = .current) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = timeZone
         formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-        return "\(formatter.string(from: date))_\(RecordingId.folderPrefix(id))"
+        return "\(formatter.string(from: date))_\(id)"
     }
 
     /// Whether a folder name in the recordings root looks like a package
@@ -72,7 +90,7 @@ public struct RecordingPackage: Equatable, Sendable {
         guard let underscore = name.lastIndex(of: "_") else { return false }
         let prefix = name[..<underscore]
         let suffix = name[name.index(after: underscore)...]
-        guard suffix.count == 6 else { return false }
+        guard suffix.count == 6 || RecordingId.isValid(String(suffix)) else { return false }
         let digits = prefix.filter { $0 == "-" || $0 == "_" || $0.isNumber }
         return digits.count == prefix.count && prefix.count >= 8
     }
@@ -156,7 +174,8 @@ public struct RecordingPackage: Equatable, Sendable {
         else { return nil }
         for candidate in candidates.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             guard candidate.hasDirectoryPath,
-                  candidate.lastPathComponent.hasSuffix("_\(prefix)") else { continue }
+                  (candidate.lastPathComponent.hasSuffix("_\(prefix)")
+                   || candidate.lastPathComponent.hasSuffix("_\(id)")) else { continue }
             let package = RecordingPackage(
                 root: root, id: id, folderURL: candidate)
             if let manifest = try? package.readManifest(), manifest.id == id {

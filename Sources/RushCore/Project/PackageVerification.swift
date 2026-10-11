@@ -56,11 +56,20 @@ public struct PackageVerifier: Sendable {
             return Report(
                 packageID: manifest.id, ok: false, trackChecks: [], issues: packageIssues)
         }
+        if manifest.status != .complete && manifest.status != .recovered {
+            packageIssues.append("package is not a finalized successful or recovered recording")
+        }
+        if !manifest.tracks.contains(where: \.present) {
+            packageIssues.append("package has no recorded media tracks")
+        }
+        if Set(manifest.tracks.map { $0.kind.rawValue }).count != manifest.tracks.count {
+            packageIssues.append("manifest has duplicate track roles")
+        }
         var manifestDurationSeconds: Double?
-        if let durationNs = clock.durationNs {
+        if let durationNs = clock.durationNs, durationNs > 0 {
             manifestDurationSeconds = Double(durationNs) / 1e9
         } else {
-            packageIssues.append("manifest clock has no duration")
+            packageIssues.append("manifest clock has no positive duration")
         }
 
         var checks: [Report.TrackCheck] = []
@@ -82,12 +91,18 @@ public struct PackageVerifier: Sendable {
         in package: RecordingPackage,
         manifestDuration: Double?
     ) async -> Report.TrackCheck {
+        let url: URL
+        do {
+            url = try package.validatedMediaURL(track.file)
+        } catch {
+            return .init(kind: track.kind, file: track.file, ok: false,
+                         skipped: false, issues: ["\(track.file): unsafe media path"])
+        }
         guard track.present else {
             return .init(kind: track.kind, file: track.file, ok: true, skipped: true, issues: [])
         }
 
         var issues: [String] = []
-        let url = package.folderURL.appendingPathComponent(track.file)
 
         guard FileManager.default.fileExists(atPath: url.path) else {
             issues.append("\(track.file): file missing")
@@ -121,6 +136,43 @@ public struct PackageVerifier: Sendable {
                         + " duration \(String(format: "%.0f", manifestDuration * 1_000)) ms"
                         + " (tolerance \(String(format: "%.0f", toleranceMs)) ms)")
             }
+        }
+        if probe.durationSeconds == nil || probe.durationSeconds! <= 0 {
+            issues.append("\(track.file): no positive media duration")
+        }
+
+        // Loading an AVURLAsset only validates its container metadata. Actually
+        // decode every declared media stream so a broken payload cannot pass.
+        do {
+            let asset = AVURLAsset(url: url)
+            let type: AVMediaType = track.kind.carriesVideo ? .video : .audio
+            let streams = try await asset.loadTracks(withMediaType: type)
+            for stream in streams {
+                let reader = try AVAssetReader(asset: asset)
+                let settings: [String: Any] = track.kind.carriesVideo
+                    ? [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange]
+                    : [AVFormatIDKey: kAudioFormatLinearPCM]
+                let output = AVAssetReaderTrackOutput(track: stream, outputSettings: settings)
+                output.alwaysCopiesSampleData = false
+                guard reader.canAdd(output) else {
+                    issues.append("\(track.file): cannot create decode reader")
+                    continue
+                }
+                reader.add(output)
+                guard reader.startReading() else {
+                    issues.append("\(track.file): decoder could not start")
+                    continue
+                }
+                var samples = 0
+                while let sample = output.copyNextSampleBuffer() {
+                    samples += CMSampleBufferGetNumSamples(sample)
+                }
+                if reader.status != .completed || samples == 0 {
+                    issues.append("\(track.file): stream did not decode to completion")
+                }
+            }
+        } catch {
+            issues.append("\(track.file): decode failed: \(error)")
         }
 
         return .init(

@@ -9,7 +9,7 @@ swift build
 echo "== swift test =="
 swift test
 
-js_paths=()
+clean_paths=(Sources Tests)
 for surface in shell cloud viewer worker; do
   if [ -f "$surface/package.json" ]; then
     if [ ! -f "$surface/.nvmrc" ]; then
@@ -28,14 +28,14 @@ for surface in shell cloud viewer worker; do
     PATH="$node_dir:$PATH" npm --prefix "$surface" run build
     PATH="$node_dir:$PATH" npm --prefix "$surface" test
     if [ -d "$surface/src" ]; then
-      js_paths+=("$surface/src")
+      clean_paths+=("$surface/src")
     fi
   fi
 done
 
 echo "== clean-room check on our source =="
 python3 tools/checks/test_clean_inputs.py
-clean_output=$(python3 -I tools/checks/check_clean.py Sources Tests "${js_paths[@]}")
+clean_output=$(python3 -I tools/checks/check_clean.py "${clean_paths[@]}")
 echo "$clean_output"
 first=${clean_output%%$'\n'*}
 [ "$first" = "0" ] || { echo "check_clean reported $first"; exit 1; }

@@ -241,7 +241,7 @@ struct ProjectTests {
 
     // MARK: - Package layout
 
-    @Test("A package folder is named start time plus id prefix and holds the layout")
+    @Test("A package folder is named start time plus full id and holds the layout")
     func packageCreationLayout() throws {
         // The root is canonicalized (realpath) so created and scanned paths
         // always compare equal.
@@ -252,7 +252,7 @@ struct ProjectTests {
         // The folder name uses the local time zone; the test pins UTC.
         #expect(
             RecordingPackage.folderName(for: fixedDate, id: id, timeZone: TimeZone(identifier: "UTC")!)
-                == "2026-10-11_09-41-07_01JA3K")
+                == "2026-10-11_09-41-07_01JA3K7Q2V9W8X6Y5Z4T3S2R1P")
 
         let package = try RecordingPackage.create(root: root, date: fixedDate, id: id)
         let localName = RecordingPackage.folderName(for: fixedDate, id: id)
@@ -270,7 +270,7 @@ struct ProjectTests {
         #expect(package.trackURL(for: .microphone) == expectedFolder.appendingPathComponent("mic.mov"))
         #expect(package.trackURL(for: .systemAudio) == expectedFolder.appendingPathComponent("system.mov"))
 
-        // The same second and id prefix never reuse a folder.
+        // Repeating the same unique id never reuses its folder.
         #expect(throws: RecordingPackage.PackageError.self) {
             _ = try RecordingPackage.create(root: root, date: fixedDate, id: id)
         }
@@ -281,7 +281,26 @@ struct ProjectTests {
         #expect(try package.readManifest() == manifest)
         #expect(hiddenTempFiles(in: expectedFolder).isEmpty)
         #expect(RecordingPackage.isPackageFolderName("2026-10-11_09-41-07_01JA3K"))
+        #expect(RecordingPackage.isPackageFolderName("2026-10-11_09-41-07_\(id)"))
         #expect(!RecordingPackage.isPackageFolderName("notes.txt"))
+    }
+
+    @Test("Distinct takes in the same second preserve both packages and legacy lookup")
+    func sameSecondPackages() throws {
+        let root = RecordingPackage.canonicalRoot(tempDir("same-second"))
+        defer { cleanup(root) }
+        let idA = RecordingId.generate(date: fixedDate, randomBytes: fixedBytes(1))
+        let idB = RecordingId.generate(date: fixedDate, randomBytes: fixedBytes(2))
+        let first = try RecordingPackage.create(root: root, date: fixedDate, id: idA)
+        let second = try RecordingPackage.create(root: root, date: fixedDate, id: idB)
+        try first.writeManifest(sampleManifest(id: idA))
+        try second.writeManifest(sampleManifest(id: idB))
+        #expect(first.folderURL != second.folderURL)
+        #expect(RecordingPackage.resolve(root: root, id: idB)?.folderURL == second.folderURL)
+        let legacy = root.appendingPathComponent("2026-10-11_09-41-07_\(RecordingId.folderPrefix(idA))", isDirectory: true)
+        try FileManager.default.moveItem(at: first.folderURL, to: legacy)
+        #expect(RecordingPackage.resolve(root: root, id: idA)?.folderURL == legacy)
+        #expect(try second.readManifest().id == idB)
     }
 
     @Test("A package resolves by id prefix and manifest confirmation")
@@ -728,5 +747,52 @@ struct ProjectTests {
         let report = await PackageVerifier().verify(package)
         #expect(!report.ok)
         #expect(report.issues.contains { $0.contains("manifest unreadable") })
+    }
+
+    @Test("Content-free and failed packages cannot pass verification")
+    func verifyRejectsEmpty() async throws {
+        let root = tempDir("verify-empty")
+        defer { cleanup(root) }
+        let id = RecordingId.generate()
+        let package = try RecordingPackage.create(root: root, id: id)
+        var manifest = sampleManifest(id: id)
+        manifest.tracks = []
+        try package.writeManifest(manifest)
+        #expect(!(await PackageVerifier().verify(package)).ok)
+        manifest.tracks = [.init(kind: .screen, present: false)]
+        manifest.status = .failed
+        try package.writeManifest(manifest)
+        let report = await PackageVerifier().verify(package)
+        #expect(!report.ok)
+        #expect(report.issues.contains { $0.contains("no recorded media") })
+        #expect(report.issues.contains { $0.contains("not a finalized") })
+    }
+
+    @Test("Traversal and canonical symlink escapes are refused before opening media")
+    func unsafeTrackPaths() async throws {
+        let root = tempDir("unsafe-track")
+        defer { cleanup(root) }
+        let id = RecordingId.generate()
+        let package = try RecordingPackage.create(root: root, id: id)
+        let outside = root.appendingPathComponent("outside.mov")
+        try Data("must remain untouched".utf8).write(to: outside)
+        for name in ["../outside.mov", outside.path, "folder/file.mov", "..", ""] {
+            #expect(throws: RecordingPackage.PackageError.self) {
+                _ = try package.validatedMediaURL(name)
+            }
+        }
+        try FileManager.default.createSymbolicLink(at: package.trackURL(for: .screen), withDestinationURL: outside)
+        #expect(throws: RecordingPackage.PackageError.self) {
+            _ = try package.validatedMediaURL("screen.mov")
+        }
+        var manifest = sampleManifest(id: id, status: .recording)
+        manifest.tracks = [.init(kind: .screen, file: "../outside.mov")]
+        try package.writeManifest(manifest)
+        let report = await PackageVerifier().verify(package)
+        #expect(!report.ok)
+        #expect(report.trackChecks.first?.issues.contains { $0.contains("unsafe media path") } == true)
+        let recovered = try await PackageRecovery(root: root).recover(interruptedAtLaunch: true)
+        #expect(recovered.first?.warnings.contains { $0.code == "unsafe-track-path" } == true)
+        #expect(try String(contentsOf: outside, encoding: .utf8) == "must remain untouched")
     }
 }

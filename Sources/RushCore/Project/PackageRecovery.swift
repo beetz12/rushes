@@ -120,7 +120,14 @@ public struct PackageRecovery: Sendable {
 
         for index in manifest.tracks.indices {
             let track = manifest.tracks[index]
-            let url = package.folderURL.appendingPathComponent(track.file)
+            guard let url = try? package.validatedMediaURL(track.file) else {
+                updated.tracks[index].present = false
+                warnings.append(.init(code: "unsafe-track-path",
+                                      message: "Refused a media path outside its package"))
+                outcomes.append(.init(kind: track.kind, file: track.file,
+                                      fileKept: false, usable: false, salvaged: false))
+                continue
+            }
             let fileManager = FileManager.default
 
             guard track.present, fileManager.fileExists(atPath: url.path) else {

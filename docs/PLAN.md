@@ -390,7 +390,7 @@ States: `idle`, `preparing`, `armed` (capturing behind a closed gate during the 
 
 ```text
 ~/Movies/Rushes/                    # storage root (setting)
-  2026-10-11_09-41-07_01JA3K/          # one package: a plain folder
+  2026-10-11_09-41-07_01JA3K7Q2V9W8X6Y5Z4T3S2R1P/ # one package: a plain folder
     manifest.json                      # what was recorded; written at start
     screen.mov                         # video only, HEVC, fragmented
     camera.mov                         # optional; video only, HEVC, fragmented
@@ -416,7 +416,7 @@ States: `idle`, `preparing`, `armed` (capturing behind a closed gate during the 
 ```
 
 - A package is a plain folder, not a macOS bundle, so Finder and David's editor can open the files directly.
-- The folder name is the start time plus the first six characters of the recording id. The recording id is a ULID: a 26-character unique id that sorts by creation time.
+- The folder name is the start time plus the full recording id. The recording id is a ULID: a 26-character unique id that sorts by creation time. Updated 2026-10-11 after real rapid-start testing showed the first-six-character design collided within one second; existing short-prefix packages still resolve unchanged.
 
 ### manifest.json
 
