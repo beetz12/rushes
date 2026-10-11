@@ -25,16 +25,17 @@
     "zod": "4.6.6"
   },
   "devDependencies": {
-    "electron": "44.7.0",
-    "electron-builder": "26.15.3",
-    "typescript": "7.0.2",
-    "vite": "8.3.4",
-    "@vitejs/plugin-react": "6.1.2",
-    "esbuild": "0.28.2",
-    "vitest": "5.0.3",
+    "@types/node": "22.18.10",
     "@types/react": "19.2.2",
     "@types/react-dom": "19.2.2",
-    "@types/node": "22.18.10"
+    "@vitejs/plugin-react": "6.1.2",
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.2",
+    "prettier": "3.9.10",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "vitest": "5.0.3"
   },
   "build": {
     "appId": "com.nexai.rushes",
@@ -99,7 +100,12 @@
       "binaries": [
         "Contents/Resources/bin/rushcore-engine",
         "Contents/Resources/bin/rushes"
-      ]
+      ],
+      "type": "development",
+      "notarize": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "icon": "build/icon.icns"
     }
   },
   "type": "module"
