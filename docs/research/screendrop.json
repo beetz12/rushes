@@ -1,0 +1,445 @@
+{
+  "repo": "fayazara/Screendrop",
+  "sha": "062a9787d05f",
+  "licence": "CC0-1.0",
+  "features": {
+    "capture-screen": {
+      "present": true,
+      "quality": 4,
+      "summary": "ScreenCaptureKit stream for a display, a desktop-independent window, or a display area via sourceRect. 60 fps minimum frame interval, BGRA, queue depth 3, Retina pixel size from the filter scale. OS cursor and click rings are disabled so the master is cursor-free. Blank, suspended and stopped frames are dropped. The app's own windows are excluded by default. Written as HEVC to a fragmented screen.mov, bitrate the larger of 20 Mbps or width x height x 4.",
+      "paths": [
+        "Screendrop/ScreenRecordingManager.swift:684-978",
+        "Screendrop/ScreenRecordingManager.swift:996-1159",
+        "Screendrop/RecordingSourceCatalog.swift"
+      ]
+    },
+    "capture-camera": {
+      "present": true,
+      "quality": 4,
+      "summary": "Separate AVCaptureSession (720p preset, mirrored, BGRA) with its own AVAssetWriter writing camera.mov (HEVC, about 30 fps, at least 6 Mbps, 2 s fragments, no audio). The session is warmed up when the camera is selected so exposure settles before recording, and that warm session is reused for writing. Built-in, external and Continuity Camera devices. A camera that fails to start only warns; the screen recording continues.",
+      "paths": [
+        "Screendrop/CameraRecordingManager.swift",
+        "Screendrop/RecordingBarPresenter.swift:1-110"
+      ]
+    },
+    "capture-audio": {
+      "present": true,
+      "quality": 3,
+      "summary": "Microphone and system audio both come from the same SCStream (microphone capture option plus capturesAudio, excluding the app's own audio) and are written as two separate AAC tracks inside screen.mov: system stereo at 192 kbps, mic mono at 96 kbps, 48 kHz. Audio before the first video frame is dropped. No level meter, no per-track mix in Studio (one global 0-2x gain). Pause retiming depends on sparse video frames and looks fragile.",
+      "paths": [
+        "Screendrop/ScreenRecordingManager.swift:909-938",
+        "Screendrop/ScreenRecordingManager.swift:1094-1191",
+        "Screendrop/RecordingAudioGain.swift"
+      ]
+    },
+    "recording-controls": {
+      "present": true,
+      "quality": 3,
+      "summary": "One floating bar that morphs from source picker into transport controls. Cancelable 1, 3 or 5 s countdown. Pause, resume, restart the same source, stop, delete, elapsed timer. State machine idle, starting, recording, paused, finishing, with finish actions preview, discard, restart, terminate. No global stop hotkey: the record hotkey only toggles the picker; stop is on the bar, a Shortcuts intent, or quit handling.",
+      "paths": [
+        "Screendrop/ScreenRecordingManager.swift:1-470",
+        "Screendrop/RecordingControlPresenter.swift",
+        "Screendrop/RecordingPickerBar.swift:1-80",
+        "Screendrop/CaptureHotkeys.swift:216-230"
+      ]
+    },
+    "camera-overlay": {
+      "present": true,
+      "quality": 3,
+      "summary": "During recording a 160 pt round, mirrored, draggable preview panel sits at the bottom right and is excluded from capture. In Studio the bubble is a separate layer with visibility, normalized centre, size (fraction of the short side, default 0.26) and roundness, saved in presets and scaled on the GPU at export. One static layout for the whole video; no per-segment or camera-only layouts.",
+      "paths": [
+        "Screendrop/CameraRecordingManager.swift:176-234",
+        "Screendrop/RecordingStudioStyle.swift:1-360",
+        "Screendrop/StudioCameraBubbleScaler.swift"
+      ]
+    },
+    "annotation": {
+      "present": true,
+      "quality": 3,
+      "summary": "Strong non-destructive screenshot annotator (shapes, arrows, freehand, text, numbered markers, blur, pixelate, highlight, crop, backgrounds, mockup effects, OCR-based smart redaction) with normalized coordinates and an editable sidecar beside a preserved base image. Nothing for video: no live drawing while recording and no drawing layer in Studio.",
+      "paths": [
+        "AGENTS.md",
+        "Screendrop/SmartRedactionRecognizer.swift",
+        "Screendrop/ScreenshotHistoryStore.swift:1-130"
+      ]
+    },
+    "compositing-render": {
+      "present": true,
+      "quality": 4,
+      "summary": "Offline compositor that renders on a fixed 30 or 60 fps output clock from the newest source frame at or before each tick (screen captures are sparse), with a cached backdrop, a Metal compute pass for motion-blurred zoom frames, settled-frame reuse, MPS Lanczos camera scaling, and Core Graphics overlays for cursor, clicks, keystrokes and captions. Preview and export share the same layout and timeline math. Renders are stamped and cached per project state.",
+      "paths": [
+        "Screendrop/RecordingStudioExporter.swift:1-740",
+        "Screendrop/RecordingExportTiming.swift",
+        "Screendrop/StudioMetalScreenRenderer.swift",
+        "docs/export-performance.md"
+      ]
+    },
+    "editing": {
+      "present": true,
+      "quality": 4,
+      "summary": "Non-destructive clip timeline of source ranges with per-clip speed from 1x to 8x baked into an AVMutableComposition so all tracks stay in sync; split, trim, delete, reset, undo and redo. Editable zoom cues (auto from clicks, manual, pinned focal point), video-card crop, aspect presets with Fill reframing or Fit, style presets, synthetic cursor size, click and keystroke toggles, audio replacement. Camera kept in sync by seeks and drift correction.",
+      "paths": [
+        "Screendrop/RecordingClipTimeline.swift:1-160",
+        "Screendrop/RecordingCompositionBuilder.swift",
+        "Screendrop/RecordingStudioModel.swift:269-425",
+        "Screendrop/RecordingStudioModel.swift:855-904",
+        "Screendrop/RecordingViewportTimeline.swift:1-260"
+      ]
+    },
+    "transcription-captions": {
+      "present": true,
+      "quality": 4,
+      "summary": "On-device SpeechAnalyzer and SpeechTranscriber with word audio time ranges, run on the extracted microphone track (mono track preferred). Locale fallback from exact to same language to English. Cues chunked at 42 characters, 0.9 s pauses or 4 s. Editable cue text, seek by cue, caption position and size, karaoke word highlight shared by preview and export. Transcript cutting with filler and silence removal. No SRT or VTT export.",
+      "paths": [
+        "Screendrop/RecordingTranscription.swift",
+        "Screendrop/RecordingTranscriptEditing.swift",
+        "Screendrop/RecordingStudioModel.swift:1389-1563"
+      ]
+    },
+    "ai-features": {
+      "present": true,
+      "quality": 3,
+      "summary": "All on-device and heuristic: transcription, filler-word and silence trimming, click-driven auto zoom, pointer-following reframe for social aspect ratios, Vision OCR text capture, and regex-based secret redaction on screenshots. No LLM features such as titles, summaries or chapters.",
+      "paths": [
+        "Screendrop/RecordingTranscriptEditing.swift",
+        "Screendrop/RecordingViewportTimeline.swift:144-195",
+        "Screendrop/RecordingExportReframe.swift:1-30",
+        "Screendrop/SmartRedactionRecognizer.swift"
+      ]
+    },
+    "export-formats": {
+      "present": true,
+      "quality": 3,
+      "summary": "MOV or MP4 (MP4 written with network optimization for fast start), H.264 or HEVC (HEVC with the speed-priority encoder flag), original, 1080p, 720p or 480p, three quality tiers by pixels-times-factor bitrate, 30 or 60 fps, motion blur on or off, remove audio, audio-only M4A or WAV. Aspect presets original, 16:9, 9:16, 1:1, 4:5. Saving to a different container remuxes; same container is an APFS clone. No GIF, WebM, SRT or VTT.",
+      "paths": [
+        "Screendrop/VideoCompressionModels.swift",
+        "Screendrop/VideoFileActions.swift:80-160",
+        "Screendrop/RecordingAudioExport.swift:1-75",
+        "Screendrop/RecordingStudioExporter.swift:258-316"
+      ]
+    },
+    "project-format": {
+      "present": true,
+      "quality": 4,
+      "summary": "A .screendroprec folder in Application Support holding screen.mov, optional camera.mov, input.json (pointer travel, presses, keystroke chords, cursor artwork), capture.json (duration, pixel size and scale, audio flags, cameraLeadIn, camera size, pointer flags), edit.json (explicit save), edit.draft.json (debounced autosave), project.json, render.json (render stamp), poster.jpg, a cached flattened deliverable and an optional imported soundtrack. Tolerant versioned decoding.",
+      "paths": [
+        "Screendrop/RecordingSession.swift",
+        "Screendrop/RecordingProject.swift",
+        "Screendrop/RecordingProjectStore.swift",
+        "Screendrop/RecordingStudioStyle.swift:24-265"
+      ]
+    },
+    "sharing-hosting": {
+      "present": true,
+      "quality": 3,
+      "summary": "Client side only: after rendering the deliverable, one PUT of the whole file to the user's own Cloudflare Worker at /api/upload with a bearer token and metadata in X- headers; the Worker returns id and share URL, which is copied to the clipboard. Best-effort multipart sidecars (title, poster, storyboard sprite plus grid metadata, transcript remapped to the edited cut) follow. Delete from cloud, token in Keychain, setup and ping verification, Worker version notice. The Worker, R2 and D1 code is in a separate repo, not in this clone. No resumable or upload-while-recording path.",
+      "paths": [
+        "Screendrop/CloudUploader.swift",
+        "Screendrop/CloudSidecarUploader.swift",
+        "Screendrop/CloudCredentialStore.swift",
+        "Screendrop/SettingsCloudPane.swift",
+        "Screendrop/CloudUploadOptions.swift"
+      ]
+    },
+    "viewer-web": {
+      "present": false,
+      "quality": 0,
+      "summary": "Not in this clone. The README describes a Loom-style share page (player with captions and speed, scrub thumbnails, searchable synced transcript, timed comments, view counts, link previews), but it is served by the separate fayazara/screendrop-worker repo. This clone only produces the poster, storyboard sprite and grid metadata, and the transcript JSON that the page consumes.",
+      "paths": [
+        "README.md",
+        "Screendrop/CloudSidecarUploader.swift"
+      ]
+    },
+    "teleprompter-scripts": {
+      "present": true,
+      "quality": 4,
+      "summary": "Script composer in the pre-record bar with a 2 to 5 line window. Notch-shaped overlay on notched Macs, pill elsewhere, excluded from capture. Live progress comes from SpeechAnalyzer volatile results fed by a tee of the recording's own microphone buffers, matched forward-only with an 8-word lookahead. Best-effort: recognition failure never affects the recording.",
+      "paths": [
+        "Screendrop/TeleprompterSpeechEngine.swift",
+        "Screendrop/TeleprompterScript.swift",
+        "Screendrop/TeleprompterOverlayPresenter.swift",
+        ".agents/skills/macos-notch-ui/SKILL.md"
+      ]
+    },
+    "platform-packaging": {
+      "present": true,
+      "quality": 4,
+      "summary": "macOS 26.4 or newer only, menu bar app, sandbox off, hardened runtime, camera and audio-input entitlements. Sparkle updates from an appcast in the repo, notarized DMG, Homebrew cask, and a Go release CLI that archives, notarizes, staples, packages, signs, publishes and updates the appcast and cask non-interactively and idempotently.",
+      "paths": [
+        "cmd/screendrop-release/main.go",
+        ".agents/skills/release-screendrop/SKILL.md",
+        "Screendrop/Info.plist",
+        "Screendrop/Screendrop.entitlements",
+        "Screendrop.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved"
+      ]
+    },
+    "performance-reliability": {
+      "present": true,
+      "quality": 4,
+      "summary": "2 s fragmented QuickTime writers, sessions in Application Support, launch recovery of manifest-less sessions without deleting unplayable footage, stream and writer failures finalize and keep footage, writer status health checks, synchronous backpressure from the capture callback, an activity token against App Nap and idle sleep, deferred quit until the writer finishes, render caching and bounded image caches. Gaps: recovered sessions lose cursor and camera offset, and pause accounting differs per track.",
+      "paths": [
+        "Screendrop/ScreenRecordingManager.swift:472-682",
+        "Screendrop/RecordingRecoveryCoordinator.swift",
+        "Screendrop/ScreendropApp.swift",
+        "docs/editor-performance.md"
+      ]
+    },
+    "extensibility-automation": {
+      "present": true,
+      "quality": 2,
+      "summary": "App Intents (Shortcuts, Siri, Spotlight) for screenshots, text capture, and start, stop and toggle of a full-screen recording on the active display. Intents take no parameters and stop returns nothing. Customizable Carbon hotkeys. JSON package files are readable by tools. No CLI or JSON control interface for the recorder; the agent-friendly CLI is only the release tool.",
+      "paths": [
+        "Screendrop/ScreendropAppIntents.swift",
+        "Screendrop/HotkeyManager.swift",
+        "cmd/screendrop-release/main.go"
+      ]
+    },
+    "privacy-security": {
+      "present": true,
+      "quality": 4,
+      "summary": "Local-first with no central server. Upload token generated from 32 random bytes and kept in Keychain; legacy S3 keys removed. App windows excluded from captures by default via content filter and window sharing type, with a visible reminder when the user opts in. Keystroke logging records only special keys and modifier chords, never plain typing. Transcription and teleprompter speech run on-device. Uploads only on explicit action or opt-in after-capture setting.",
+      "paths": [
+        "Screendrop/CloudCredentialStore.swift",
+        "Screendrop/SettingsCloudPane.swift",
+        "Screendrop/PreviewWindowCaptureExclusion.swift",
+        "Screendrop/RecordingKeystrokeCapture.swift:1-120",
+        "Screendrop/AfterCaptureActions.swift"
+      ]
+    }
+  },
+  "best_ideas": [
+    {
+      "id": "screendrop-camera-master-with-clock-offset",
+      "title": "Separate camera master plus shared-clock offset in the manifest",
+      "area": "capture-camera",
+      "what": "Write the camera to its own camera.mov with an independent writer, record the host-clock time of the first camera frame and of the first screen frame, and save the difference (cameraLeadIn) plus camera size in capture.json beside screen.mov.",
+      "why": "This is exactly the screen file, camera file and offset contract David's editor already accepts, and it keeps the camera restylable or removable after recording.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/CameraRecordingManager.swift",
+        "Screendrop/ScreenRecordingManager.swift:370-412",
+        "Screendrop/RecordingSession.swift:286-325"
+      ],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "screendrop-fragmented-package-recovery",
+      "title": "Crash-safe recording package with launch recovery",
+      "area": "performance-reliability",
+      "what": "Every writer uses a 2 second movie fragment interval; packages live in Application Support; a missing capture.json marks an interrupted session; at launch, playable screen movies get a minimal manifest and are imported, and unplayable ones are left untouched.",
+      "why": "Long takes survive crashes, forced quits and power loss. David should extend it by checkpointing input.json and the camera offset during recording so recovery keeps cursor and bubble alignment.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/RecordingRecoveryCoordinator.swift",
+        "Screendrop/RecordingSession.swift",
+        "Screendrop/ScreenRecordingManager.swift:1016-1092"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "screendrop-failures-finalize-never-discard",
+      "title": "Stream and writer failures finalize and keep the footage",
+      "area": "performance-reliability",
+      "what": "An SCStream stop error or an asset writer entering the failed state finishes the file and tells the user what was saved; optional devices that are missing or denied are switched off with one combined warning; app quit waits on the writer through a deferred termination reply; an activity token blocks App Nap and idle sleep while recording.",
+      "why": "These are the moments where recorders typically lose a whole take. The explicit start ordering also keeps permission prompts and setup UI out of the footage.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/ScreenRecordingManager.swift:472-635",
+        "Screendrop/ScreendropApp.swift",
+        "Screendrop/RecordingInputAuthorization.swift"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "screendrop-cursor-free-master-input-timeline",
+      "title": "Cursor-free screen master plus a recorded input timeline",
+      "area": "capture-screen",
+      "what": "Disable the OS cursor in the stream, log pointer moves, drags, presses, cursor artwork, keystroke chords and per-frame window geometry on the host clock, then map them to the movie timeline at stop into a normalized input.json.",
+      "why": "Enables a smooth synthetic cursor, cursor size changes, click effects, click-driven auto zoom and pointer-following reframing, all editable after the fact.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/RecordingPointerCapture.swift",
+        "Screendrop/RecordingPointerArtworkCapture.swift",
+        "Screendrop/RecordingPointerTimeline.swift",
+        "Screendrop/RecordingKeystrokeCapture.swift"
+      ],
+      "effort": "L",
+      "priority": "should"
+    },
+    {
+      "id": "screendrop-self-hosted-put-then-sidecars",
+      "title": "Self-hosted share: one authenticated PUT, link first, sidecars later",
+      "area": "sharing-hosting",
+      "what": "A locally generated token stored in Keychain plus a Worker URL; the rendered cut is sent as the raw request body with metadata in headers so the Worker can stream it to R2; the returned share URL is copied at once; poster, storyboard sprite with grid metadata and an edit-remapped transcript follow as a best-effort multipart post. Setup is verified with an idempotent schema call and a ping.",
+      "why": "Storage on infrastructure David controls, no S3 keys on the Mac, and a working link before the extras finish. The Worker itself is not in this clone and must be written separately.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/CloudUploader.swift",
+        "Screendrop/CloudSidecarUploader.swift",
+        "Screendrop/CloudCredentialStore.swift",
+        "Screendrop/SettingsCloudPane.swift"
+      ],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "screendrop-transcript-cuts-into-silence",
+      "title": "Transcript-based cutting that splices inside pauses",
+      "area": "transcription-captions",
+      "what": "On-device SpeechAnalyzer word timings; a word selection becomes a source cut that extends up to 0.12 s or half the gap into the neighbouring silence; presets cut a conservative filler list and pauses over 1.1 s (keeping 0.35 s each side); caption text and the clip timeline change in one undo step.",
+      "why": "Gives Loom-style quick cleanup by editing text, with natural-sounding splices and no cloud dependency.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/RecordingTranscription.swift",
+        "Screendrop/RecordingTranscriptEditing.swift",
+        "Screendrop/RecordingStudioModel.swift:1453-1563"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "screendrop-draft-save-render-stamp",
+      "title": "Draft autosave, explicit save and a render stamp cache",
+      "area": "project-format",
+      "what": "Edits autosave to edit.draft.json after 250 ms, explicit save writes edit.json, and flattening or uploads read the draft first. Every render records the document that produced it in render.json, so Export or Share reuse the cached deliverable only when it provably matches; a container-only change keeps the render and remuxes.",
+      "why": "No lost edits after a crash, an honest unsaved state, and instant repeat shares and exports.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/RecordingSession.swift:183-283",
+        "Screendrop/RecordingStudioModel.swift:1141-1239",
+        "Screendrop/RecordingSessionRenderer.swift"
+      ],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "screendrop-warm-camera-before-record",
+      "title": "Warm the camera when it is selected, reuse the session to record",
+      "area": "camera-overlay",
+      "what": "Start the capture session and the floating round preview as soon as the camera is toggled on in the picker, and reuse that running session when writing begins instead of starting a cold one.",
+      "why": "Removes the exposure and white-balance ramp from the first second of camera footage and gives the Loom habit of checking yourself before recording.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/CameraRecordingManager.swift:71-146",
+        "Screendrop/RecordingBarPresenter.swift:1-110"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "screendrop-click-driven-auto-zoom",
+      "title": "Click-driven auto zoom as editable cues on a spring timeline",
+      "area": "editing",
+      "what": "Each mouse-down produces a cue from 0.3 s before to 2.5 s after at 1.5x, cues closer than 2.5 s merge, and the last second is excluded. A damped spring integrated at 120 Hz over edited time follows the pointer, so cuts and clip speed do not jerk the camera; preview and export interpolate the same frames.",
+      "why": "Polished demo zooms with no manual keyframing, yet every cue stays editable.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/RecordingViewportTimeline.swift",
+        "Screendrop/RecordingMotionSpring.swift"
+      ],
+      "effort": "M",
+      "priority": "could"
+    },
+    {
+      "id": "screendrop-capture-backpressure",
+      "title": "Backpressure at the capture callback instead of unbounded queues",
+      "area": "performance-reliability",
+      "what": "The ScreenCaptureKit and camera callbacks hop synchronously into the writer queue and the stream queue depth is 3, so when the encoder lags the stream drops frames rather than retaining full-resolution IOSurfaces in an async backlog.",
+      "why": "Prevents memory-pressure kills during long high-resolution recordings; losing a frame beats losing the session.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/ScreenRecordingManager.swift:909-938",
+        "Screendrop/ScreenRecordingManager.swift:1121-1159",
+        "Screendrop/CameraRecordingManager.swift:470-528"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "screendrop-own-ui-excluded",
+      "title": "Keep the recorder's own UI out of the footage",
+      "area": "privacy-security",
+      "what": "The display filter excludes the app's own bundle and every app panel (camera preview, control bar, teleprompter, previews) gets a window sharing type of none unless the user opts in; the stream is started only after all prompts and setup UI are finished.",
+      "why": "The camera bubble preview, controls and prompter never leak into recordings, which matters because the camera is composited later.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/PreviewWindowCaptureExclusion.swift",
+        "Screendrop/ScreenRecordingManager.swift:891-907"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "screendrop-mic-tee-teleprompter",
+      "title": "Teleprompter that follows speech from the recording's own mic",
+      "area": "teleprompter-scripts",
+      "what": "Microphone buffers from the recording stream are teed into a live SpeechAnalyzer with volatile results; a forward-only fuzzy matcher with an 8-word lookahead advances the script in a notch or pill overlay that is excluded from capture.",
+      "why": "No second audio capture session, alignment with the recorded narration, and failures never touch the recording.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/TeleprompterSpeechEngine.swift",
+        "Screendrop/TeleprompterScript.swift",
+        "Screendrop/ScreenRecordingManager.swift:176-210"
+      ],
+      "effort": "M",
+      "priority": "could"
+    },
+    {
+      "id": "screendrop-fixed-output-clock-render",
+      "title": "Render sparse screen captures on a fixed output clock",
+      "area": "compositing-render",
+      "what": "Export ticks at a fixed 30 or 60 fps, draws the newest source frame at or before each tick, drops the held frame at clip boundaries, uses integer frame timestamps, renders motion blur in Metal, and reuses settled screen pixels while overlays still update.",
+      "why": "Zooms and cursor motion animate smoothly across static screens where the capture has gaps, and exports stay fast.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/RecordingStudioExporter.swift:394-520",
+        "Screendrop/RecordingExportTiming.swift",
+        "docs/export-performance.md"
+      ],
+      "effort": "L",
+      "priority": "should"
+    },
+    {
+      "id": "screendrop-intents-as-agent-surface",
+      "title": "App Intents and a non-interactive CLI as the agent control surface",
+      "area": "extensibility-automation",
+      "what": "Recording start, stop and toggle are exposed as App Intents that the macOS shortcuts command can run, and the release tool runs end to end with flags and idempotent re-runs. David's version should add source, device and output parameters and return the package path and manifest on stop.",
+      "why": "Gives an AI agent a stable way to drive recording without UI scripting.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "Screendrop/ScreendropAppIntents.swift",
+        "cmd/screendrop-release/main.go"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "screendrop-audio-round-trip",
+      "title": "Export audio, clean it elsewhere, drop it back in",
+      "area": "editing",
+      "what": "Export the edited soundtrack as M4A or WAV, run it through an external cleanup tool, then import the result; it is copied into the package and laid flat from zero on the edited timeline in preview and export.",
+      "why": "Studio-quality narration without building noise suppression into the app.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "Screendrop/RecordingAudioExport.swift",
+        "Screendrop/RecordingCompositionBuilder.swift:45-101"
+      ],
+      "effort": "S",
+      "priority": "could"
+    }
+  ],
+  "weaknesses": [
+    "Pause sync risk (inferred, untested): the screen writer measures pause time from sparse changed frames, the camera from its own frames, and pointer and keystroke recorders from host uptime. If the screen is static while paused the screen track subtracts nothing while the other timelines do, and audio after resume is retimed only once the next video frame arrives.",
+    "Recovery loses metadata: a recovered session has no cameraLeadIn, no pointerSynthesized flag and no input.json (pointer data is kept in memory until stop), so it renders without a cursor and with a misaligned camera bubble; a camera writer that fails to complete deletes its fragmented file.",
+    "No global stop hotkey; the record hotkey only toggles the picker bar, and the toggle logic appears to swap the bar back to picker mode mid-recording (inferred).",
+    "Uploads happen only after a full render, as one in-memory PUT with a 300 s timeout: no multipart, resume, or upload while recording.",
+    "The Cloudflare Worker and the share-page viewer are not in this repo (separate fayazara/screendrop-worker), so server behaviour, link format and access control cannot be verified here.",
+    "Automation is thin: intents cannot choose source, camera or microphone and stop does not return the recording path; there is no CLI or JSON control interface for the recorder.",
+    "Audio control is basic: no level meter, no mic versus system balance, no noise suppression, and the camera movie carries no audio.",
+    "Docs drift and no tests: AGENTS.md and README contradict the code on Swift packages, fullscreen capture method and FFmpeg; the only automated gate is a successful build plus a few standalone scripts.",
+    "Single static camera bubble layout for the whole video; no camera-only or side-by-side scenes; no GIF, WebM, SRT or VTT export."
+  ]
+}
