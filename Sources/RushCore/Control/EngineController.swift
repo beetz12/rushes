@@ -140,6 +140,8 @@ public actor EngineController: ControlHandling {
     private var startupWarnings: [String] = []
 
     private var active: ActiveRecording?
+    private let previewPublication = PreviewPublication()
+    private var previewOwner: String?
     private var previewStarting = false
     private var previewGeneration = UUID()
     private var previewEnabled = false
@@ -190,6 +192,7 @@ public actor EngineController: ControlHandling {
     /// Installs a test-side event collector.
     public func setEventSink(_ sink: @escaping @Sendable (ControlEvent) -> Void) {
         eventSink = sink
+        previewPublication.setSink(sink)
     }
 
     /// Stops any active recording (bounded: each writer's finalize is raced
@@ -206,8 +209,9 @@ public actor EngineController: ControlHandling {
 
     public func handle(_ request: ControlRequest, context: ControlCommandContext) async {
         eventSink = context.broadcast
+        previewPublication.setSink(context.broadcast)
         do {
-            if let response = try await dispatch(request) {
+            if let response = try await dispatch(request, context: context) {
                 context.reply(response)
             }
         } catch let failure as ControlFailure {
@@ -220,7 +224,18 @@ public actor EngineController: ControlHandling {
         }
     }
 
-    private func dispatch(_ request: ControlRequest) async throws -> ControlResponse? {
+    /// A lost GUI lease cancels idle prewarm; an active take keeps its camera
+    /// writer until normal Stop, then closes it independently of GUI cleanup.
+    public func clientDisconnected(_ connectionID: String) async {
+        guard previewOwner == connectionID else { return }
+        previewOwner = nil
+        previewGeneration = UUID()
+        previewEnabled = false
+        previewPublication.setEnabled(false)
+        if active == nil { await config.captureRigs.stopPreview() }
+    }
+
+    private func dispatch(_ request: ControlRequest, context: ControlCommandContext) async throws -> ControlResponse? {
         switch request.cmd {
         case "ping":
             return .success(
@@ -250,8 +265,16 @@ public actor EngineController: ControlHandling {
             return .success(id: request.id, result: await permissionsResult())
         case "permissions.settings":
             return .success(id: request.id, result: .object(["url": .string(SystemPermissions.settingsURL(try permissionKind(request)))]))
+        case "camera.preview.subscribe":
+            guard let enabled = request.param("enabled")?.bool else {
+                throw ControlFailure(code: "invalid-params", message: "preview subscription needs enabled Boolean")
+            }
+            previewPublication.setEnabled(enabled)
+            return .success(id: request.id, result: .object(["enabled": .bool(enabled)]))
         case "camera.preview.start":
+            guard context.isConnected() else { throw ControlFailure(code: "connection-closed", message: "preview owner disconnected before warm-up") }
             guard !starting, !previewStarting, active == nil else { throw ControlFailure(code: "wrong-state", message: "preview selection cannot change during a take or warm-up") }
+            previewOwner = context.connectionID
             previewStarting = true
             let generation = UUID()
             previewGeneration = generation
@@ -262,7 +285,11 @@ public actor EngineController: ControlHandling {
             guard let id else { throw ControlFailure(code: "camera-not-found", message: "no camera found") }
             let permission = await config.permissionAdvisor.check(.camera)
             guard permission.state == .allowed else { throw ControlFailure(code: "permission-denied", message: "grant camera access first") }
+            guard context.isConnected(), previewGeneration == generation else {
+                throw ControlFailure(code: "cancelled", message: "preview owner disconnected before camera acquisition")
+            }
             previewEnabled = true
+            previewPublication.setEnabled(true)
             let preview = previewPublisher()
             let result = try await config.captureRigs.warmCamera(cameraID: id, preview: preview, warning: { _, _ in })
             guard previewGeneration == generation else {
@@ -273,7 +300,9 @@ public actor EngineController: ControlHandling {
         case "camera.preview.stop":
             guard active == nil else { throw ControlFailure(code: "wrong-state", message: "camera is recording") }
             previewGeneration = UUID()
+            previewOwner = nil
             previewEnabled = false
+            previewPublication.setEnabled(false)
             await config.captureRigs.stopPreview()
             return .success(id: request.id)
         case "record.mute":
@@ -1050,11 +1079,8 @@ public actor EngineController: ControlHandling {
     }
 
     private func previewPublisher() -> @Sendable (Data) -> Void {
-        let sink = previewEnabled ? eventSink : nil
-        return { jpeg in
-            sink?(ControlEvent(kind: .cameraPreview, result: .object([
-                "jpeg": .string(jpeg.base64EncodedString()), "mime": .string("image/jpeg"), "mirrored": .bool(true)])))
-        }
+        let publication = previewPublication
+        return { jpeg in publication.publish(jpeg) }
     }
 
     private func permissionKind(_ request: ControlRequest) throws -> PermissionKind {
@@ -1311,5 +1337,20 @@ public actor EngineController: ControlHandling {
 extension String {
     var nilIfEmpty: String? {
         isEmpty ? nil : self
+    }
+}
+
+/// Subscription changes never acquire or release a camera device. A publisher
+/// installed before CLI capture reads this shared state when each frame arrives.
+private final class PreviewPublication: @unchecked Sendable {
+    private let lock = NSLock()
+    private var enabled = false
+    private var sink: (@Sendable (ControlEvent) -> Void)?
+    func setEnabled(_ value: Bool) { lock.withLock { enabled = value } }
+    func setSink(_ value: @escaping @Sendable (ControlEvent) -> Void) { lock.withLock { sink = value } }
+    func publish(_ jpeg: Data) {
+        let destination = lock.withLock { enabled ? sink : nil }
+        destination?(ControlEvent(kind: .cameraPreview, result: .object([
+            "jpeg": .string(jpeg.base64EncodedString()), "mime": .string("image/jpeg"), "mirrored": .bool(true)])))
     }
 }

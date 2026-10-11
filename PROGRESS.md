@@ -64,3 +64,24 @@ Root assigns60m SCREEN-only main-display soak; explicitly no camera/mic/system.
 Native footprint utility successfully measured physicalfootprint14680928B on idle
 ownscreenengine PID16316; aggregate JSON756B, not a memory-content dump. RSS will
 also be recorded as a proxy. Fullall-track soak deferred under webcam pause.
+
+AUTHORIZED SCREEN-only soak active from15:58:17ET toexpected16:58:18ET. Stable
+copiedrelease09a383e /tmp/rush-capture-qa/bin/rushcore-engine-soak-09a383e,
+PID48464 socket/tmp/rush-capture-qa/soak/control.sock. ID01M4P8PVHSZZVNW5YPHVT4EDP4.
+Explicitcamera:none/mic:none/systemaudio:false. CSV/JSONaggregatephysicalfootprint,
+RSSproxy, status, frames/drop trackedminute-by-minute in/tmp/rush-capture-qa/soak.
+Runnerprocess commandpython3 /tmp/rush-capture-qa/soak/run.py; unifiedsession51960.
+It stops normally at60, full-decodes/comparesphysicalminute5→60 and<=1%drop rate,
+and preserves allfootage. Main rootknows slot; no otherreal takes authorized here.
+Shortmovingwindow enginePID16316 verifiedidle and gracefullyretired afterproof.
+First unfinished step: await screen-onlysoak, documentfinalmetrics, resultJSON.
+Remaininglive4-trackcrash/clap/USBunplug/full60m/onboarding remain unverified under
+userwebcampause. Final REALsyncretest stillneeded; stereo/offlinefix verified.
+
+Previewfollowup (no realcamera): publication-onlycamera.preview.subscribe(enabled)
+works afterCLIstart via dynamiclockedpublisher. It neverwarms/stopsdevices. Idle
+prewarm has a controlconnection lease; disconnectcancelsidlewarm, activewriter
+continues untilStop thenclosesindependently ofGUI. Cancelchecks beforeacquisition
+andafterwarm avoidreopening afterGUIloss. Partialpreviewwritefailure closespeer
+rather thancorrupting followingNDJSON. Targeted20controller/fdtests passed; full
+umbrella held perroot awaiting knownlaunchOnDemand testpipe helperfix. Source0.

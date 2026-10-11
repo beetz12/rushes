@@ -65,11 +65,11 @@ final class ControlExchange: @unchecked Sendable {
     let context: ControlCommandContext
     private let box = ControlExchangeBox()
 
-    init() {
+    init(connectionID: String? = nil) {
         let box = box
         self.context = ControlCommandContext(
             reply: { response in box.append(response) },
-            broadcast: { event in box.append(event) })
+            broadcast: { event in box.append(event) }, connectionID: connectionID)
     }
 
     var responses: [ControlResponse] {
@@ -511,6 +511,51 @@ struct EngineControllerTests {
         #expect(FileManager.default.fileExists(atPath: stoppedPackage.inputURL.path))
     }
 
+    @Test("GUI loss closes idle prewarm; active camera survives GUI loss only until normal Stop")
+    func cameraOwnerDisconnect() async throws {
+        let scratch = try tempDirectory("preview-owner")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let factory = PreviewLifecycleFactory()
+        let controller = try EngineController(config: .init(recordingsRoot: scratch.appendingPathComponent("root"), indexDatabaseURL: scratch.appendingPathComponent("index.sqlite"), catalog: StubCatalog(), makeWriter: h264WriterOpener, captureRigs: factory))
+        let exchange = ControlExchange(connectionID: "gui")
+        let preview = ControlRequest(id: "warm", cmd: "camera.preview.start", args: .object(["camera": .string("default")]))
+        await controller.handle(preview, context: exchange.context)
+        await controller.clientDisconnected("gui")
+        #expect(await factory.closes == 1)
+        await controller.handle(preview, context: exchange.context)
+        await controller.handle(startRequest(), context: exchange.context)
+        try await Task.sleep(nanoseconds: 200_000_000)
+        await controller.clientDisconnected("gui")
+        #expect(await factory.closes == 1)
+        await controller.handle(ControlRequest(id: "stop-after-gui-loss", cmd: "record.stop"), context: exchange.context)
+        #expect(await factory.closes == 2)
+    }
+
+    @Test("A GUI can subscribe to an active CLI camera without warming or stopping devices")
+    func latePreviewSubscription() async throws {
+        let scratch = try tempDirectory("late-preview")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let factory = PreviewRoutingFactory()
+        let controller = try EngineController(config: .init(recordingsRoot: scratch.appendingPathComponent("root"), indexDatabaseURL: scratch.appendingPathComponent("index.sqlite"), catalog: StubCatalog(), makeWriter: h264WriterOpener, captureRigs: factory))
+        let exchange = ControlExchange()
+        await controller.handle(startRequest(), context: exchange.context)
+        await factory.publish(Data([1,2,3]))
+        #expect(!exchange.events.contains { $0.event == "camera-preview" })
+        await controller.handle(ControlRequest(id: "subscribe", cmd: "camera.preview.subscribe", args: .object(["enabled": .bool(true)])), context: exchange.context)
+        #expect(exchange.lastResponse?.ok == true)
+        await factory.publish(Data([1,2,3]))
+        #expect(exchange.events.last?.result?["jpeg"]?.string == "AQID")
+        #expect(await factory.closes == 0)
+        await controller.handle(ControlRequest(id: "unsubscribe", cmd: "camera.preview.subscribe", args: .object(["enabled": .bool(false)])), context: exchange.context)
+        let previews = exchange.events.filter { $0.event == "camera-preview" }.count
+        await factory.publish(Data([4,5,6]))
+        #expect(exchange.events.filter { $0.event == "camera-preview" }.count == previews)
+        #expect(await factory.closes == 0)
+        await controller.handle(ControlRequest(id: "subscribe-again", cmd: "camera.preview.subscribe", args: .object(["enabled": .bool(true)])), context: exchange.context)
+        await controller.handle(ControlRequest(id: "stop", cmd: "record.stop"), context: exchange.context)
+        #expect(await factory.closes == 1)
+    }
+
     @Test("Screen request history is scoped to app identity, separate from bare engine QA")
     func permissionMarkerIdentity() {
         let first = SystemPermissions.markerKey(bundleID: "ai.rushes.app", executablePath: "/tmp/one/engine")
@@ -927,4 +972,15 @@ private actor PromptGuardCatalog: SourceCataloging {
     func windows() async throws -> [WindowSource] { screenCalls += 1; return [] }
     func cameras() async throws -> [CameraDevice] { [] }
     func microphones() async throws -> [MicrophoneDevice] { [.init(id: "safe-mic", name: "Synthetic microphone")] }
+}
+
+private actor PreviewRoutingFactory: CaptureRigFactory {
+    private var publisher: (@Sendable (Data) -> Void)?
+    private(set) var closes = 0
+    func attach(_ context: CaptureContext) async throws -> CaptureRig {
+        publisher = context.preview
+        return try await StubCaptureRigFactory().attach(context)
+    }
+    func publish(_ data: Data) { publisher?(data) }
+    func stopPreview() async { closes += 1 }
 }

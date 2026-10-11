@@ -10,18 +10,29 @@ public struct ControlCommandContext: Sendable {
     public let reply: @Sendable (ControlResponse) -> Void
     /// Sends one NDJSON event line to every connected client.
     public let broadcast: @Sendable (ControlEvent) -> Void
+    public let connectionID: String?
+    public let isConnected: @Sendable () -> Bool
 
     public init(
         reply: @escaping @Sendable (ControlResponse) -> Void,
-        broadcast: @escaping @Sendable (ControlEvent) -> Void
+        broadcast: @escaping @Sendable (ControlEvent) -> Void,
+        connectionID: String? = nil,
+        isConnected: @escaping @Sendable () -> Bool = { true }
     ) {
         self.reply = reply
         self.broadcast = broadcast
+        self.connectionID = connectionID
+        self.isConnected = isConnected
     }
 }
 
 public protocol ControlHandling: Sendable {
     func handle(_ request: ControlRequest, context: ControlCommandContext) async
+    func clientDisconnected(_ connectionID: String) async
+}
+
+extension ControlHandling {
+    public func clientDisconnected(_ connectionID: String) async {}
 }
 
 /// Errors the server itself can fail with, before any request arrives.
@@ -83,6 +94,8 @@ public enum PeerCredentialCheck {
 final class SocketLineIO: @unchecked Sendable {
 
     let fd: Int32
+    let connectionID = UUID().uuidString
+    var isOpen: Bool { writeLock.withLock { !closed } }
     private let writeLock = NSLock()
     private var buffer = Data()
     private var closed = false
@@ -137,6 +150,7 @@ final class SocketLineIO: @unchecked Sendable {
             }) {
                 guard writeFully(line) else {
                     previewLock.withLock { pendingPreview = nil; previewWriting = false }
+                    close()
                     break
                 }
             }
@@ -466,7 +480,9 @@ public final class ControlServer: @unchecked Sendable {
                 },
                 broadcast: { [weak self] event in
                     self?.broadcast(event)
-                })
+                },
+                connectionID: client.connectionID,
+                isConnected: { [weak client] in client?.isOpen == true })
             Task { [handler] in
                 await handler.handle(request, context: context)
             }
@@ -475,5 +491,6 @@ public final class ControlServer: @unchecked Sendable {
         clients.removeAll { $0 === client }
         stateLock.unlock()
         client.close()
+        Task { [handler] in await handler.clientDisconnected(client.connectionID) }
     }
 }

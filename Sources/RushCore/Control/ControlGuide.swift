@@ -107,6 +107,7 @@ public struct ControlGuide: Codable, Equatable, Sendable {
             CommandDoc(name: "permissions.check", cli: ["permissions check"], summary: "Inspect native permissions without prompting.", usage: "rushes permissions check", result: "{screen,camera,microphone,accessibility,inputMonitoring,details}"),
             CommandDoc(name: "permissions.request", cli: ["permissions request"], summary: "Explicitly request one native permission.", usage: "rushes permissions request PERMISSION", result: "permission states"),
             CommandDoc(name: "permissions.settings", cli: ["permissions settings"], summary: "Get the relevant Settings link.", usage: "rushes permissions settings PERMISSION", result: "{url}"),
+            CommandDoc(name: "camera.preview.subscribe", cli: [], summary: "Enable or disable preview events without changing camera device lifecycle; allowed during active CLI takes.", usage: "socket camera.preview.subscribe {enabled:true}", result: "{enabled}"),
             CommandDoc(name: "camera.preview.start", cli: ["camera preview-start"], summary: "Warm camera and publish bounded JPEG preview events.", usage: "rushes camera preview-start --camera default", result: "{running,camera,name}"),
             CommandDoc(name: "camera.preview.stop", cli: ["camera preview-stop"], summary: "Close camera preview while idle.", usage: "rushes camera preview-stop", result: "{}"),
             CommandDoc(name: "record.cancel", cli: ["record cancel"], summary: "Cancel countdown.", usage: "rushes record cancel", result: "{state}"),
