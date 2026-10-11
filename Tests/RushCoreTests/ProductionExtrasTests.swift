@@ -266,6 +266,41 @@ struct ProductionExtrasTests {
         source.waitForPreview()
         #expect(log.count == 1)
     }
+    @Test("The recording TrackWriter microphone tee drives actual coordinator voice recognition",
+          .enabled(if: ProcessInfo.processInfo.environment["RUSHES_EXTRAS_SPEECH_FIXTURE"] != nil), .timeLimit(.minutes(1)))
+    func writerTeeRecognition() async throws {
+        let path = try #require(ProcessInfo.processInfo.environment["RUSHES_EXTRAS_SPEECH_FIXTURE"])
+        let script = "This is a recording test for our new video application. The microphone records clear audio. We can record a screen, review the video, and export captions. This recording stays on this computer."
+        let updates = ProgressLog()
+        let coordinator = ProductionEffectsCoordinator(onVoice: { _, progress in updates.append(progress) })
+        _ = try await coordinator.handle(ControlRequest(id: "configure", cmd: "teleprompter.set", args: .object(["enabled": .bool(true), "script": .string(script)])))
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("voice-tee-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let epoch: Int64 = 1_000_000_000_000
+        let writer = try TrackWriter(configuration: TrackWriterConfiguration(kind: .microphone,
+            outputURL: directory.appendingPathComponent("mic.mov")), clock: SessionClock(epochNs: epoch))
+        writer.setMicrophoneObserver(coordinator.microphoneObserver())
+        try await coordinator.beginRecording(id: "fixture", microphoneEnabled: true)
+        let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
+        let frames = AVAudioFrameCount(file.processingFormat.sampleRate * 0.1)
+        while file.framePosition < file.length {
+            let position = file.framePosition
+            let pcm = try #require(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames))
+            try file.read(into: pcm)
+            let media = CMTime(value: position, timescale: CMTimeScale(file.processingFormat.sampleRate))
+            writer.appendAudio(try extrasCMBuffer(pcm, hostTime: CMTimeAdd(media, CMTime(exactNanoseconds: epoch))))
+            try await Task.sleep(for: .milliseconds(90))
+        }
+        let result = try #require(try await coordinator.finishRecording())
+        _ = await writer.finalize()
+        print("WRITER_TEE_VOICE position=\(result.position)/\(result.tokenCount) received=\(result.receivedBuffers) dropped=\(result.droppedBuffers) state=\(result.state)")
+        #expect(result.position == result.tokenCount)
+        #expect(result.state == "finished")
+        #expect(result.droppedBuffers == 0)
+        #expect(updates.read().contains { $0.recognizedText.lowercased().contains("recording") })
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("mic.mov").path))
+    }
     @Test("Streaming Apple recognition advances real spoken PCM to the last script token",
           .enabled(if: ProcessInfo.processInfo.environment["RUSHES_EXTRAS_SPEECH_FIXTURE"] != nil), .timeLimit(.minutes(1)))
     func realStreamingRecognition() async throws {
