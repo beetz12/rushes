@@ -1836,7 +1836,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
                 ['share', 'Share MP4 · 1080p'],
                 ['youtube', 'YouTube · 1080p60'],
                 ['full', 'Full quality MOV'],
-                ['editor-tracks', 'Separate editor tracks'],
+                ['editor-tracks', 'Raw original tracks for editing'],
                 ['audio', 'Audio only · M4A'],
                 ['audio-wav', 'Audio only · WAV'],
                 ['diagnostics', 'Diagnostics bundle'],
@@ -1852,6 +1852,11 @@ function Review({ id, back, run, setNote, trashed }: any) {
               ))}
             </select>
           </label>
+          {preset === 'editor-tracks' && (
+            <p className="muted">
+              Raw originals for editing. Original camera backgrounds and source audio remain intact.
+            </p>
+          )}
           <button className="secondary full-width" disabled={exportBusy} onClick={doExport}>
             <Icon name="download" />
             {exportBusy ? 'Exporting…' : 'Export recording'}

@@ -141,7 +141,8 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
   });
   w.on('closed', () => {
     windows.delete(view);
-    if (view === 'drawing' && drawingEnabled) void hideDrawing();
+    if (view === 'drawing' && drawingEnabled)
+      void hideDrawing().catch((error) => broadcast({ event: 'warning', message: String(error) }));
   });
   if (view === 'bubble' || view === 'bar') w.on('moved', () => rememberPosition(view, w));
   w.once('ready-to-show', () => {
@@ -810,7 +811,7 @@ async function ready() {
     let path: string | undefined;
     if (v.preset === 'editor-tracks') {
       const d = await dialog.showOpenDialog({
-        title: 'Export editor tracks',
+        title: 'Export raw original tracks',
         properties: ['openDirectory', 'createDirectory'],
       });
       if (!d.canceled) path = join(d.filePaths[0], `Rushes-${v.id}`);
