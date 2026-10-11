@@ -1,0 +1,523 @@
+{
+  "repo": "CapSoftware/Cap",
+  "sha": "a32e4806b300",
+  "licence": "AGPL-3.0 (MIT: cap-camera* and scap-* crates)",
+  "features": {
+    "capture-screen": {
+      "present": true,
+      "quality": 5,
+      "summary": "ScreenCaptureKit on macOS with exclusion of the app's own windows (and the camera bubble in studio mode), area crop, and the system cursor hidden when the app redraws its own; Windows Graphics Capture on a D3D11 device with a cadence limiter that only drops frames when a high-refresh monitor runs measurably faster than the target; Linux X11 and PipeWire portal. Output clamped to H.264 limits and even sizes; notch geometry recorded.",
+      "paths": [
+        "crates/recording/src/capture_pipeline.rs",
+        "crates/recording/src/sources/screen_capture/cadence.rs",
+        "crates/recording/src/studio_recording.rs:3240-3310",
+        "crates/scap-screencapturekit/src/lib.rs",
+        "crates/scap-targets/src/lib.rs"
+      ]
+    },
+    "capture-camera": {
+      "present": true,
+      "quality": 5,
+      "summary": "Shared camera feed used by the bubble preview and the recorder. macOS pins the device format and frame duration so the camera cannot free-run faster than the pipeline assumes; cameras are re-found by USB vendor and product id; studio mode writes the camera to its own file or fragment folder. The MIT cap-camera crate provides the cross-platform enumeration and capture layer.",
+      "paths": [
+        "crates/camera/src/lib.rs",
+        "crates/camera/src/macos.rs:60-140",
+        "crates/recording/src/studio_recording.rs:3310-3420"
+      ]
+    },
+    "capture-audio": {
+      "present": true,
+      "quality": 4,
+      "summary": "Microphone via a patched cpal; system audio via ScreenCaptureKit (macOS 13+) or WASAPI loopback. Studio keeps mic and system audio as separate tracks (Ogg Opus, or fragmented AAC when crash recovery is on); instant mixes them into one fragmented audio stream. A 48 kHz sample-count clock with timestamp smoothing; system audio is anchored to the recording epoch. Known issue: macOS system audio arrives about 85-190 ms late and is not compensated.",
+      "paths": [
+        "crates/recording/src/studio_recording.rs:3420-3480",
+        "crates/timestamp/src/master_clock.rs",
+        "crates/recording/FINDINGS.md",
+        "crates/scap-cpal/src/lib.rs"
+      ]
+    },
+    "recording-controls": {
+      "present": true,
+      "quality": 4,
+      "summary": "Countdown with a warm-up start gate, floating controls bar with live timer, pause/resume that starts a new numbered segment on each resume, cancel and restart, global hotkeys, tray menu, URL-scheme actions (start, stop, pause, resume) and CLI start/stop by recording id. Low storage stops the recording and keeps the files.",
+      "paths": [
+        "crates/recording/src/output_pipeline/start_gate.rs",
+        "crates/recording/src/studio_recording.rs:700-720",
+        "apps/desktop-gpui/src/deeplink.rs",
+        "apps/desktop-gpui/src/session.rs:1300-1335"
+      ]
+    },
+    "camera-overlay": {
+      "present": true,
+      "quality": 4,
+      "summary": "Borderless floating bubble with round, square or full-frame shape, 150-600 pt (default 230, presets 230 and 400), zero-copy IOSurface preview, hardware preview-only mirroring, background blur or removal. Excluded from capture in studio mode (recomposited by the editor); left in the screen capture in instant mode, where it is burned in.",
+      "paths": [
+        "apps/desktop-gpui/src/camera_window.rs",
+        "apps/desktop-gpui/src/recording.rs:2200-2230",
+        "crates/camera-effects/src/lib.rs"
+      ]
+    },
+    "annotation": {
+      "present": true,
+      "quality": 3,
+      "summary": "Screenshot editor has arrows, circles, rectangles, text, blur masks and freehand drawing; the Chrome extension has a live drawing overlay; the video editor has sensitive (blur) and highlight masks and keyframed text. No live on-screen drawing during desktop video recording was found.",
+      "paths": [
+        "apps/desktop-gpui/src/screenshot_annotations.rs",
+        "apps/chrome-extension/src/content/drawing-overlay.tsx",
+        "crates/project/src/configuration.rs"
+      ]
+    },
+    "compositing-render": {
+      "present": true,
+      "quality": 5,
+      "summary": "wgpu renderer with layers for background (colour, gradient, animated gradient, image, blur), display, camera (including a 3D-tilted card), smoothed cursor with click ripples, keyboard overlay, captions, text, masks, colour grade, transitions and watermark, all as WGSL shaders. Spring-mass-damper zoom and screen motion. Export renders to NV12 on the GPU for the encoder.",
+      "paths": [
+        "crates/rendering/src/layers",
+        "crates/rendering/src/shaders",
+        "crates/rendering/src/zoom_spring.rs",
+        "crates/rendering/src/spring_mass_damper.rs"
+      ]
+    },
+    "editing": {
+      "present": true,
+      "quality": 5,
+      "summary": "Desktop editor timeline of clips pointing into recording segments with range and speed, per-clip volume, transitions, manual and click-generated zoom ranges, mask, text, scene (camera only, hide camera, split, floating cards), style, image, caption and keyboard tracks. A web editor cuts the video by deleting transcript words, with filler-word removal.",
+      "paths": [
+        "crates/project/src/configuration.rs",
+        "apps/desktop/src-tauri/src/recording.rs:6366-6466",
+        "apps/web/lib/edit-transcript.ts",
+        "apps/web/workflows/edit-video.ts"
+      ]
+    },
+    "transcription-captions": {
+      "present": true,
+      "quality": 5,
+      "summary": "Local captions with whisper and NVIDIA Parakeet (not on Intel Macs), models downloaded on demand, word timestamps. Server transcripts via AssemblyAI; instant recordings get a live transcript built from audio fragments as they upload, shown as live captions on the share page and promoted to the canonical transcript at the end.",
+      "paths": [
+        "apps/desktop-gpui/src/transcription.rs",
+        "apps/web/workflows/live-transcribe.ts",
+        "apps/web/workflows/transcribe.ts"
+      ]
+    },
+    "ai-features": {
+      "present": true,
+      "quality": 4,
+      "summary": "Server-side titles, summaries and clickable chapters through a provider-selection layer over the Vercel AI SDK, with separate generation and chat model slots per provider; web agent API and MCP server; AI entitlement gating by plan.",
+      "paths": [
+        "apps/web/lib/ai/provider.ts",
+        "apps/web/workflows/generate-ai.ts",
+        "apps/web/lib/mcp-server.ts"
+      ]
+    },
+    "export-formats": {
+      "present": true,
+      "quality": 4,
+      "summary": "MP4 H.264 with four compression presets (0.3, 0.15, 0.08, 0.04 bits per pixel, CRF 24/28/32/36) or a custom value, chosen fps and resolution; GIF; MOV with ProRes. Server-side GPU render farm splits studio exports into chunks that stream HLS while rendering.",
+      "paths": [
+        "crates/export/src/mp4.rs:138-200",
+        "crates/export/src/gif.rs",
+        "crates/export/src/mov.rs",
+        "apps/render-farm/README.md"
+      ]
+    },
+    "project-format": {
+      "present": true,
+      "quality": 4,
+      "summary": "Project folder (shown as a .cap bundle) with a recording metadata JSON, an edit-configuration JSON and a content tree of numbered segment folders, each with one file or fragment folder per source plus cursor and keyboard sidecars; cursor images shared across segments. Each track stores path, fps, start time relative to a shared epoch and device id; status field drives recovery. Many legacy variants.",
+      "paths": [
+        "crates/project/src/meta.rs",
+        "crates/project/src/configuration.rs",
+        "crates/recording/src/studio_recording.rs:3120-3160"
+      ]
+    },
+    "sharing-hosting": {
+      "present": true,
+      "quality": 5,
+      "summary": "Instant mode reserves a video id and link before capture, uploads each finished 2 s fragment by presigned PUT (20-URL prefetch, 3 attempts), re-uploads a manifest about once a second, then signals completion so a durable workflow muxes the MP4. Upload resume and SHA-256 verification. Own S3-compatible bucket, Google Drive, custom domains, passwords.",
+      "paths": [
+        "apps/desktop-gpui/src/upload.rs",
+        "apps/web/app/api/upload/[...route]/recording-complete.ts",
+        "apps/web/lib/desktop-segments-finalization.ts",
+        "crates/recording/src/upload_resume.rs"
+      ]
+    },
+    "viewer-web": {
+      "present": true,
+      "quality": 5,
+      "summary": "Share page plays live HLS synthesized from the uploaded manifest while recording continues (no end tag until complete), with an in-progress overlay and live captions, then swaps to the processed MP4. Threaded timestamped comments of four kinds (text, emoji reaction, voice, video), waveform and filmstrip timeline, transcript and summary tabs with chapters, downloads, call-to-action overlays, view analytics.",
+      "paths": [
+        "apps/web/app/api/playlist/route.ts:180-430",
+        "apps/web/app/s/[videoId]/_components/ShareVideo.tsx",
+        "apps/web/app/s/[videoId]/_components/segment-playback-probe.ts",
+        "packages/database/schema.ts:587-624",
+        "scripts/analytics/tinybird/datasources/analytics_events.datasource"
+      ]
+    },
+    "teleprompter-scripts": {
+      "present": true,
+      "quality": 3,
+      "summary": "Floating teleprompter window kept above other apps on all Spaces, default 560x320 and resizable down to 420x220, with play/pause, words-per-minute scrolling, opacity and font size.",
+      "paths": [
+        "apps/desktop-gpui/src/teleprompter_window.rs"
+      ]
+    },
+    "platform-packaging": {
+      "present": true,
+      "quality": 4,
+      "summary": "macOS 12.3+ bundle with camera and mic usage strings, Windows packaging, Linux AppImage, deb and rpm; in-app updater with stable and nightly channels; CLI installed as a shim to the app binary. Desktop was rewritten from Tauri to gpui (Tauri app frozen at 0.6.0).",
+      "paths": [
+        "apps/desktop-gpui/tauri.conf.json",
+        "apps/desktop-gpui/Info.plist",
+        "apps/desktop-gpui/src/updates.rs",
+        "packaging/linux"
+      ]
+    },
+    "performance-reliability": {
+      "present": true,
+      "quality": 5,
+      "summary": "Crash-safe fragmented recording with atomic manifests, launch-time recovery of unfinished projects, health events and drop-rate monitoring, low-storage stop, optional out-of-process muxer with respawn, load-time repair of tracks stamped at the wrong rate, upload resume, and many benchmark and stress examples. On macOS fragmenting is disabled when a camera is active in studio mode.",
+      "paths": [
+        "crates/enc-ffmpeg/src/mux/segmented_stream.rs",
+        "crates/recording/src/recovery.rs",
+        "crates/recording/src/track_heal.rs",
+        "crates/recording/src/output_pipeline/oop_muxer.rs",
+        "crates/recording/FINDINGS.md"
+      ]
+    },
+    "extensibility-automation": {
+      "present": true,
+      "quality": 5,
+      "summary": "CLI sharing the app binary: JSON on every command, NDJSON event streams for record and export, a machine-readable command guide, explicit start/stop with ids and detach mode, local MCP server and agent skill installer, user automation rules (copy, webhook) after screenshot/record/upload. URL-scheme actions, recorder and embed SDKs, web agent API with idempotency and MCP OAuth.",
+      "paths": [
+        "apps/cli/README.md",
+        "apps/cli/src/mcp.rs",
+        "apps/desktop-gpui/src/deeplink.rs",
+        "packages/sdk-recorder",
+        "packages/database/schema.ts:949-1112"
+      ]
+    },
+    "privacy-security": {
+      "present": true,
+      "quality": 4,
+      "summary": "Non-prompting preflight permission checks with distinct grant and open-settings states; password-protected shares; users' own S3 credentials stored encrypted; log scrubbing of presigned-URL credentials before diagnostic upload; private viewer grants; full self-hosting. Default secrets in the compose file and analytics relying on Tinybird and Vercel geo headers are weak spots.",
+      "paths": [
+        "apps/desktop-gpui/src/permissions.rs",
+        "crates/recording/src/log_redaction.rs",
+        "packages/database/schema.ts:812-843",
+        "apps/web/lib/password-cookie.ts",
+        "docker-compose.yml"
+      ]
+    }
+  },
+  "best_ideas": [
+    {
+      "id": "cap-crash-safe-fragmented-tracks",
+      "title": "Crash-safe per-track fragments with an atomic manifest",
+      "area": "performance-reliability",
+      "what": "Write every source as an init segment plus two-second fragmented MP4 media segments. After each fragment, rewrite a small JSON manifest (completed fragments with duration and size, codec parameters, a complete flag) via temp file, fsync, rename and directory fsync. Keep a status in the project metadata; on launch, lock and rebuild any unfinished project from fragments that pass a minimum-size and well-formed-tail check, verify the result decodes, then publish it atomically.",
+      "why": "A crash or power loss costs at most one fragment. Cap disables this on macOS whenever the camera is active; David's recorder should apply it to the camera track as well.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "crates/enc-ffmpeg/src/mux/segmented_stream.rs",
+        "crates/recording/src/recovery.rs",
+        "crates/recording/src/studio_recording.rs:3138-3160"
+      ],
+      "effort": "L",
+      "priority": "must"
+    },
+    {
+      "id": "cap-separate-tracks-with-start-offsets",
+      "title": "Separate tracks per segment with per-track start offsets",
+      "area": "project-format",
+      "what": "One folder per pause-separated segment containing one file per source (screen, camera, mic, system audio, cursor events, key events). The metadata stores, for each track, its relative path, frame rate, start time against one shared recording epoch and the capture device id; playback trims every track to the latest start.",
+      "why": "Matches David's editing tool, which already takes a screen file, a camera file and an offset; any track can be re-laid-out, re-mixed or replaced later.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "crates/project/src/meta.rs",
+        "crates/recording/src/studio_recording.rs:3120-3520"
+      ],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "cap-warm-up-start-gate",
+      "title": "Warm-up start gate",
+      "area": "recording-controls",
+      "what": "Build all sources, encoders and muxers while the countdown runs, but hold a shared gate closed: every frame captured before the gate opens is dropped, so the first admitted frame of each source is time zero. A failsafe opens the gate after a long timeout so a caller bug never records nothing.",
+      "why": "Gives an instant start with no warm-up stutter and no first-second offset between screen, camera and mic.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "crates/recording/src/output_pipeline/start_gate.rs"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "cap-two-mode-contract",
+      "title": "Two recording modes with different contracts",
+      "area": "recording-controls",
+      "what": "A quick-share mode that keeps the camera bubble in the screen capture, mixes mic and system audio, caps output size and frame rate (30 fps, 1280 or 1920 wide), uses a low bitrate and uploads while recording; and a studio mode that excludes the bubble, records every source separately at up to 60 fps (30 with a camera) and opens a local editor.",
+      "why": "Lets one app serve both the fast Loom-style message and the polished demo without compromising either.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "crates/recording/src/defaults.rs",
+        "apps/desktop-gpui/src/recording.rs:2200-2290"
+      ],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "cap-upload-while-recording",
+      "title": "Upload fragments while recording",
+      "area": "sharing-hosting",
+      "what": "Before capture, ask the server for a video id and build the share link from it. As each fragment completes, upload it by presigned PUT under a per-video prefix with batched URL prefetch and a few retries; re-upload an aggregate manifest about once a second; at stop upload the final manifest marked complete and call a completion endpoint that starts server-side assembly into an MP4.",
+      "why": "The link is valid before the recording ends and the upload is nearly done at stop, which is the core Loom experience.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "apps/desktop-gpui/src/upload.rs",
+        "apps/web/app/api/upload/[...route]/recording-complete.ts",
+        "apps/web/lib/desktop-segments-finalization.ts"
+      ],
+      "effort": "L",
+      "priority": "must"
+    },
+    {
+      "id": "cap-live-hls-from-manifest",
+      "title": "Live HLS synthesized from the upload manifest",
+      "area": "viewer-web",
+      "what": "A playlist endpoint reads the uploaded manifest from the bucket and emits a master playlist plus video and audio media playlists with fMP4 init maps and presigned segment URLs. Until the manifest is complete the media playlists have no end tag, so the player treats them as live; afterwards they become VOD. The page polls a status variant with backoff, shows an in-progress overlay, then swaps to the processed MP4.",
+      "why": "Viewers can watch while the author is still recording, and the same files serve as the final stream source with no extra transcode.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "apps/web/app/api/playlist/route.ts:180-430",
+        "apps/web/app/s/[videoId]/_components/segment-playback-probe.ts",
+        "apps/web/app/s/[videoId]/_components/ShareVideo.tsx"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "cap-agent-first-cli",
+      "title": "Agent-first JSON CLI and local MCP server",
+      "area": "extensibility-automation",
+      "what": "Ship the CLI inside the app binary. Every command accepts a global JSON flag, stdout is the result and stderr is logs, failures exit non-zero with an error field, record and export stream newline-delimited JSON events, recordings have an explicit start/stop lifecycle by id with a detach option, a guide command prints the full machine contract, and the CLI can run as a stdio MCP server and reuse the desktop login. URL-scheme actions cover start, stop, pause and resume from other apps.",
+      "why": "Directly serves David's wish to drive the recorder from an AI agent.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "apps/cli/README.md",
+        "apps/cli/src/mcp.rs",
+        "apps/desktop-gpui/src/deeplink.rs"
+      ],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "cap-preflight-permissions",
+      "title": "Non-prompting permission checks with two failure states",
+      "area": "privacy-security",
+      "what": "Check screen recording, accessibility, camera and microphone with preflight calls that never prompt (CGPreflightScreenCaptureAccess, AXIsProcessTrusted, AVCaptureDevice authorization status) and never poll the ScreenCaptureKit shareable-content query, which leaked memory badly when polled. Show a grant button while a permission is undetermined and an open-settings deep link once it is denied.",
+      "why": "Permissions onboarding is where macOS recorders lose users; this avoids surprise prompts and a known leak.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "apps/desktop-gpui/src/permissions.rs"
+      ],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "cap-mit-camera-crate",
+      "title": "Reuse the MIT cap-camera crate",
+      "area": "capture-camera",
+      "what": "Use cap-camera with cap-camera-avfoundation: list_cameras returns CameraInfo with a device id, name and ModelID (USB vendor and product id) for reconnect-proof selection; formats() lists sizes and rates; start_capturing_with_mode takes CaptureMode::Native (pinned format, no conversion) or CaptureMode::Compatibility and a frame callback with timestamps; the macOS backend pins the minimum frame duration for the chosen rate.",
+      "why": "Saves writing AVFoundation camera plumbing and avoids the free-running camera bug that stretched Cap's own recordings.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "crates/camera/src/lib.rs",
+        "crates/camera/src/macos.rs",
+        "crates/camera-avfoundation/src/lib.rs"
+      ],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "cap-mit-screencapturekit-and-targets",
+      "title": "Reuse the MIT ScreenCaptureKit and target crates",
+      "area": "capture-screen",
+      "what": "scap-screencapturekit gives a Capturer built by CapturerBuilder with frame and error callbacks, a StreamCfgBuilder (size, source rect, cursor, fps), has_permission and request_permission, and is_system_audio_supported. scap-targets enumerates displays and windows with logical and physical size, refresh rate, notch geometry, display under cursor, topmost window under cursor, owner name and icon.",
+      "why": "A ready base for the capture-target picker and the macOS capture layer; needs Cap's pinned cidre fork and removal of the workspace-hack dependency.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "crates/scap-screencapturekit/src/lib.rs",
+        "crates/scap-screencapturekit/src/config.rs",
+        "crates/scap-targets/src/lib.rs"
+      ],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "cap-hardware-encoder-ladder",
+      "title": "Hardware-first encoder ladder with pixel-based bitrate",
+      "area": "performance-reliability",
+      "what": "Prefer VideoToolbox fed directly with capture IOSurfaces (no copy), fall back to software x264; on Windows order hardware encoders by GPU vendor. Size bitrate from pixel count and frame rate (about 10 Mbps for 1080p30 at balanced quality, about 3.5 Mbps for quick-share) and put a keyframe roughly every 0.75 s so the editor seeks fast.",
+      "why": "Keeps CPU low during long recordings and makes editing responsive.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "crates/enc-ffmpeg/src/video/h264.rs",
+        "crates/enc-avfoundation/src/mp4.rs:1080-1110",
+        "crates/recording/src/output_pipeline/macos_fragmented_m4s.rs"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "cap-click-auto-zoom",
+      "title": "Click-driven auto zoom",
+      "area": "compositing-render",
+      "what": "Turn each recorded click into a zoom window from 0.3 s before to 2.5 s after it, ignore clicks in the final second, end windows 0.8 s before the end, merge windows separated by less than 2.5 s, zoom 2x and follow the cursor with spring motion during the window.",
+      "why": "Cheap to implement from the cursor log and gives demos a polished look with no manual editing.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "apps/desktop/src-tauri/src/recording.rs:6366-6466",
+        "crates/rendering/src/zoom_spring.rs"
+      ],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "cap-upload-resume-and-verify",
+      "title": "Upload resume and checksum verification",
+      "area": "sharing-hosting",
+      "what": "Persist the upload identity per project behind a lock; after a crash or network loss, rescan the local fragment folders to rebuild the list of pending uploads; treat the upload as finished only when the server returns a receipt matching a SHA-256 of the manifest, and keep local files until then.",
+      "why": "A local-first recorder must never lose the only copy because an upload silently failed.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "crates/recording/src/upload_resume.rs",
+        "crates/recording/src/upload_verification.rs"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "cap-stretched-track-heal",
+      "title": "Load-time repair of wrongly stamped tracks",
+      "area": "performance-reliability",
+      "what": "When opening a project, compare each video track's duration with reference tracks; if a track is a clean multiple of the real span (a camera delivering 60 fps into a 30 fps track, a high-refresh monitor), rescale its timestamps without re-encoding, keep a backup, and keep the original unless the result lands within 5 percent of the expected span.",
+      "why": "Repairs a whole class of slow-motion and desync bugs in recordings already on disk.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "crates/recording/src/track_heal.rs"
+      ],
+      "effort": "M",
+      "priority": "could"
+    },
+    {
+      "id": "cap-local-word-captions",
+      "title": "Local word-level captions",
+      "area": "transcription-captions",
+      "what": "Download whisper or Parakeet models on demand into an app data folder and transcribe locally with word timestamps for captions and transcript-based edits.",
+      "why": "Keeps transcripts on David's machine and enables transcript editing without a cloud key.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "apps/desktop-gpui/src/transcription.rs"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "cap-small-self-host-stack",
+      "title": "Small self-host stack with bring-your-own S3",
+      "area": "sharing-hosting",
+      "what": "A compose file with four services: the web app, an FFmpeg media worker that calls back through a signed webhook, MySQL and MinIO with a bucket-creation job. Magic-link login prints links to the logs when no email provider is set. Users can attach their own S3-compatible bucket, with credentials encrypted at rest.",
+      "why": "Shows the minimum service set for share links on storage David controls.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "docker-compose.yml",
+        "packages/database/schema.ts:812-843",
+        "apps/media-server/src/routes/video.ts"
+      ],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "cap-gpu-camera-background-blur",
+      "title": "GPU camera background blur",
+      "area": "camera-overlay",
+      "what": "cap-camera-effects segments the person with Apple Vision on macOS or an embedded ONNX selfie model elsewhere, refines the mask with a guided filter, blurs and composites in WGSL, and exposes a global switch to disable blur if a previous session crashed inside it.",
+      "why": "Background blur for the camera bubble without writing ML plumbing; check the ONNX model licences first.",
+      "reuse_mode": "copy-with-notice",
+      "paths": [
+        "crates/camera-effects/src/lib.rs",
+        "crates/camera-effects/src/vision.rs",
+        "crates/camera-effects/src/segmentation.rs"
+      ],
+      "effort": "M",
+      "priority": "could"
+    },
+    {
+      "id": "cap-typed-timestamped-comments",
+      "title": "Typed timestamped comments",
+      "area": "viewer-web",
+      "what": "One comment record covers emoji reactions, text, voice notes and video replies; each has an optional video timestamp, an optional parent for threading and, for media replies, a storage key under the parent video's prefix.",
+      "why": "A simple data model that covers Loom-style reactions and replies in one table.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "packages/database/schema.ts:587-624"
+      ],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "cap-live-transcript-while-recording",
+      "title": "Live transcript during recording",
+      "area": "transcription-captions",
+      "what": "A server workflow polls the upload manifest, transcribes newly arrived audio fragments in chunks, serves them as live captions on the share page, and promotes the result to the final transcript instead of re-transcribing.",
+      "why": "Viewers watching a live share get captions immediately, at no extra transcription cost.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "apps/web/workflows/live-transcribe.ts",
+        "apps/web/lib/desktop-segments-finalization.ts"
+      ],
+      "effort": "L",
+      "priority": "could"
+    },
+    {
+      "id": "cap-scrub-presigned-urls-in-logs",
+      "title": "Scrub presigned URLs from logs",
+      "area": "privacy-security",
+      "what": "Strip signature, credential and token query parameters from any log text at the point it leaves the machine (diagnostic upload), in addition to fixing individual log calls.",
+      "why": "Presigned upload URLs are live write capabilities; leaking them through diagnostics is an easy mistake.",
+      "reuse_mode": "idea-only",
+      "paths": [
+        "crates/recording/src/log_redaction.rs"
+      ],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "cap-out-of-process-muxer",
+      "title": "Optional out-of-process muxer",
+      "area": "performance-reliability",
+      "what": "Encode in the app but send packets to a child muxer process over its stdin using a framed binary protocol (magic, version, kind, length, CRC); respawn it a limited number of times and fall back to in-process muxing if the helper binary is missing.",
+      "why": "Isolates crashes in the muxing library from the recorder process.",
+      "reuse_mode": "clean-room",
+      "paths": [
+        "crates/recording/src/output_pipeline/oop_muxer.rs",
+        "crates/cap-muxer-protocol/src/lib.rs"
+      ],
+      "effort": "L",
+      "priority": "could"
+    }
+  ],
+  "weaknesses": [
+    "Very large and fast-moving: the recording crate is about 75,000 lines with heavy per-platform branching, and the desktop app was rewritten from Tauri to gpui, leaving two trees that describe the same behaviour.",
+    "On macOS, crash-safe fragmented recording is turned off whenever a camera is active in studio mode, so screen plus camera falls back to writers that are only playable once finalized.",
+    "Instant mode burns the camera bubble into the screen video and mixes mic and system audio, so instant recordings cannot be re-laid-out or re-mixed.",
+    "macOS system audio lags roughly 85-190 ms and is not compensated (documented known issue).",
+    "Instant mode requires sign-in and a server, and output size is plan-gated (1280 wide on free).",
+    "Self-hosting ships default secrets in the compose file; analytics need Tinybird and Vercel geo headers; transcripts need AssemblyAI, AI needs an LLM key, email needs Resend.",
+    "The MIT crates depend on Cap-pinned forks of cidre, cpal and rust-ffmpeg and on a generated workspace-hack crate; the Windows camera and Direct3D crates also depend on helper crates outside the MIT family (crates/mediafoundation-utils, crates/d3d-adapter); the ONNX models in camera-effects carry upstream licences that were not verified.",
+    "No live on-screen drawing during desktop video recording (only screenshots and the Chrome extension).",
+    "The post-recording A/V sync analyzer appears not to be called from the apps (unverified).",
+    "The clone contains files addressed to coding agents (AGENTS.md, CLAUDE.md, CLI skill files); they were treated as data and not followed."
+  ]
+}
