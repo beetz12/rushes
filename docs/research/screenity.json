@@ -1,0 +1,307 @@
+{
+  "repo": "alyssaxuu/screenity",
+  "sha": "dddeeb668ad2",
+  "licence": "GPL-3.0",
+  "features": {
+    "capture-screen": {
+      "present": true,
+      "quality": 4,
+      "summary": "Records a tab, a cropped region of a tab, a full screen or a window. On macOS with Chrome 141 or newer it uses getDisplayMedia so system audio is available. Presets from 240p to 4K, default capture caps of 1080p and 60 fps, a bits-per-pixel bitrate rule, and letterboxing when the captured surface changes shape mid-recording.",
+      "paths": ["src/pages/utils/screenCaptureMode.js", "src/pages/utils/acquireDisplayMedia.js", "src/pages/Recorder/recorderConfig.js", "src/pages/Recorder/webcodecs/letterbox.js", "src/pages/Recorder/Recorder.jsx:1670-1700"]
+    },
+    "capture-camera": {
+      "present": true,
+      "quality": 3,
+      "summary": "Camera via getUserMedia with re-resolution by device label, a bounded wait for virtual cameras, non-fatal handling of a camera that disconnects, and a camera-only mode. In the local build the camera is burned into the screen pixels; only the hosted tier records it as a separate track with its own local backup store.",
+      "paths": ["src/pages/Camera/utils/cameraUtils.js", "src/pages/Camera/Camera.jsx", "src/pages/CloudRecorder/CloudRecorder.jsx:1860-1970"]
+    },
+    "capture-audio": {
+      "present": true,
+      "quality": 4,
+      "summary": "Microphone with label fallback and a one-time retry for busy devices, tab or system audio, push-to-talk with careful disarm rules, a silent-mix fault detector and a Bluetooth low-sample-rate diagnostic. The hosted tier writes the mic to its own file except for camera-only and instant recordings.",
+      "paths": ["src/pages/utils/startAudioStream.js", "src/pages/CloudRecorder/audioBusPolicy.js", "src/pages/CloudRecorder/shouldSeparateAudio.js", "src/pages/Content/shortcuts/Shortcuts.jsx:140-320", "src/pages/Permissions/Permissions.jsx:36-115"]
+    },
+    "recording-controls": {
+      "present": true,
+      "quality": 4,
+      "summary": "Floating draggable toolbar that remembers its corner, three-second countdown, pause, resume, restart, cancel, auto-stop timer through alarms, hide-UI mode, manifest keyboard commands and preset browser window sizes for clean framing.",
+      "paths": ["src/manifest.json", "src/pages/Content/toolbar/layout/ToolbarWrap.jsx:174-290", "src/pages/Content/countdown/Countdown.jsx", "src/pages/Background/alarms/handleAlarm.js", "src/pages/Content/popup/layout/SettingsMenu.jsx:318-350"]
+    },
+    "camera-overlay": {
+      "present": true,
+      "quality": 3,
+      "summary": "Round bubble on the page, square-locked, 150 px minimum, single resize handle on the rim, clamped back on screen after display changes and persisted. Uses picture-in-picture when the whole monitor is captured so the camera still appears. Optional background blur or image replacement through an on-device segmenter with GPU then CPU fallback and a watchdog.",
+      "paths": ["src/pages/Content/camera/layout/CameraWrap.jsx", "src/pages/Camera/utils/cameraUtils.js", "src/pages/Camera/utils/backgroundUtils.js", "src/pages/Camera/components/Background.js", "src/pages/Camera/utils/effects.js"]
+    },
+    "annotation": {
+      "present": true,
+      "quality": 4,
+      "summary": "Full-viewport vector overlay with pen, highlighter, eraser, text, shapes, arrows with draggable ends, images, select and move, snapshot undo and redo, and number-key tool switching. Also cursor highlight, click ring, spotlight, click-to-blur of page elements and hold-to-zoom around the pointer. All of it lives on the captured page, so it is burned into the video.",
+      "paths": ["src/pages/Content/canvas/layout/CanvasWrap.jsx", "src/pages/Content/canvas/modules/PenTool.jsx", "src/pages/Content/canvas/modules/History.jsx", "src/pages/Content/canvas/modules/ArrowTool.jsx", "src/pages/Content/canvas/modules/EraserTool.jsx", "src/pages/Content/utils/CursorModes.jsx", "src/pages/Content/utils/BlurTool.jsx", "src/pages/Content/utils/ZoomContainer.jsx"]
+    },
+    "compositing-render": {
+      "present": true,
+      "quality": 2,
+      "summary": "No post-capture compositor in the local build: overlays and the camera are composited live because they are part of the captured page. The encoder letterboxes a changed surface onto a fixed frame. Clicks are logged on the media clock and mapped to monitor coordinates for the hosted editor's zoom features.",
+      "paths": ["src/pages/Recorder/webcodecs/letterbox.js", "src/pages/Content/cursor/trackClicks.js", "src/pages/Background/messaging/handlers.js:2198-2280"]
+    },
+    "editing": {
+      "present": true,
+      "quality": 3,
+      "summary": "Local editor with trim (stream copy from a verified keyframe), cut (re-encode), crop, mute, add audio, re-encode and WebM duration repair, run in-process with mediabunny. Waveform strip for audio. Undo keeps up to 20 full snapshots. All edits rewrite the media blob; there is no edit list.",
+      "paths": ["src/pages/EditorApp/editorOps.js", "src/pages/Editor/mediabunny/lib/videoTrimmer.ts", "src/pages/EditorApp/context/ContentState.jsx:785-846", "src/pages/EditorApp/components/editor/Waveform.jsx"]
+    },
+    "transcription-captions": {
+      "present": false,
+      "quality": 0,
+      "summary": "Not in the open-source tree. The README lists captions only as a feature of the paid hosted platform.",
+      "paths": []
+    },
+    "ai-features": {
+      "present": true,
+      "quality": 2,
+      "summary": "Only on-device selfie segmentation (MediaPipe model bundled with the extension) for camera background blur or replacement. No speech, language or summarisation features.",
+      "paths": ["src/pages/Camera/utils/backgroundUtils.js", "src/pages/Camera/components/Background.js"]
+    },
+    "export-formats": {
+      "present": true,
+      "quality": 3,
+      "summary": "MP4 with H.264 and AAC is preferred, WebM with VP9 or VP8 and Opus as fallback, GIF at 540 px wide and 12 fps through web workers, conversion in both directions between MP4 and WebM, and save to Google Drive.",
+      "paths": ["src/pages/Recorder/recorderConfig.js", "src/pages/Editor/utils/toGIF.js", "src/pages/EditorApp/editorOps.js", "src/pages/Background/drive/handleSaveToDrive.js"]
+    },
+    "project-format": {
+      "present": false,
+      "quality": 0,
+      "summary": "No project document. A recording is a single media file in the browser's private file system or IndexedDB plus settings in extension storage; edits produce new media files rather than an edit list.",
+      "paths": []
+    },
+    "sharing-hosting": {
+      "present": true,
+      "quality": 2,
+      "summary": "Local build: save to Google Drive with the per-file scope, creating an app folder on first use. Hosted tier (disabled in self-hosted builds): resumable upload of each track during recording with crash-resume journals and gap repair at finalize.",
+      "paths": ["src/pages/Background/drive/handleSaveToDrive.js", "src/pages/CloudRecorder/bunnyTusUploader.js", "src/pages/CloudRecorder/uploadGapRecovery.js"]
+    },
+    "viewer-web": {
+      "present": true,
+      "quality": 2,
+      "summary": "Local playback page with a viewer-only mode that rejects edit operations but still repairs WebM duration for seeking. The hosted share viewer is not in the repo.",
+      "paths": ["src/pages/EditorApp/editorOps.js"]
+    },
+    "teleprompter-scripts": {
+      "present": false,
+      "quality": 0,
+      "summary": "No teleprompter or script feature.",
+      "paths": []
+    },
+    "platform-packaging": {
+      "present": true,
+      "quality": 3,
+      "summary": "Chrome Manifest V3 extension built with webpack, with release and store-upload scripts, 18 locales, and a managed-storage schema that lets admins skip first-run setup.",
+      "paths": ["src/manifest.json", "package.json", "src/schema.json"]
+    },
+    "performance-reliability": {
+      "present": true,
+      "quality": 5,
+      "summary": "Fragmented MP4 with one-second fragments written by a worker that owns a synchronous OPFS handle, bounded finalize, two alternating storage slots, retention of recordings with an open editor, recovery of the newest file, first-chunk watchdog alarms, and a per-device fast-encoder gate with transient failure classes and a 14-day expiry.",
+      "paths": ["src/pages/Recorder/webcodecs/Mp4MuxerWrapper.ts:40-130", "src/pages/Recorder/recorderStorage/opfs/writerWorker.js", "src/pages/Recorder/webcodecs/WebCodecsRecorder.js:1070-1100", "src/pages/utils/chunkStores.js", "src/pages/Background/recording/recordingRetention.js", "src/pages/Background/recording/restoreRecording.js", "src/media/fastRecorderGate.ts:76-195"]
+    },
+    "extensibility-automation": {
+      "present": true,
+      "quality": 1,
+      "summary": "Only manifest keyboard commands and an external messaging channel restricted to the vendor's own web app. No CLI, scripting API, plugin system or agent interface.",
+      "paths": ["src/manifest.json"]
+    },
+    "privacy-security": {
+      "present": true,
+      "quality": 4,
+      "summary": "Local-only by default; self-hosted builds make no API calls and telemetry is inert without an API base. Click-to-blur for redacting page elements. Diagnostics stay local in a ring buffer and the support zip redacts home paths and URL queries. Downside: the content script is injected into every site.",
+      "paths": ["README.md", "src/pages/Background/recording/emitRecordingTelemetry.js", "src/pages/utils/buildDiagnosticZip.js", "src/pages/utils/diagnosticLog.js", "src/pages/Content/utils/BlurTool.jsx", "src/manifest.json"]
+    }
+  },
+  "best_ideas": [
+    {
+      "id": "screenity-fragmented-mp4-bounded-finalize",
+      "title": "Crash-safe fragmented MP4 with a bounded finalize",
+      "area": "performance-reliability",
+      "what": "Write the recording as fragmented MP4 with about one-second fragments and append-only writes, coalesce small writes into larger ones, and race the final close against a five-second timeout.",
+      "why": "A crash, hang or force-quit still leaves a file that plays up to the last fragment, so David never loses a whole take. Maps directly to the asset writer's fragmented output on macOS.",
+      "reuse_mode": "clean-room",
+      "paths": ["src/pages/Recorder/webcodecs/Mp4MuxerWrapper.ts:40-130", "src/pages/Recorder/webcodecs/WebCodecsRecorder.js:1070-1100"],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "screenity-serial-file-writer",
+      "title": "One serial writer owns the output file",
+      "area": "performance-reliability",
+      "what": "A dedicated worker holds a synchronous file handle; open, write, close and abort go through a single queue; the producer waits for an acknowledgement per write; the new file is created before the old one is removed; opening is retried with short backoff when the OS has not released a previous handle.",
+      "why": "Gives ordered writes, natural backpressure and no lost recording if file creation fails. On macOS the same shape is a serial queue that owns a FileHandle.",
+      "reuse_mode": "clean-room",
+      "paths": ["src/pages/Recorder/recorderStorage/opfs/writerWorker.js", "src/pages/Recorder/recorderStorage/chooseWriter.js"],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "screenity-last-recording-retention",
+      "title": "Never let the next recording destroy the last one",
+      "area": "performance-reliability",
+      "what": "Alternate between two storage slots, keep a list of recordings whose editor is open and protect them from cleanup, drop that protection when free space falls under about 2 GB, and offer recovery of the newest file above a 4 KB floor.",
+      "why": "Recovery after a crash or a mistaken new take is the difference between trust and abandonment in a recorder.",
+      "reuse_mode": "clean-room",
+      "paths": ["src/pages/utils/chunkStores.js", "src/pages/Background/recording/recordingRetention.js", "src/pages/Background/recording/restoreRecording.js"],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "screenity-upload-while-recording-gap-repair",
+      "title": "Upload while recording, with gap repair at finalize",
+      "area": "sharing-hosting",
+      "what": "Keep a durable local copy of each chunk per track, upload with a resumable protocol during recording, journal upload state so it resumes after a crash (stale journals swept after 14 days), and at finalize compare the server offset with local bytes and re-send only a contiguous run of chunks covering the gap, up to 64 MB.",
+      "why": "This is how a share link can be ready seconds after stop without risking a truncated upload. Fits David's self-hosted S3-compatible storage with multipart or tus uploads.",
+      "reuse_mode": "clean-room",
+      "paths": ["src/pages/CloudRecorder/bunnyTusUploader.js", "src/pages/CloudRecorder/uploadGapRecovery.js", "src/pages/CloudRecorder/CloudRecorder.jsx:1860-1970"],
+      "effort": "L",
+      "priority": "should"
+    },
+    {
+      "id": "screenity-click-log-media-clock",
+      "title": "Click log on the recording clock for auto-zoom",
+      "area": "compositing-render",
+      "what": "Stamp each click with the recording's own media time, map it from window to monitor coordinates, ignore clicks on the recorder's own UI, batch writes every two seconds and cap the log at 5000 entries.",
+      "why": "A click log aligned to media time is the input auto-zoom and click highlights need in post, without burning effects into the video.",
+      "reuse_mode": "clean-room",
+      "paths": ["src/pages/Content/cursor/trackClicks.js", "src/pages/Background/messaging/handlers.js:2198-2280"],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "screenity-camera-bubble-geometry",
+      "title": "Camera bubble geometry and persistence",
+      "area": "camera-overlay",
+      "what": "Square-locked circular bubble with a 150 px minimum, one resize handle placed on the rim at lower right, a mini toolbar on the opposite rim, position clamped back on screen after a display change, and size and position remembered.",
+      "why": "Matches the Loom-style bubble David wants and avoids the common bug of a bubble restored off screen after unplugging a monitor.",
+      "reuse_mode": "idea-only",
+      "paths": ["src/pages/Content/camera/layout/CameraWrap.jsx"],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "screenity-annotation-conventions",
+      "title": "Annotation overlay conventions",
+      "area": "annotation",
+      "what": "Tools on number keys with 0 clearing everything; highlighter is a wider half-transparent stroke drawn beneath earlier ink; arrows keep draggable endpoints after drawing; the eraser marks objects under the drag and deletes them on release; undo and redo store whole-scene snapshots; switching tools discards a half-drawn stroke.",
+      "why": "A ready-made interaction spec for a drawing overlay on macOS, worked out through real use.",
+      "reuse_mode": "clean-room",
+      "paths": ["src/pages/Content/canvas/layout/CanvasWrap.jsx", "src/pages/Content/canvas/modules/PenTool.jsx", "src/pages/Content/canvas/modules/History.jsx", "src/pages/Content/canvas/modules/ArrowTool.jsx", "src/pages/Content/canvas/modules/EraserTool.jsx", "src/pages/Content/shortcuts/Shortcuts.jsx:140-320"],
+      "effort": "M",
+      "priority": "could"
+    },
+    {
+      "id": "screenity-live-cursor-effects",
+      "title": "Cheap live cursor effects",
+      "area": "annotation",
+      "what": "Three toggles: an 80 px translucent disc under the pointer, a 40 px ring that pops on mouse down and shrinks away over about 350 ms on release, and a spotlight that darkens everything outside a 100 px circle. Updates are coalesced to one per animation frame and skipped when no effect is on.",
+      "why": "Gives sizes, timings and a performance rule for cursor emphasis; David can render the same effects in post from the click log instead.",
+      "reuse_mode": "clean-room",
+      "paths": ["src/pages/Content/utils/CursorModes.jsx"],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "screenity-silent-mix-fault",
+      "title": "Silent-mix fault and device drift handling",
+      "area": "capture-audio",
+      "what": "Treat near-digital-silence on the mix (RMS under about 1e-5) as a fault when a mic was requested and a live mic track exists; re-find a saved device by label when its ID changed; retry a busy device once after a short wait.",
+      "why": "Silent narration is the most painful recording failure because it is discovered too late; this catches it during recording.",
+      "reuse_mode": "clean-room",
+      "paths": ["src/pages/CloudRecorder/audioBusPolicy.js", "src/pages/utils/startAudioStream.js", "src/pages/Permissions/Permissions.jsx:36-115"],
+      "effort": "S",
+      "priority": "must"
+    },
+    {
+      "id": "screenity-encoder-fallback-gate",
+      "title": "Per-device fast-encoder gate with expiry",
+      "area": "performance-reliability",
+      "what": "Probe and validate the hardware encoder path, fall back to the conservative recorder on a real failure, remember that for the device for 14 days, and classify failures where the capture never produced frames or the codec was reclaimed as transient so they disable nothing.",
+      "why": "Lets David ship a fast hardware path without stranding users on machines where it misbehaves, and without punishing one-off glitches.",
+      "reuse_mode": "clean-room",
+      "paths": ["src/media/fastRecorderGate.ts:76-195"],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "screenity-robust-camera-acquire",
+      "title": "Camera acquisition that survives virtual cameras",
+      "area": "capture-camera",
+      "what": "Check ready state first, listen for both metadata and unmute, proceed after 12 seconds with a default size, treat a camera that disconnects mid-recording as a warning unless the camera is the recording, and load the segmenter on GPU then CPU with timeouts plus a watchdog that rebuilds it once and turns effects off after repeated errors.",
+      "why": "Virtual cameras and flaky GPUs are common on creator machines; a recording should never die because the bubble did.",
+      "reuse_mode": "clean-room",
+      "paths": ["src/pages/Camera/utils/cameraUtils.js", "src/pages/Camera/utils/backgroundUtils.js:55-147", "src/pages/Camera/components/Background.js:88-197"],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "screenity-keyframe-stream-copy-trim",
+      "title": "Keyframe-exact stream-copy trim",
+      "area": "editing",
+      "what": "Trim without re-encoding by starting at the nearest verified keyframe and rebasing timestamps to zero, writing to a temporary file that is swept after five minutes; re-encode only for cuts in the middle.",
+      "why": "Fast export for the most common edit, which is chopping the start and end.",
+      "reuse_mode": "clean-room",
+      "paths": ["src/pages/Editor/mediabunny/lib/videoTrimmer.ts"],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "screenity-bits-per-pixel-bitrate",
+      "title": "Bitrate from pixels, frame rate and content",
+      "area": "capture-screen",
+      "what": "Target bits per pixel per frame (0.15 for the quality tier, 0.08 otherwise), clamp to 4 to 24 Mbps, take the lower of that and a per-resolution preset on the free tier, and orient the resolution cap to the source so a portrait capture is limited on its long edge.",
+      "why": "Screen text degrades first under H.264; a resolution-aware rule keeps text sharp without bloating files.",
+      "reuse_mode": "clean-room",
+      "paths": ["src/pages/Recorder/recorderConfig.js", "src/pages/Recorder/Recorder.jsx:1670-1700"],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "screenity-edge-anchored-toolbar",
+      "title": "Toolbar that remembers its corner",
+      "area": "recording-controls",
+      "what": "Store the toolbar position as an offset from the nearest edges so it survives resolution changes, shake it when dragged off screen, spring it back inside margins, and flip popovers based on which half of the screen it occupies.",
+      "why": "Small polish that keeps the recording controls usable across laptop and external display setups.",
+      "reuse_mode": "idea-only",
+      "paths": ["src/pages/Content/toolbar/layout/ToolbarWrap.jsx:174-290"],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "screenity-push-to-talk-disarm",
+      "title": "Push-to-talk that cannot stick on",
+      "area": "capture-audio",
+      "what": "Arm on chord press, ignore key auto-repeat, disarm when any chord key is released in any order, and disarm when the window loses focus or becomes hidden.",
+      "why": "Push-to-talk that stays live after a missed key-up leaks audio; these rules close every path.",
+      "reuse_mode": "idea-only",
+      "paths": ["src/pages/Content/shortcuts/Shortcuts.jsx:140-320"],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "screenity-redacted-diagnostics",
+      "title": "User-owned diagnostics bundle",
+      "area": "privacy-security",
+      "what": "Keep a small local ring of recent session events (five sessions of 100 events) and let the user download a zip with home directory paths, URL queries and fragments redacted.",
+      "why": "Local-first support: David can debug a failed take without any telemetry leaving the machine.",
+      "reuse_mode": "idea-only",
+      "paths": ["src/pages/utils/buildDiagnosticZip.js", "src/pages/utils/diagnosticLog.js"],
+      "effort": "S",
+      "priority": "could"
+    }
+  ],
+  "weaknesses": [
+    "In the local build the camera, cursor effects and drawings are burned into the screen pixels, so there is no separate camera file and nothing can be moved or removed after recording.",
+    "Edits are destructive rewrites of the media blob, with undo holding up to 20 full snapshots in memory; there is no edit list or project file.",
+    "No transcription, captions, transcript editing, CLI or agent interface in the open-source tree.",
+    "Browser-hosted capture: a content script on every site, system audio on macOS only with recent Chrome and macOS, and annotation or blur only inside web pages.",
+    "Several components run to thousands of lines (recorder about 5100, hosted recorder about 9500, editor state about 3900), which makes behaviour hard to verify.",
+    "GPL-3.0: nothing here can be copied; the build team must re-implement from these descriptions only."
+  ]
+}

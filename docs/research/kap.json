@@ -1,0 +1,274 @@
+{
+  "repo": "wulkano/Kap",
+  "sha": "c42692fa63ac",
+  "licence": "MIT",
+  "features": {
+    "capture-screen": {
+      "present": true,
+      "quality": 3,
+      "summary": "The aperture native recorder captures a crop rectangle on one display at 30 or 60 fps with optional cursor and click highlight, writing H.264 MP4. The cropper flips the selection to the bottom-left origin the recorder expects. HEVC capture is stubbed out.",
+      "paths": ["main/aperture.ts", "main/common/types/base.ts", "main/windows/cropper.ts:1-90", "renderer/containers/cropper.js"]
+    },
+    "capture-camera": {
+      "present": false,
+      "quality": 0,
+      "summary": "No camera capture.",
+      "paths": []
+    },
+    "capture-audio": {
+      "present": true,
+      "quality": 2,
+      "summary": "A single microphone, off by default, chosen from devices listed by macos-audio-devices with the built-in device first, falling back to the recorder's own list. No system audio.",
+      "paths": ["main/utils/devices.ts:1-60", "main/aperture.ts", "main/common/settings.ts"]
+    },
+    "recording-controls": {
+      "present": true,
+      "quality": 3,
+      "summary": "Menu bar icon starts the cropper and becomes the stop button; Option-click pauses; right-click menu; animated icon while recording; configurable global shortcut, default Command+Shift+5; discard confirmation on closing a new recording; quit guard during exports.",
+      "paths": ["main/tray.ts", "main/global-accelerators.ts", "main/windows/editor.ts:80-150", "main/aperture.ts"]
+    },
+    "camera-overlay": {
+      "present": false,
+      "quality": 0,
+      "summary": "No camera bubble.",
+      "paths": []
+    },
+    "annotation": {
+      "present": false,
+      "quality": 0,
+      "summary": "No drawing or annotation tools; only the native click-highlight option passed to the recorder.",
+      "paths": []
+    },
+    "compositing-render": {
+      "present": false,
+      "quality": 0,
+      "summary": "No compositor. Export only scales, crops and changes frame rate through ffmpeg.",
+      "paths": []
+    },
+    "editing": {
+      "present": true,
+      "quality": 2,
+      "summary": "Trim start and end on a play bar, scale with ratio lock, percent presets and arithmetic in size fields, choose fps, mute, save a JPEG snapshot, and run edit-service plugins that turn a trimmed MP4 into another MP4.",
+      "paths": ["renderer/components/editor/controls/play-bar.tsx", "renderer/components/editor/options/left.tsx", "main/converters/index.ts", "main/utils/image-preview.ts"]
+    },
+    "transcription-captions": {
+      "present": false,
+      "quality": 0,
+      "summary": "No transcription or captions.",
+      "paths": []
+    },
+    "ai-features": {
+      "present": false,
+      "quality": 0,
+      "summary": "No AI features.",
+      "paths": []
+    },
+    "export-formats": {
+      "present": true,
+      "quality": 4,
+      "summary": "GIF (two-pass palette plus optional gifsicle lossy compression), MP4 H.264, WebM VP9 with Vorbis at 1 Mbps, APNG, HEVC with the hvc1 tag, and AV1 (libaom, CRF 34). Loop control, even dimensions, progress with time remaining, cancellation, and a conversion cache keyed by inputs.",
+      "paths": ["main/converters/h264.ts", "main/converters/process.ts", "main/converters/utils.ts", "main/conversion.ts", "main/common/constants.ts"]
+    },
+    "project-format": {
+      "present": false,
+      "quality": 0,
+      "summary": "No project file. A small JSON store tracks the active recording and past recordings by file path only.",
+      "paths": []
+    },
+    "sharing-hosting": {
+      "present": true,
+      "quality": 3,
+      "summary": "Share-service plugins from npm (uploaders such as GIPHY, S3, Dropbox are documented) plus built-in Save to Disk, Copy to Clipboard as a file reference and Open With. OAuth through an app URL scheme. No hosting of its own.",
+      "paths": ["docs/plugins.md", "main/export.ts:1-140", "main/plugins/built-in/save-file-plugin.ts", "main/plugins/built-in/copy-to-clipboard-plugin.ts", "main/plugins/built-in/open-with-plugin.ts", "main/utils/deep-linking.ts"]
+    },
+    "viewer-web": {
+      "present": false,
+      "quality": 0,
+      "summary": "No web viewer.",
+      "paths": []
+    },
+    "teleprompter-scripts": {
+      "present": false,
+      "quality": 0,
+      "summary": "No teleprompter or scripts.",
+      "paths": []
+    },
+    "platform-packaging": {
+      "present": true,
+      "quality": 3,
+      "summary": "macOS-only Electron app built with electron-builder and notarised, hourly auto-update checks, menu bar only with the dock hidden, forced move to /Applications, releases built by CI. Pinned to Electron 13 and Next.js 10.",
+      "paths": ["package.json", "main/index.ts", "maintaining.md", "build/entitlements.mac.inherit.plist"]
+    },
+    "performance-reliability": {
+      "present": true,
+      "quality": 3,
+      "summary": "Persists the active recording at start; on the next launch decode-checks any leftover file and offers editor, Finder or error copy, with one known repair; record plugins get a cleanUp call with their saved state after a crash. Conversions are cancellable and retried cleanly.",
+      "paths": ["main/recording-history.ts", "main/conversion.ts", "main/converters/process.ts"]
+    },
+    "extensibility-automation": {
+      "present": true,
+      "quality": 4,
+      "summary": "Plugin system with share, edit and record services, JSON Schema config validated with ajv, install and uninstall and config-change hooks, compatibility ranges for app and macOS versions, npm discovery by keyword, and deep links for OAuth and plugin install. No CLI or scripting API.",
+      "paths": ["docs/plugins.md", "main/plugins/index.ts", "main/plugins/plugin.ts", "main/plugins/service.ts", "main/plugins/config.ts", "main/plugins/service-context.ts", "main/utils/deep-linking.ts"]
+    },
+    "privacy-security": {
+      "present": true,
+      "quality": 2,
+      "summary": "Analytics code is disabled and Sentry is used with scrubbing, and permission prompts are clear. But plugins run with full Node access in the main process and are reinstalled from npm at each launch, and the cropper runs with Node integration on and context isolation off.",
+      "paths": ["main/common/analytics.ts", "PRIVACY.md", "main/plugins/index.ts", "main/windows/cropper.ts:1-90", "main/common/system-permissions.ts"]
+    }
+  },
+  "best_ideas": [
+    {
+      "id": "kap-share-service-contract",
+      "title": "Share-service contract with lazy file conversion",
+      "area": "extensibility-automation",
+      "what": "A share target declares a title, accepted formats and an action. The action gets a context with filePath() that converts on demand, plus setProgress, notify, copyToClipboard, a cancellable request helper, cancel and waitForDeepLink.",
+      "why": "David's share targets (own S3 bucket, copy link, send to his editor) and agent-invoked actions can all share one small, testable shape; targets never deal with encoding.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["docs/plugins.md", "main/plugins/service.ts", "main/plugins/service-context.ts", "main/export.ts:1-140"],
+      "effort": "M",
+      "priority": "must"
+    },
+    {
+      "id": "kap-conversion-cache",
+      "title": "Conversion cache keyed by inputs",
+      "area": "export-formats",
+      "what": "Identify a conversion by a hash of source path, format and options; reuse a finished file for later shares; reset the process on failure so a retry starts clean; let a target request a different format.",
+      "why": "Exporting once and sharing to several places should not re-encode; fast repeat shares are part of a Loom-style flow.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["main/conversion.ts", "main/export.ts:1-140"],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "kap-record-hooks-crash-cleanup",
+      "title": "Record-time hooks with crash cleanup",
+      "area": "extensibility-automation",
+      "what": "Record services get will-start, did-start and did-stop hooks and a shared state object. The serialisable part is saved with the active recording, and after a crash each service's cleanUp receives it on the next launch.",
+      "why": "Lets David safely automate side effects around a take, such as Do Not Disturb or hiding desktop icons, without leaving the machine changed after a crash.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["main/aperture.ts", "main/recording-history.ts", "docs/plugins.md"],
+      "effort": "M",
+      "priority": "should"
+    },
+    {
+      "id": "kap-active-recording-launch-check",
+      "title": "Persisted active recording and a launch-time check",
+      "area": "performance-reliability",
+      "what": "Store the in-progress recording's path and options at start, clear it on a clean stop, and on launch decode-check any leftover file and offer Show in Editor, Show in Finder or Copy Error, with known-error repairs.",
+      "why": "Simple crash recovery that complements a crash-safe file format; the user is told where the take went.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["main/recording-history.ts", "main/index.ts"],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "kap-clipboard-file-and-open-with",
+      "title": "Copy the file itself, or open it with any app",
+      "area": "sharing-hosting",
+      "what": "Put a Finder file reference on the pasteboard so pasting into Slack or Mail attaches the video, and list every app registered for the file extension with the default first.",
+      "why": "Fast local sharing without any upload, and a direct hand-off to David's own editing tool.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["main/plugins/built-in/copy-to-clipboard-plugin.ts", "main/plugins/built-in/open-with-plugin.ts"],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "kap-cropper-ratio-app-snap",
+      "title": "Cropper with ratio snapping and app-window snap",
+      "area": "recording-controls",
+      "what": "One transparent window per display; dimensions snap to the nearest common aspect ratio; ratio lock and swap; choose a running app window, sorted by usage, to size the crop to it; remember the last crop per display.",
+      "why": "Quick, exact region selection is a large part of recording speed for screen tutorials.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["renderer/containers/cropper.js", "main/windows/cropper.ts:1-90", "main/utils/windows.ts:1-60"],
+      "effort": "M",
+      "priority": "could"
+    },
+    {
+      "id": "kap-menu-bar-record-control",
+      "title": "Menu bar icon as the recording control",
+      "area": "recording-controls",
+      "what": "Click to open the cropper, click again to stop, Option-click to pause, right-click for a menu, an animated icon while recording, and no dock icon.",
+      "why": "Gives David a minimal always-available control that never appears in the recording.",
+      "reuse_mode": "idea-only",
+      "paths": ["main/tray.ts"],
+      "effort": "S",
+      "priority": "should"
+    },
+    {
+      "id": "kap-ffmpeg-progress-eta",
+      "title": "ffmpeg progress and time remaining",
+      "area": "export-formats",
+      "what": "Parse time and speed from ffmpeg stderr, compute progress against the trimmed duration, show an estimate only after two seconds of media or 15 seconds of wall time, and kill the child process on cancel.",
+      "why": "Honest export progress for any ffmpeg-based step, including agent-triggered exports that report status.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["main/converters/process.ts", "main/converters/utils.ts"],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "kap-palette-gif-apng",
+      "title": "Two-pass palette GIF and APNG",
+      "area": "export-formats",
+      "what": "Generate a palette, apply it with Lanczos scaling, fall back to a single pass when no palette is produced for very short clips, optionally compress with gifsicle at lossy level 50, and control looping per format.",
+      "why": "Good-looking small GIFs for docs and tickets are a common share format next to MP4.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["main/converters/h264.ts", "main/converters/process.ts"],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "kap-json-schema-plugin-config",
+      "title": "JSON Schema plugin config",
+      "area": "extensibility-automation",
+      "what": "Each service declares its config with JSON Schema; validation hides the service until config is valid; required keys open the config on install; custom types render colours and keyboard shortcuts.",
+      "why": "Lets share targets for David's storage carry their own credentials and settings without custom settings UI.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["main/plugins/config.ts", "docs/plugins.md"],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "kap-url-scheme-routes",
+      "title": "App URL scheme for OAuth and actions",
+      "area": "sharing-hosting",
+      "what": "A route table for the app's URL scheme hands plugin paths to a waiting promise and routes install or configure requests to preferences.",
+      "why": "Supports browser-based OAuth for upload targets and gives agents or scripts a simple way to trigger app actions.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["main/utils/deep-linking.ts", "main/index.ts"],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "kap-usage-ranked-menus",
+      "title": "Menus ranked by recent use",
+      "area": "export-formats",
+      "what": "Formats and share targets sort by last use, and the chosen frame rate is remembered per format.",
+      "why": "Makes the common repeat export a single click.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["main/remote-states/editor-options.ts"],
+      "effort": "S",
+      "priority": "could"
+    },
+    {
+      "id": "kap-apfs-clone-copy",
+      "title": "Instant copies on APFS",
+      "area": "platform-packaging",
+      "what": "Save the original with a clone-on-write file copy, which costs no time or space on APFS.",
+      "why": "Duplicating multi-gigabyte takes into a project folder becomes instant.",
+      "reuse_mode": "copy-with-notice",
+      "paths": ["main/windows/editor.ts:80-150"],
+      "effort": "S",
+      "priority": "could"
+    }
+  ],
+  "weaknesses": [
+    "No camera, no system audio, no separate tracks and no cursor data; it records a flat screen region only.",
+    "Raw recordings are deleted on quit, so only exports survive; there is no local library.",
+    "Staleness (inferred from pinned code; the clone is shallow): Electron 13 with the remote module enabled, Next.js 10, React 17, a stubbed HEVC path and disabled analytics, plus capture in a separate native package. Each upgrade became a migration.",
+    "Plugins run with full Node access in the main process and are reinstalled from npm at every launch; the cropper runs with Node integration on and context isolation off.",
+    "fps and codec are scraped from ffmpeg stderr text, and only H.264 sources have a converter, so an HEVC source would fail export.",
+    "The single known repair (faststart remux for a missing MP4 index) likely cannot succeed, because remuxing needs that index."
+  ]
+}
