@@ -8,9 +8,11 @@
 
 ## Done
 - Step 1.
+- Step 2: better-shot note pair written; check_research OK (13 ideas), check_clean 0.
 
 ## Unverified
-- (none yet)
+- better-shot audio retime duration issue (flagged as unverified in note).
+- Direction of better-shot/Screendrop copying (single-commit clones).
 
 ## First unfinished step
-- Step 2: read better-shot sources.
+- Step 3: write voom note pair.
