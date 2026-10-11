@@ -104,3 +104,18 @@ Cloud component history: source integration and app QA remain pending; R2/apply 
 Atomic edited-share correction (root-directed follow-up): PublishInput carries title/summary/chapters/captions/transcript in one ready publication for both providers. Transcript null deletes stale references in publish/metadata updates. Referenced caption/transcript objects must exist before ready; controlled HTTP/Worker SQLite regression tests prove exactly one ready-manifest update, provider parity, stable URLs, stale-field removal and unchanged visible state after a missing-sidecar failure. SDK14 tests and Worker7 tests pass. This follow-up invokes no real provider, UI or account mutation. Root's current R2 billing/app-deployment work is separate from the earlier dated read-only account snapshot above.
 
 Follow-up checker evidence: explicit changed-file scan initially exposed standard Node import/URL-guard fingerprint matches (checker exit0 does not imply first-line0). Original code was never copied/read from those references. Fixture aliases and endpoint-validation structure were rewritten without changing strict HTTPS/credential/query rules; an endpoint-policy regression was added. The checker itself and every verifier/test remain unchanged; substantive first-line metric is checked before final follow-up commit.
+
+Forwarding checkpoint: coordinated exact CameraSource/TrackWriter API patch from
+transcript9c15681 applied as source-only prerequisite d42ea64. CaptureContext tees
+mic PCM once into the writer's observer in both production and stub rigs; factory
+setCameraPreviewTransform forwards to reusable/future camera with no lifecycle call.
+NEW tests2 pass: mapped media PCM timestamps skip mute/pause; privacy toggle while
+JPEG encoding is blocked suppresses stale raw bytes, and nil transformed output
+stays suppressed. One34-test broad target passed; later35-test target failed two
+old H264 burst end-frame exact counts (one drop each), while all NEW tests passed.
+Cause remains unresolved, parent informed; no tests weakened. New-only gate2 pass,
+parent holds the assembled umbrella. Native macOS Trash API smoke also passed:
+owned text fixture moved into actual Trash, directory inode/device and payload
+verified, restored and payload verified, then only owned fixture cleaned. Exact
+script/log saved /tmp/rush-native-trash-smoke.swift and .log. No user media involved.
+Screen-only soak minute46 healthy; final60min decode remains first unfinished step.

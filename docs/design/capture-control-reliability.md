@@ -25,3 +25,11 @@ Area rectangles are clamped to the selected display and kept in global points;
 stream configuration converts them to display-local points. Cursor-free mode sets
 the stream cursor flag and records that choice in metadata. Bubble placement is
 stored as normalized center and a point size so review/export can reproduce it.
+
+Camera preview processing forwards one optional pixel transform to the existing
+camera preview queue. The coordinator retains it for a future explicit warm,
+applies it to a reused camera, and changes no device lifecycle itself. A transform
+may suppress a frame; source privacy guards decide whether a queued JPEG is stale.
+Microphone observers attach once to the microphone writer in both real and stub
+rigs. The writer supplies media-time PCM after its gate, pause and mute rules;
+consumers bound their own downstream work. Capture adds no extra worker or clock.

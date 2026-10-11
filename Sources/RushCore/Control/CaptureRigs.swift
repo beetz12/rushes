@@ -35,6 +35,9 @@ public struct CaptureContext: Sendable {
     public let selftest: Bool
     public let shellBundleID: String?
     public let preview: @Sendable (Data) -> Void
+    /// Receives microphone PCM on the writer's media timeline, after gate,
+    /// pause and mute handling. Consumers must enqueue bounded work and return.
+    public let microphoneObserver: @Sendable (CMSampleBuffer, CMTime) -> Void
 
     public init(
         session: RecordingSession,
@@ -43,6 +46,7 @@ public struct CaptureContext: Sendable {
         selftest: Bool = false,
         shellBundleID: String? = nil,
         preview: @escaping @Sendable (Data) -> Void = { _ in },
+        microphoneObserver: @escaping @Sendable (CMSampleBuffer, CMTime) -> Void = { _, _ in },
         warning: @escaping @Sendable (String, String?) -> Void,
         streamFailure: @escaping @Sendable (String) -> Void
     ) {
@@ -52,6 +56,7 @@ public struct CaptureContext: Sendable {
         self.selftest = selftest
         self.shellBundleID = shellBundleID
         self.preview = preview
+        self.microphoneObserver = microphoneObserver
         self.warning = warning
         self.streamFailure = streamFailure
     }
@@ -79,6 +84,7 @@ public protocol CaptureRigFactory: Sendable {
     func warmCamera(cameraID: String?, preview: @escaping @Sendable (Data) -> Void,
                     warning: @escaping @Sendable (String, String?) -> Void) async throws -> JSONValue
     func stopPreview() async
+    func setCameraPreviewTransform(_ transform: (@Sendable (CVPixelBuffer) -> CVPixelBuffer?)?) async
 }
 
 extension CaptureRig {
@@ -92,6 +98,7 @@ extension CaptureRigFactory {
         .object(["running": .bool(true), "camera": .string(cameraID), "capture": .string("stub")])
     }
     public func stopPreview() async {}
+    public func setCameraPreviewTransform(_ transform: (@Sendable (CVPixelBuffer) -> CVPixelBuffer?)?) async {}
 }
 
 // MARK: - Production rig
@@ -114,12 +121,16 @@ public struct ProductionCaptureRigFactory: CaptureRigFactory {
     }
 
     public func stopPreview() async { await cameras.stop() }
+    public func setCameraPreviewTransform(_ transform: (@Sendable (CVPixelBuffer) -> CVPixelBuffer?)?) async {
+        await cameras.setPreviewTransform(transform)
+    }
 
     public func attach(_ context: CaptureContext) async throws -> CaptureRig {
         let request = context.request
         var writers: [TrackKind: TrackWriter] = [:]
         for kind in request.trackKinds {
             if let writer = await context.session.trackWriter(for: kind) {
+                if kind == .microphone { writer.setMicrophoneObserver(context.microphoneObserver) }
                 writers[kind] = writer
             }
         }
@@ -361,6 +372,7 @@ public struct StubCaptureRigFactory: CaptureRigFactory {
         var writers: [TrackKind: TrackWriter] = [:]
         for kind in context.request.trackKinds {
             if let writer = await context.session.trackWriter(for: kind) {
+                if kind == .microphone { writer.setMicrophoneObserver(context.microphoneObserver) }
                 writers[kind] = writer
             }
         }
@@ -636,18 +648,28 @@ private final class StubCaptureRig: CaptureRig, @unchecked Sendable {
 public actor CameraCoordinator {
     private var source: CameraSource?
     private var selectedID: String?
+    private var previewTransform: (@Sendable (CVPixelBuffer) -> CVPixelBuffer?)?
     public init() {}
+
+    /// Publication processing has no device lifecycle effects. A transform
+    /// also persists for the next explicit warm operation.
+    public func setPreviewTransform(_ transform: (@Sendable (CVPixelBuffer) -> CVPixelBuffer?)?) {
+        previewTransform = transform
+        source?.setPreviewTransform(transform)
+    }
 
     public func warm(cameraID: String?, preview: @escaping @Sendable (Data) -> Void,
                      warning: @escaping @Sendable (String, String?) -> Void) async throws -> CameraSource {
         if let source, selectedID == cameraID, source.isRunning {
             source.previewHandler = preview
+            source.setPreviewTransform(previewTransform)
             source.setLossHandler { name in warning("camera-lost", name) }
             return source
         }
         if let source { await source.stopAndWait() }
         let newSource = CameraSource(onCameraLost: { name in warning("camera-lost", name) })
         newSource.previewHandler = preview
+        newSource.setPreviewTransform(previewTransform)
         source = newSource
         selectedID = cameraID
         let result = await newSource.warmUp(deviceID: cameraID)
