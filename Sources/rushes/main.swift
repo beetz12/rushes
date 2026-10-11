@@ -650,6 +650,9 @@ default:
                 args.merge(extra) { _, new in new }
             } catch { fail("usage", "--args needs valid JSON") }
         }
+        if ["captions.export", "chapters.export"].contains(serviceCommand), let path = args["path"] {
+            args["outputPath"] = path
+        }
         if let path = invocation.flags["--summary"] {
             do { args["summary"] = .string(try String(contentsOfFile: path, encoding: .utf8)) }
             catch { fail("usage", "--summary must name a readable UTF-8 file") }
@@ -662,7 +665,7 @@ default:
             if let path = args.removeValue(forKey: "path") { args["outputPath"] = path }
         }
         let response = runRequest(invocation, cmd: serviceCommand, args: .object(args), timeout: 1800)
-        if serviceCommand == "transcribe", let format = args["format"]?.string, format != "json" {
+        if serviceCommand == "transcribe", let format = args["format"]?.string, format != "json" || args["path"] != nil {
             var output: [String: JSONValue] = ["id": args["id"] ?? .null, "format": .string(format)]
             if let path = args["path"] { output["outputPath"] = path }
             let exported = runRequest(invocation, cmd: "captions.export", args: .object(output), timeout: 120)

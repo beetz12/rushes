@@ -8,14 +8,15 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { deployWorker, cloudSocketAvailable, configureThroughSocket } from '../dist/index.js';
-import { createBootstrap } from './bootstrap.mjs';
+import { createBootstrap, readBootstrap } from './bootstrap.mjs';
 const run = promisify(execFile);
+const emit = async value => new Promise((resolve, reject) => process.stdout.write(JSON.stringify(value) + '\n', error => error ? reject(error) : resolve()));
 const NODE = join(homedir(), '.nvm/versions/node/v22.22.0/bin/node');
 const WRANGLER = join(homedir(), '.nvm/versions/node/v22.22.0/lib/node_modules/wrangler/bin/wrangler.js');
 // One explicit configured path, supplied by the verified root-session preflight; no scanning.
 const OAUTH = join(homedir(), 'Library/Preferences/.wrangler/config/default.toml');
 try {
-    const { values } = parseArgs({ options: { 'account-id': { type: 'string' }, 'expected-email': { type: 'string' }, 'worker-name': { type: 'string' }, 'bucket-name': { type: 'string' }, 'database-name': { type: 'string' }, 'workers-subdomain': { type: 'string' }, 'bootstrap-path': { type: 'string' }, 'shell-socket': { type: 'string' }, 'apply': { type: 'boolean', default: false } }, strict: true });
+    const { values } = parseArgs({ options: { 'account-id': { type: 'string' }, 'expected-email': { type: 'string' }, 'worker-name': { type: 'string' }, 'bucket-name': { type: 'string' }, 'database-name': { type: 'string' }, 'workers-subdomain': { type: 'string' }, 'bootstrap-path': { type: 'string' }, 'resume-bootstrap': { type: 'string' }, 'shell-socket': { type: 'string' }, 'apply': { type: 'boolean', default: false } }, strict: true });
     const accountId = values['account-id'], expectedEmail = values['expected-email'];
     if (!accountId || !/^[a-f0-9]{32}$/.test(accountId) || !expectedEmail)
         throw new Error('Explicit account-id and expected-email are required.');
@@ -86,17 +87,21 @@ try {
             throw e;
     }
     if (blockers.length) {
-        console.log(JSON.stringify({ ok: false, dryRun: !values.apply, writesStarted: false, plan, blockers }));
+        await emit({ ok: false, dryRun: !values.apply, writesStarted: false, plan, blockers });
         process.exit(1);
     }
     if (!values.apply) {
-        console.log(JSON.stringify({ ok: true, dryRun: true, plan }));
+        await emit({ ok: true, dryRun: true, plan });
         process.exit(0);
     }
     const socketPath = values['shell-socket'] ?? join(homedir(), 'Library/Application Support/Rushes/shell.sock');
     const canImport = await cloudSocketAvailable(socketPath);
-    let bootstrapPath;
-    if (!canImport) {
+    const selectedMetadata = { accountId, workerName, bucketName, databaseName, workerURL };
+    let bootstrapPath = values['resume-bootstrap'] ? resolve(values['resume-bootstrap']) : undefined;
+    const recovered = bootstrapPath ? await readBootstrap(bootstrapPath) : undefined;
+    if (recovered && Object.entries(selectedMetadata).some(([key, value]) => recovered.metadata[key] !== value))
+        throw new Error('Encrypted bootstrap does not match the selected account/resources.');
+    if (!canImport && !recovered) {
         if (!values['bootstrap-path'])
             throw new Error('Open Rushes for secure import, or select an encrypted --bootstrap-path.');
         bootstrapPath = resolve(values['bootstrap-path']);
@@ -109,19 +114,20 @@ try {
                 throw e;
         }
     }
-    const ownerToken = randomBytes(32).toString('base64url'), sessionSecret = randomBytes(32).toString('base64url');
+    const ownerToken = recovered?.secrets.ownerToken ?? randomBytes(32).toString('base64url');
+    const sessionSecret = recovered?.secrets.sessionSecret ?? randomBytes(32).toString('base64url');
     const metadata = { accountId, workerName, bucketName, databaseName, workerURL };
     let importedConfiguration;
     // Retain credentials securely before writes, including failed/partial deployments.
     if (canImport)
         importedConfiguration = await configureThroughSocket(socketPath, metadata, { ownerToken, sessionSecret });
-    else
+    else if (!recovered)
         await createBootstrap(bootstrapPath, { ownerToken, sessionSecret }, metadata);
     const result = await deployWorker({ accountId, apiToken, workerName, bucketName, databaseName, workersSubdomain: subdomain, script, schemaSQL, ownerToken, sessionSecret });
     const { ownerToken: _owner, sessionSecret: _session, ...publicResult } = result;
-    console.log(JSON.stringify({ ok: true, applied: true, result: publicResult, ...(bootstrapPath ? { encryptedBootstrapPath: bootstrapPath, importRequired: true } : { configuration: importedConfiguration, importRequired: false }) }));
+    await emit({ ok: true, applied: true, result: publicResult, ...(bootstrapPath ? { encryptedBootstrapPath: bootstrapPath, importRequired: true } : { configuration: importedConfiguration, importRequired: false }) });
 }
 catch (e) {
-    console.log(JSON.stringify({ ok: false, error: { code: e.code ?? 'DEPLOY_PREFLIGHT_FAILED', message: e.message && !(e.stdout || e.stderr) ? e.message : 'Deploy preflight failed; no credential output was emitted.' } }));
+    await emit({ ok: false, error: { code: e.code ?? 'DEPLOY_PREFLIGHT_FAILED', message: e.message && !(e.stdout || e.stderr) ? e.message : 'Deploy preflight failed; no credential output was emitted.' } });
     process.exitCode = 1;
 }

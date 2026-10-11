@@ -34,7 +34,13 @@ struct SyntheticExportFixture {
         for frame in 0..<frameCount {
             while !input.isReadyForMoreMediaData { try await Task.sleep(for:.milliseconds(1)) }
             var pixel:CVPixelBuffer?
-            guard CVPixelBufferPoolCreatePixelBuffer(nil,adaptor.pixelBufferPool!,&pixel) == kCVReturnSuccess,let pixel else { throw renderFailure("Fixture pixel allocation") }
+            // Fixtures need valid source pixels, independent of the encoder's
+            // asynchronously created/managed adaptor pool.
+            let allocation = CVPixelBufferCreate(kCFAllocatorDefault,width,height,kCVPixelFormatType_32BGRA,
+                [kCVPixelBufferIOSurfacePropertiesKey:[:],kCVPixelBufferMetalCompatibilityKey:true] as CFDictionary,&pixel)
+            guard allocation == kCVReturnSuccess,let pixel else {
+                throw renderFailure("Fixture pixel allocation CVReturn=\(allocation), writerStatus=\(writer.status.rawValue)")
+            }
             CVPixelBufferLockBaseAddress(pixel,[])
             let memory=CVPixelBufferGetBaseAddress(pixel)!,rowBytes=CVPixelBufferGetBytesPerRow(pixel)
             let pixelWord:UInt32 = camera ? 0xFFDC0000 : frame>=30 || allGreen ? 0xFF00DC00 : 0xFF0000DC

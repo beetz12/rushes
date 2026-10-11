@@ -138,6 +138,9 @@ public actor EngineController: ControlHandling {
     private let index: PackageIndex
     private let extended: ExtendedCommandRouter
     private let automation: LocalAutomationService
+    private let trash: RecordingTrashService
+    private var drawingWindowID: String?
+    private var serviceWork: [String: Int] = [:]
     private var startupWarnings: [String] = []
 
     private var active: ActiveRecording?
@@ -165,6 +168,7 @@ public actor EngineController: ControlHandling {
     private var eventSink: (@Sendable (ControlEvent) -> Void)?
 
     public init(config: EngineControllerConfig) throws {
+        trash = RecordingTrashService(root: config.recordingsRoot)
         automation = LocalAutomationService(directory: (config.socketPath.isEmpty ? config.indexDatabaseURL.deletingLastPathComponent() : URL(fileURLWithPath: config.socketPath).deletingLastPathComponent()).appendingPathComponent("automation"))
         self.config = config
         let index = try PackageIndex(databaseURL: config.indexDatabaseURL)
@@ -377,6 +381,34 @@ public actor EngineController: ControlHandling {
         case "record.resume":
             try await transition(.resume)
             return .success(id: request.id, result: .object(["state": .string("recording")]))
+        case "drawing.show":
+            let current = try requireActive()
+            guard let windowID = request.param("windowID")?.string else {
+                throw ControlFailure(code: "invalid-params", message: "drawing.show requires a dedicated windowID")
+            }
+            try await current.rig.setDrawingWindow(windowID: windowID)
+            drawingWindowID = windowID
+            return .success(id: request.id, result: .object(["enabled": .bool(true), "windowID": .string(windowID)]))
+        case "drawing.hide":
+            if let current = active { try await current.rig.setDrawingWindow(windowID: nil) }
+            drawingWindowID = nil
+            return .success(id: request.id, result: .object(["enabled": .bool(false)]))
+        case "drawing.status":
+            return .success(id: request.id, result: .object(["enabled": .bool(drawingWindowID != nil), "windowID": .string(drawingWindowID)]))
+        case "library.trash":
+            guard let id = request.param("id")?.string else { throw ControlFailure(code: "invalid-params", message: "library.trash requires a recording ID") }
+            guard !starting, !finishing, serviceWork[id, default: 0] == 0 else {
+                throw ControlFailure(code: "recording-busy", message: "Finish the current operation before moving this take to Trash")
+            }
+            let receipt = try await trash.trash(id: id, activeRecordingID: active?.recordingID)
+            _ = try await index.rebuild(root: config.recordingsRoot)
+            return .success(id: request.id, result: try JSONValue(encoding: receipt))
+        case "library.undoTrash":
+            guard let token = request.param("token")?.string else { throw ControlFailure(code: "invalid-params", message: "library.undoTrash requires its undo token") }
+            let id = try await trash.undo(token: token)
+            _ = try await index.rebuild(root: config.recordingsRoot)
+            try await extended.refreshIndex(id: id)
+            return .success(id: request.id, result: .object(["id": .string(id), "restored": .bool(true)]))
         case "library.refresh":
             _ = try await index.rebuild(root: config.recordingsRoot)
             for entry in try RecordingPackage.scanManifests(root: config.recordingsRoot) {
@@ -405,6 +437,11 @@ public actor EngineController: ControlHandling {
             return .success(id: request.id, result: try await analyzeClapResult(request))
         default:
             if ExtendedCommandRouter.commands.contains(request.cmd) {
+                let id = request.param("id")?.string
+                if let id { serviceWork[id, default: 0] += 1 }
+                defer {
+                    if let id { serviceWork[id] = max(0, serviceWork[id, default: 0] - 1) }
+                }
                 return .success(id: request.id, result: try await extended.handle(request))
             }
             throw ControlFailure(
@@ -957,6 +994,7 @@ public actor EngineController: ControlHandling {
         maintenanceTimer = nil
         if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
         active = nil
+        drawingWindowID = nil
         finishing = true
         defer { finishing = false }
 

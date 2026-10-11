@@ -35,12 +35,21 @@ These build and runtime dependencies are included in acknowledgements.
 | npm: shell/electron@44.7.0 | MIT | licenses/npm-electron-44.7.0.txt |
 | npm: shell/electron-builder@26.15.3 | MIT | licenses/npm-electron-builder-26.15.3.txt |
 | npm: shell/esbuild@0.28.2 | MIT | licenses/npm-esbuild-0.28.2.txt |
+| npm: shell/lucide-react@1.55.0 | ISC | licenses/npm-lucide-react-1.55.0.txt |
+| npm: shell/prettier@3.9.10 | MIT | licenses/npm-prettier-3.9.10.txt |
 | npm: shell/react@19.3.0 | MIT | licenses/npm-react-19.3.0.txt |
 | npm: shell/react-dom@19.3.0 | MIT | licenses/npm-react-dom-19.3.0.txt |
 | npm: shell/typescript@7.0.2 | Apache-2.0 | licenses/npm-typescript-7.0.2.txt |
 | npm: shell/vite@8.3.4 | MIT | licenses/npm-vite-8.3.4.txt |
 | npm: shell/vitest@5.0.3 | MIT | licenses/npm-vitest-5.0.3.txt |
 | npm: shell/zod@4.6.6 | MIT | licenses/npm-zod-4.6.6.txt |
+| npm: cloud/@types/node@22.15.30 | MIT | licenses/npm-types-node-22.15.30.txt |
+| npm: cloud/typescript@5.9.3 | Apache-2.0 | licenses/npm-typescript-5.9.3.txt |
+| npm: viewer/playwright@1.61.1 | Apache-2.0 | licenses/npm-playwright-1.61.1.txt |
+| npm: viewer/typescript@5.9.3 | Apache-2.0 | licenses/npm-typescript-5.9.3.txt |
+| npm: worker/@types/node@22.15.30 | MIT | licenses/npm-types-node-22.15.30.txt |
+| npm: worker/esbuild@0.27.0 | MIT | licenses/npm-esbuild-0.27.0.txt |
+| npm: worker/typescript@5.9.3 | Apache-2.0 | licenses/npm-typescript-5.9.3.txt |
 <!-- pinned-npm-notices:end -->
 
 ## Sharing toolchain dependencies
