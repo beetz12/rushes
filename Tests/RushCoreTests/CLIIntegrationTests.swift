@@ -211,9 +211,24 @@ struct ControlCLIIntegrationTests {
         process.environment = environment
         let out = Pipe(); let err = Pipe()
         process.standardOutput = out; process.standardError = err
-        try process.run(); process.waitUntilExit()
+        try process.run()
+        let captured = CLIOutputCapture()
+        let reads = DispatchGroup()
+        reads.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            captured.stdout = out.fileHandleForReading.readDataToEndOfFile()
+            reads.leave()
+        }
+        reads.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            captured.stderr = err.fileHandleForReading.readDataToEndOfFile()
+            reads.leave()
+        }
+        process.waitUntilExit()
+        reads.wait()
+        print("AUTOLAUNCH_PIPE_BYTES stdout=\(captured.stdout.count) stderr=\(captured.stderr.count)")
         #expect(process.terminationStatus == 0)
-        let object = try JSONSerialization.jsonObject(with: out.fileHandleForReading.readDataToEndOfFile()) as? [String: Any]
+        let object = try JSONSerialization.jsonObject(with: captured.stdout) as? [String: Any]
         #expect(object?["state"] as? String == "idle")
         let pid = try #require((object?["pid"] as? NSNumber)?.int32Value)
         kill(pid, SIGTERM)
