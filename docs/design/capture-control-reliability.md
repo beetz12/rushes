@@ -33,3 +33,8 @@ may suppress a frame; source privacy guards decide whether a queued JPEG is stal
 Microphone observers attach once to the microphone writer in both real and stub
 rigs. The writer supplies media-time PCM after its gate, pause and mute rules;
 consumers bound their own downstream work. Capture adds no extra worker or clock.
+
+The periodic cached-pixel heartbeat applies only to screen tracks, whose native
+stream can report idle content. Camera callbacks deliver frames continuously even
+for unchanged pixels. A wall-time camera heartbeat can advance past real capture
+timestamps when delivery is delayed; preserve those genuine camera timestamps.

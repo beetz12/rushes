@@ -440,23 +440,27 @@ public final class TrackWriter: @unchecked Sendable {
         }
     }
 
-    /// Silence-fill heartbeat for audio tracks, driven by the session layer's
+    /// Silence-fill and static-screen heartbeat, driven by the session layer's
     /// 100 ms timer (docs/PLAN.md, Silence fill).
     ///
     /// Fills silence from the last written audio up to 250 ms before
     /// `nowHostNs`, so a source that stops delivering (nothing playing on the
     /// system, a stalled device) never shortens the track. No-op before the
-    /// first accepted sample (its arrival writes the leading silence), while
-    /// paused, or on video tracks.
+    /// first accepted sample (its arrival writes the leading silence) or while
+    /// paused. Screen video repeats its last pixels at the declared cadence;
+    /// continuous camera callbacks keep their actual capture timestamps.
     public func tick(nowHostNs: Int64) {
         if configuration.kind.carriesVideo {
+            // Camera outputs already arrive continuously, including unchanged
+            // pixels. Filling ahead to wall time can overtake delayed camera
+            // capture timestamps; only SCK's idle screen needs a heartbeat.
+            guard configuration.kind == .screen else { return }
             queue.sync {
                 guard let backend, backend.currentState == .writing,
                       !clock.isPaused(atHostNs: nowHostNs), nowHostNs >= clock.epochNs,
                       let last = lastPixelBuffer else { return }
                 let mediaNs = clock.mediaTimeNs(atHostNs: nowHostNs)
-                let frameRate = configuration.kind == .camera ? 30 : 60
-                let intervalNs = 1_000_000_000 / Int64(frameRate)
+                let intervalNs: Int64 = 1_000_000_000 / 60
                 let cursor = max(lastVideoMediaNs ?? 0, pendingVideo.last?.mediaTimeNs ?? 0)
                 var nextNs = cursor + intervalNs
                 var emitted = 0

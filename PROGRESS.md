@@ -150,3 +150,26 @@ Video-only setter leaves audio format clock intact. No physical capture for test
 Viewer restoration follow-up: a removed transcript now clears its version, cue array and button references. Re-adding the same hashed filename at the existing link refetches and restores its cue buttons. A late sidecar response cannot overwrite a newer manifest. Actual local HTTP regression coverage on Chrome155 and WebKit26.5 verifies restoration while paused and while playing, preserved position/play state, unchanged URL/source, zero media resets and clickable restored cues. The existing two viewer cases still pass: viewer4/SDK15/Worker7 all pass under pinned Node22.22.0. Root64 semantic dynamic page language and viewport change is incorporated; scoped source/test checker firstline0. No real provider or user footage is touched.
 
 Later read-only cloud state,21:03UTC: native curl verified HTTPS200/SSL result0 on IPv4 and IPv6, and pinned Node22 fetched {ok:true,service:rushes-share} from the actual workers.dev health endpoint. Authenticated selected-account GET reported Worker subdomain enabled, no custom domains, and no nexaiadvisors.com zone available in that account. The earlier disabled-R2/missing-subdomain snapshot above remains historical. Root owns the subsequent resource creation and actual authenticated sharing gate; public health alone is not a successful-share claim.
+
+Parent Gate2 reproduced the old unpaced real-H264 pause-clock fixture losing one
+frame during concurrent encoder load. Parent authorized feeding both exact-PTS
+clock fixtures at declared screen cadence 60fps. Submitted timestamps, frame
+counts, pause remap, exact assertions and dedicated overload/backpressure test
+are retained. This changes fixture timing only, not production buffering policy.
+
+Independent full decoder completed:173133 frames, FFmpeg VideoToolbox exit0 and
+progress=end,2971 null-mux DTS clock warnings, no other decoder log errors. Exact
+3595s seek returned frame MD5 b8c2f9201d63d60faa67e6ed0579d256. Recording memory
+and writer drop budget passed; original Stop timeout is still preserved as failure.
+No nativePackageVerifier stamp was fabricated. The source movie stays unchanged.
+Own recording engine PID48464 is absent and decoder ended; capture slot returned
+to parent, while user's camera/mic test pause remains. Full all-track60min deferred.
+Report /tmp/rush-capture-qa/soak/independent-final.json retains all distinctions.
+
+Final production guard approved: heartbeat only screen, because camera callbacks
+already deliver continuous images. New late-camera-PTS regression proves wall-time
+tick cannot invent frames ahead of real delayed camera timestamps. Both paced
+clock fixtures, unchanged static-screen seek/fragment test, and H264+HEVC precision
+test pass: 5 tests / 2 suites, 3.310s. Clean scan 0. Full QA document updated with
+actual 60-minute memory/drop/decode data and preserved Stop failure. Remaining live
+all-track battery stays deferred; parent owns assembled gates and installed QA.

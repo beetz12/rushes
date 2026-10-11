@@ -231,6 +231,9 @@ struct TrackWriterTests {
         for _ in 0..<postFrames {
             writer.appendVideo(makeVideoBuffer(hostNs: host))
             host += frameNs
+            // Exercise clock mapping at the screen writer's declared 60fps
+            // input cadence; overload shedding has its own scripted test.
+            try await Task.sleep(for: .nanoseconds(16_666_667))
         }
         let expectedEndNs = host - epochNs
 
@@ -276,6 +279,7 @@ struct TrackWriterTests {
             if clock.isPaused(atHostNs: host) { pausedFrames += 1 } else { liveFrames += 1 }
             writer.appendVideo(makeVideoBuffer(hostNs: host))
             host += frameNs
+            try await Task.sleep(for: .nanoseconds(16_666_667))
         }
         let expectedEndNs = clock.mediaTimeNs(atHostNs: host)
 
@@ -293,6 +297,24 @@ struct TrackWriterTests {
     }
 
     // MARK: - Audio
+
+    @Test("Screen heartbeat does not overtake delayed genuine camera timestamps")
+    func cameraHeartbeatDoesNotInventFrames() throws {
+        let dir = tempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("camera.mov")
+        let factory = StubFactory(outputURL: url)
+        let config = TrackWriterConfiguration(kind: .camera, outputURL: url, videoWidth: 320, videoHeight: 240)
+        let writer = try TrackWriter(configuration: config, clock: SessionClock(epochNs: epochNs), factory: factory)
+        writer.appendVideo(makeVideoBuffer(hostNs: epochNs + 100_000_000))
+        // The next captured frame arrives fifty milliseconds after its PTS.
+        // Filling synthetic camera pixels through wall time would move past it.
+        writer.tick(nowHostNs: epochNs + 250_000_000)
+        writer.appendVideo(makeVideoBuffer(hostNs: epochNs + 200_000_000))
+        #expect(factory.stub.videoAppends == [100_000_000, 200_000_000])
+        #expect(writer.status().framesWritten == 2)
+        #expect(writer.status().framesDropped == 0)
+    }
 
     @Test("Audio writes leading silence from media time zero")
     func audioLeadingSilence() async throws {
