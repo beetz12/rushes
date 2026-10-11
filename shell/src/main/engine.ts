@@ -185,8 +185,13 @@ export class EngineSupervisor {
   }
   async quit() {
     this.closing = true;
-    if (this.active) await this.client.request('record.stop');
-    this.client.close();
-    this.child?.kill('SIGTERM');
+    try {
+      if (this.active) await this.client.request('record.stop');
+      this.client.close();
+      this.child?.kill('SIGTERM');
+    } catch (error) {
+      this.closing = false;
+      throw error;
+    }
   }
 }

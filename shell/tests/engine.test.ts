@@ -1,9 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createServer } from 'node:net';
 import { mkdtemp, rm, mkdir, writeFile, symlink, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { EngineClient } from '../src/main/engine';
+import { EngineClient, EngineSupervisor } from '../src/main/engine';
 import { MediaRegistry, parseRange } from '../src/main/media';
 import { requestSchema, recordingOptionsSchema, defaultOptions } from '../src/shared/contracts';
 describe('native engine transport', () => {
@@ -17,9 +17,13 @@ describe('native engine transport', () => {
         const lines = input.trim().split('\n');
         if (lines.length < 2) return;
         const requests = lines.map((s) => JSON.parse(s));
-        socket.write('{"event":"recording-started","recordingId":"take');
+        const event = Buffer.from(
+          '{"event":"recording-started","recordingId":"take1","title":"你好 📹"}\n',
+        );
+        const boundary = event.indexOf(Buffer.from('好')) + 1;
+        socket.write(event.subarray(0, boundary));
         setTimeout(() => {
-          socket.write('1"}\n');
+          socket.write(event.subarray(boundary));
           socket.write(
             JSON.stringify({ id: requests[1].id, ok: true, result: { second: true } }) +
               '\n' +
@@ -37,7 +41,9 @@ describe('native engine transport', () => {
     const [first, second] = await Promise.all([client.request('ping'), client.request('status')]);
     expect(first).toEqual({ first: true });
     expect(second).toEqual({ second: true });
-    expect(events).toEqual([{ event: 'recording-started', recordingId: 'take1' }]);
+    expect(events).toEqual([
+      { event: 'recording-started', recordingId: 'take1', title: '你好 📹' },
+    ]);
     client.close();
     await new Promise<void>((r) => server.close(() => r()));
     await rm(dir, { recursive: true });
@@ -102,5 +108,31 @@ describe('IPC boundary', () => {
       recordingOptionsSchema.parse({ ...defaultOptions, countdownSeconds: 9 }),
     ).toThrow();
     expect(recordingOptionsSchema.parse(defaultOptions)).toEqual(defaultOptions);
+  });
+});
+
+describe('recording finalization on Quit', () => {
+  it('keeps the sidecar alive when native Stop cannot confirm finalization', async () => {
+    const supervisor = new EngineSupervisor(
+      '/fixture/engine',
+      '/fixture/socket',
+      '/fixture/takes',
+      '/fixture/index',
+    );
+    supervisor.active = true;
+    const kill = vi.fn();
+    supervisor.child = { kill } as unknown as import('node:child_process').ChildProcess;
+    const close = vi.spyOn(supervisor.client, 'close');
+    const request = vi
+      .spyOn(supervisor.client, 'request')
+      .mockRejectedValueOnce(new Error('Fixture finalization pending'));
+    await expect(supervisor.quit()).rejects.toThrow('finalization pending');
+    expect(kill).not.toHaveBeenCalled();
+    expect(close).not.toHaveBeenCalled();
+    request.mockResolvedValueOnce({ stopped: true });
+    await supervisor.quit();
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(close).toHaveBeenCalledOnce();
+    expect(kill).toHaveBeenCalledWith('SIGTERM');
   });
 });
