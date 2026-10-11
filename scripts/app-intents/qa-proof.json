@@ -1,0 +1,82 @@
+{
+  "observed_utc": "2026-10-11T20:56:14.748001+00:00",
+  "os": {
+    "version": "27.0",
+    "build": "26A428"
+  },
+  "scope": "Actual native Shortcuts execution against compile-time stub-only QA; no real capture",
+  "qa_bundle_id": "com.nexai.rushes.intentqa",
+  "qa_artifact": "/Users/dave/Work/loom-clone-native-app-intents/.build/intent-main-qa/RushesAutomation.app",
+  "metadata_sha256": "bc6e9da077ea4695996cf6a798977f4ca864d2eb56d7481cbe096e56e3777fcd",
+  "metadata_main_targets": {
+    "StartRecordingIntent": 1,
+    "StopRecordingIntent": 1
+  },
+  "signature_strict_verified": true,
+  "native_ui": {
+    "start_output": "01J00000000000000000000000",
+    "stop_output": "/tmp/rushes-iqa/stub-recording"
+  },
+  "apple_shortcuts_cli": {
+    "start_exit": 0,
+    "stop_exit": 0,
+    "start_output": "01J00000000000000000000000",
+    "stop_output": "/tmp/rushes-iqa/stub-recording"
+  },
+  "stub_recording_commands": [
+    {
+      "cmd": "record.start",
+      "args": {
+        "camera": "none",
+        "countdownSeconds": 0,
+        "display": "main",
+        "mic": "none",
+        "systemAudio": false,
+        "title": "Shortcuts recording"
+      },
+      "stub": true
+    },
+    {
+      "cmd": "record.stop",
+      "args": {},
+      "stub": true
+    },
+    {
+      "cmd": "record.start",
+      "args": {
+        "camera": "none",
+        "countdownSeconds": 0,
+        "display": "main",
+        "mic": "none",
+        "systemAudio": false,
+        "title": "Shortcuts recording"
+      },
+      "stub": true
+    },
+    {
+      "cmd": "record.stop",
+      "args": {},
+      "stub": true
+    }
+  ],
+  "final_stub_state": {
+    "state": "idle",
+    "stub": true
+  },
+  "owned_workflows": [
+    {
+      "name": "Rushes QA Start",
+      "id": "356F7330-A58A-46E7-8675-70A3BBC14B36"
+    },
+    {
+      "name": "Rushes QA Stop",
+      "id": "1BB9955D-2417-42A4-AEAB-EA8E820E5D49"
+    }
+  ],
+  "other_user_workflows_present": 13,
+  "security_changes": false,
+  "production_bundle_verified": false,
+  "macos_26_4_verified": false,
+  "extensionkit_registered_count": 0,
+  "broader_gate": "Earlier existing RushCore media suites failed; parent owns final serialized merged-tree gate"
+}
