@@ -77,6 +77,9 @@ public final class CameraBackgroundBlur: @unchecked Sendable {
         guard !lock.withLock({ cancelled }) else { return fallback(buffer, time: time, disposition: "cancelled", code: nil, message: nil) }
         let start = Date()
         let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
+        guard CMTimeGetSeconds(time).isFinite, CMTimeGetSeconds(time) >= 0 else {
+            return fallback(buffer, time: time, disposition: "failed", code: "blur-frame-time", message: "A valid nonnegative source timestamp is required.")
+        }
         guard width > 0, height > 0, width <= 4096, height <= 4096 else {
             return fallback(buffer, time: time, disposition: "failed", code: "blur-frame-size", message: "Background blur supports camera frames up to 4096 pixels per side.")
         }

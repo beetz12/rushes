@@ -58,6 +58,7 @@ public final class VoiceTeleprompter: @unchecked Sendable {
     private let analyzerFormat: AVAudioFormat
     private let continuation: AsyncStream<AnalyzerInput>.Continuation
     private let queue = DispatchQueue(label: "rushes.teleprompter.conversion", qos: .utility)
+    private let progressQueue = DispatchQueue(label: "rushes.teleprompter.progress", qos: .utility)
     private let lock = NSLock()
     private let callback: ProgressHandler
     private let maxPendingBuffers: Int
@@ -69,6 +70,8 @@ public final class VoiceTeleprompter: @unchecked Sendable {
     private var receivedBuffers = 0
     private var droppedBuffers = 0
     private var lastSubmittedTime: Double = -.infinity
+    private var pendingProgress: TeleprompterProgress?
+    private var deliveringProgress = false
     private var currentText = ""
     private var rangeStartMs: Double?
     private var rangeEndMs: Double?
@@ -100,7 +103,7 @@ public final class VoiceTeleprompter: @unchecked Sendable {
     public static func start(script: String, localeIdentifier: String = Locale.current.identifier,
                              allowAssetDownload: Bool = false, maxPendingBuffers: Int = 8,
                              progress: @escaping ProgressHandler) async throws -> VoiceTeleprompter {
-        guard !TeleprompterMatcher(script: script).tokens.isEmpty, script.count <= 32_768,
+        guard script.count <= 32_768, !TeleprompterMatcher(script: script).tokens.isEmpty, localeIdentifier.count <= 128,
               (1...32).contains(maxPendingBuffers) else {
             throw ControlFailure(code: "invalid-params", message: "A nonempty script (up to 32768 characters) and 1–32 pending recognition buffers are required.")
         }
@@ -190,7 +193,10 @@ public final class VoiceTeleprompter: @unchecked Sendable {
     }
 
     @discardableResult public func submit(_ sampleBuffer: CMSampleBuffer, at mediaTime: CMTime) -> Bool {
-        guard let description = CMSampleBufferGetFormatDescription(sampleBuffer),
+        guard CMSampleBufferIsValid(sampleBuffer), let description = CMSampleBufferGetFormatDescription(sampleBuffer),
+              CMFormatDescriptionGetMediaType(description) == kCMMediaType_Audio,
+              let stream = CMAudioFormatDescriptionGetStreamBasicDescription(description),
+              stream.pointee.mFormatID == kAudioFormatLinearPCM,
               let format = AVAudioFormat(cmAudioFormatDescription: description) as AVAudioFormat?,
               format.sampleRate.isFinite, (8000...192000).contains(format.sampleRate),
               (1...8).contains(format.channelCount),
@@ -271,7 +277,26 @@ public final class VoiceTeleprompter: @unchecked Sendable {
     private var isActive: Bool { lock.withLock { state == "listening" || state == "finishing" } }
     private func completePending() { lock.withLock { pendingBuffers -= 1 } }
     private func reject() { lock.withLock { droppedBuffers += 1 } }
-    private func publish() { callback(snapshot()) }
+    private func publish() {
+        let value = snapshot()
+        let schedule = lock.withLock {
+            pendingProgress = value
+            if deliveringProgress { return false }
+            deliveringProgress = true; return true
+        }
+        guard schedule else { return }
+        // One callback in flight and one latest snapshot; a slow UI cannot block finish/cancel or grow a queue.
+        progressQueue.async { [weak self, callback] in
+            while let value = self?.takeProgress() { callback(value) }
+        }
+    }
+    private func takeProgress() -> TeleprompterProgress? {
+        lock.withLock {
+            let value = pendingProgress; pendingProgress = nil
+            if value == nil { deliveringProgress = false }
+            return value
+        }
+    }
     private func fail(_ error: ControlFailure) {
         lock.withLock { if state != "cancelled" { accepting = false; state = "failed"; errorCode = error.payload.code; errorMessage = error.payload.message } }
         publish()

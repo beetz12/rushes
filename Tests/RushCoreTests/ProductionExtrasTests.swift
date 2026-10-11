@@ -110,6 +110,12 @@ struct ProductionExtrasTests {
             try CIContext().writePNGRepresentation(of: CIImage(cvPixelBuffer: result.pixelBuffer), to: URL(fileURLWithPath: outputPath), format: .RGBA8, colorSpace: CGColorSpaceCreateDeviceRGB())
         }
     }
+    @Test("Invalid camera timestamps fail before Vision processing")
+    func invalidFrameTime() throws {
+        let result = try CameraBackgroundBlur().process(extrasPixelBuffer(), at: .invalid)
+        #expect(result.disposition == "failed")
+        #expect(result.errorCode == "blur-frame-time")
+    }
     @Test("A frame with no person reports full-background blur using actual Vision")
     func absentPerson() throws {
         let input = try extrasPixelBuffer()
@@ -143,6 +149,14 @@ struct ProductionExtrasTests {
         let samples = try #require(pcm.floatChannelData)[0]
         for index in 0..<4800 { samples[index] = 0 }
         #expect(!service.submit(pcm, at: CMTime(value: Int64.max, timescale: 1)))
+        let pixel = try extrasPixelBuffer()
+        var formatDescription: CMVideoFormatDescription?
+        #expect(CMVideoFormatDescriptionCreateForImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: pixel, formatDescriptionOut: &formatDescription) == noErr)
+        var timing = CMSampleTimingInfo(duration: CMTime(value: 1, timescale: 30), presentationTimeStamp: .zero, decodeTimeStamp: .invalid)
+        var video: CMSampleBuffer?
+        #expect(CMSampleBufferCreateReadyWithImageBuffer(allocator: kCFAllocatorDefault, imageBuffer: pixel,
+            formatDescription: try #require(formatDescription), sampleTiming: &timing, sampleBufferOut: &video) == noErr)
+        #expect(!service.submit(try #require(video), at: .zero))
         for index in 0..<100 {
             _ = service.submit(pcm, at: CMTime(value: Int64(index * 4800), timescale: 48000))
         }
@@ -152,6 +166,23 @@ struct ProductionExtrasTests {
         await service.cancel()
         #expect(service.snapshot().state == "cancelled")
         #expect(!service.submit(pcm, at: CMTime(seconds: 20, preferredTimescale: 48000)))
+    }
+    @Test("A blocked progress consumer cannot hold cancellation or finalization",
+          .enabled(if: ProcessInfo.processInfo.environment["RUSHES_EXTRAS_SPEECH_FIXTURE"] != nil), .timeLimit(.minutes(1)))
+    func blockedProgressConsumer() async throws {
+        let block = DispatchSemaphore(value: 0)
+        defer { for _ in 0..<8 { block.signal() } }
+        let service = try await VoiceTeleprompter.start(script: "hello", localeIdentifier: "en-US") { _ in
+            _ = block.wait(timeout: .now() + 2)
+        }
+        let finishStart = Date()
+        do { _ = try await service.finish(timeoutSeconds: 0.1) }
+        catch let failure as ControlFailure { #expect(failure.payload.code == "speech-finalize-timeout") }
+        #expect(Date().timeIntervalSince(finishStart) < 0.5)
+        let cancelStart = Date()
+        await service.cancel()
+        #expect(Date().timeIntervalSince(cancelStart) < 0.1)
+        #expect(service.snapshot().state == "cancelled")
     }
     @Test("Streaming Apple recognition advances real spoken PCM to the last script token",
           .enabled(if: ProcessInfo.processInfo.environment["RUSHES_EXTRAS_SPEECH_FIXTURE"] != nil), .timeLimit(.minutes(1)))
