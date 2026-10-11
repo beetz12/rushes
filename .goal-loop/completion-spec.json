@@ -1,0 +1,31 @@
+{
+  "task": "Complete Rushes recorder approved personal-use plan",
+  "prompt": "# Rushes continuation contract\n\nResume saved ZCode session sess_395f5d56-7fad-4db3-8dc2-3eb413c95584. Last maker ended rate-limited, Goal6 checkpoint adopted with 166 passing tests. Existing engine idle. Complete approved PLAN Phases1-6 for personal recording/YouTube/cloud use; Phase7 SaaS explicitly deferred and public distribution only if chosen.\n\nWave1: five independently committable units below, based on checkpoint main. Wave2 root integrates contracts, executes full gates, installs app, visual checks at narrow/normal/wide widths with independent different-family checker, real recorder end-to-end and 60minute soak. Further repairs use bounded goal passes.\n\nInvariants: preserve master footage; local-first; no external action/communication by goal agents; clean-room/license requirements; no fake UI success or test weakening. Central Beads openbrain-v05d owned by root. No Git remote presently configured.\n\nObjective verification: Swift release build + /bin/bash scripts/check.sh; npm install/build/typecheck/test for all JS surfaces; actual installed app launches bundled engine and records playable all-track media; pause/recovery/selftest; real export decode and fast-start; visual screens; cloud provider tests and actual account only when configured. Preserve blockers and required user OS clicks honestly. Bounds: 3 retries/goal, 2hours/goal, 6hour wave budget; no cap is completion.\n",
+  "done_when": "All declared Swift/JS gates pass and installed app records decodable all-track videos, editing/export and sharing verifiers pass, independent visual score >=9 and real recording battery is documented",
+  "verify": [
+    {
+      "type": "command",
+      "cmd": "/bin/bash scripts/check.sh"
+    },
+    {
+      "type": "command",
+      "cmd": "npm --prefix shell run build"
+    },
+    {
+      "type": "visual",
+      "reference": "Installed Rushes recorder, permission onboarding, library and review: usable controls at 800px,1280px,1920px widths, clear contrast, no collisions/overflow and no false success indicators. Native app mobile case N/A; web viewer additionally375px.",
+      "min": 9,
+      "scale": 10,
+      "model": "kimi"
+    }
+  ],
+  "max_passes": 6,
+  "budget_seconds": 21600,
+  "archetype": "test-until-green + visual-verify",
+  "workdir": "/Users/dave/Work/loom-clone",
+  "assumptions": [
+    "Phase7 remains gated per approved plan",
+    "Cloud live deployment depends on user-provided bucket or Worker identity; no credentials invented",
+    "Public notarized distribution remains optional; local installed build required"
+  ]
+}

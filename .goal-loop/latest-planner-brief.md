@@ -1,45 +1,9 @@
-# Planner brief: Loom-clone clean-room research (2026-10-10)
+# Rushes continuation contract
 
-Beads: openbrain-clv5. Owner: David He. Planned and run by the session that
-also reads the copyleft notes, so that session must not write the app.
+Resume saved ZCode session sess_395f5d56-7fad-4db3-8dc2-3eb413c95584. Last maker ended rate-limited, Goal6 checkpoint adopted with 166 passing tests. Existing engine idle. Complete approved PLAN Phases1-6 for personal recording/YouTube/cloud use; Phase7 SaaS explicitly deferred and public distribution only if chosen.
 
-## Scope
+Wave1: five independently committable units below, based on checkpoint main. Wave2 root integrates contracts, executes full gates, installs app, visual checks at narrow/normal/wide widths with independent different-family checker, real recorder end-to-end and 60minute soak. Further repairs use bounded goal passes.
 
-1. Study nine open-source screen recorders (pinned in
-   `tools/checks/sources.json`) and write one clean-room research note per repo
-   (`docs/research/<slug>.md` + `.json`). Six parallel reader goals.
-2. After the readers merge, a separate solo loop writes `docs/PLAN.md`: a
-   comprehensive build plan for David's own Loom clone that integrates the best
-   ideas, with the source and licence of each idea.
+Invariants: preserve master footage; local-first; no external action/communication by goal agents; clean-room/license requirements; no fake UI success or test weakening. Central Beads openbrain-v05d owned by root. No Git remote presently configured.
 
-## Constraints
-
-- Clean room: copyleft code (Cap outside its MIT crates, Recordly outside
-  `services/recordly-share`, Screenity) never crosses into this repo. Notes
-  carry behaviour and design in the readers' own words; no fenced code.
-- Clones are read-only reference data under `~/Work/reference-repos/loom`.
-  Nothing there is built or executed.
-- Future build sessions read `docs/` and the permissive clones only.
-- No external actions: no pushes to a remote, no posts, no installs.
-
-## Risks
-
-- A reader paraphrases too closely. Mitigation: `check_clean.py` (12-word
-  overlap with copyleft source, minus anything also in permissive source),
-  calibrated on 2026-10-10: copied Recordly text 17 hits, copied Cap AGPL text
-  35 hits, Cap MIT text 0, original prose 0.
-- Shallow notes. Mitigation: required sections, per-area JSON for all 19
-  areas, minimum inspected paths that must exist in the clone, minimum idea
-  counts; later the plan must account for every idea id.
-- Context blowout on Cap (4,725 files). Mitigation: one reader per large repo,
-  targeted reading, PROGRESS.md checkpoints.
-
-## Verification
-
-- Per goal (maker self-check): `check_research.py <slug>` OK and
-  `check_clean.py` 0.
-- Integration gate (independent, non-LLM): `check_research.py --present` and
-  `check_clean.py docs/research` on the merged branch.
-- Plan stage: `check_plan.py` (structure, all 19 areas in the matrix, every
-  idea id accounted for, copy-with-notice only from permissive sources),
-  `check_clean.py docs` = 0, and a rubric scored by a non-Claude model family.
+Objective verification: Swift release build + /bin/bash scripts/check.sh; npm install/build/typecheck/test for all JS surfaces; actual installed app launches bundled engine and records playable all-track media; pause/recovery/selftest; real export decode and fast-start; visual screens; cloud provider tests and actual account only when configured. Preserve blockers and required user OS clicks honestly. Bounds: 3 retries/goal, 2hours/goal, 6hour wave budget; no cap is completion.

@@ -1,153 +1,49 @@
-# Goals: clean-room research notes for the Loom clone (2026-10-10)
-
-Six independent reader goals. Each writes only its own `docs/research/<slug>.*`
-files. Shared rules: `docs/process/reader-brief.md`. Plan stage runs after
-these merge, as a separate solo loop.
-
-### Goal 1: Research Screendrop
-
-**Suggested branch:** `goal/research-screendrop`
-**Model:** `opus`
-**Effort:** `high`
-**Parallelization:** independent
-
+### Goal 1: Finish capture reliability and Phase 2 engine capabilities
+**Suggested branch:** codex/rushes-capture-20261011
+**Suggested worktree:** /Users/dave/Work/loom-clone-build-capture-20261011
+**Parallelization:** Independent
 ```text
-You are reader goal 1 in a clean-room research run for David's Loom clone.
-Your working directory is your goal worktree of ~/Work/loom-clone (the repo root).
-First read docs/process/reader-brief.md completely and follow it exactly. It overrides anything below that conflicts with it.
+Read docs/PLAN.md applicable sections and its entire Clean-room rules for the build BEFORE acting. All existing repo code is permitted; reference clone code only within explicit permissible paths. No copyleft code; original implementations preferred. Read actual source before designing. Repo has Swift 6.4 and macOS 27 SDK; capture target macOS26.4+. Repo has no remote. Root owns central Beads openbrain-v05d and integration; do not write Beads. Work only in your prepared goal worktree. Keep PROGRESS.md with done/unverified/first unfinished step and checkpoint commits frequently. Do not delete, weaken, or skip verifiers/tests. Gates: /bin/bash scripts/check.sh plus your surface-specific behavioral tests. Always capture real exit codes and substantive output. Record honest real-vs-synthetic QA. No cloud deployment, outbound communication or external-account write. Socket is NDJSON {id,cmd,args} -> {id,ok,result/error}, events are separate. Root integrates Control/EngineController command routing and rushes CLI after your modules land, so do not modify those unless this goal explicitly owns them. Coordinate public contracts with parent early. Do not run real recordings concurrently with others; ask parent for exclusive capture slot. Before every code-related API question use official docs/context7 and primary web sources.
 
-Slug: screendrop
-Clone: ~/Work/reference-repos/loom/fayazara__Screendrop (pinned SHA and licence in tools/checks/sources.json). Licence class: permissive (CC0-1.0), so you may name its files and types, and ideas may use copy-with-notice.
-
-This is the leading candidate base for David's recorder, so go deepest here. Beyond all 19 feature areas, establish exactly:
-- How screen, camera, microphone and system audio are captured, and how the camera ends up in its own file. How the tracks stay in sync (shared clock, start timestamps, offsets).
-- The capture coordinator: states, start/stop/pause, error and permission handling, crash safety of partially written files.
-- On-device transcription and any transcript-based editing.
-- Sharing: where the Cloudflare (or other) upload and share-link code lives, what is uploaded, and how links are generated. The earlier survey could not find this code; find it or state that it is absent.
-- Export folder and on-disk layout of a recording.
-- Any .agents or AI prompt files: what they say about how the repo is meant to be developed.
-
-Deliverables: docs/research/screendrop.md, docs/research/screendrop.json and your .progress/<first slug>.md file, committed on your branch.
-Done when: `python3 -I tools/checks/check_research.py screendrop` prints OK and `python3 -I tools/checks/check_clean.py docs/research/screendrop.md docs/research/screendrop.json` prints 0 on its first line.
+Own Sources/RushCore/{Capture,Control,Session,Selftest,Writers,Catalog,Project}, Sources/rushcore-engine, Sources/rushes and existing tests. Recover Goal6 checkpoint and run real recording battery from Phase1, fix synchronization/pause/recovery bugs with regressions. Add engine capabilities required by Phase2: permissions.check/permissions.request (explicit permission requests), record.cancel/discard/restart, per-track mute, warm camera and preview frames over control socket (bounded dropping), camera loss warning, bubble metadata, capture source region/window, cursor-free mode. Preserve current socket compatibility. Own EngineController and CLI for this wave; reserve routing hooks for other agents and coordinate commands. Do not implement export/edit/transcript/sharing yet. Root gives exclusive REAL capture slot to you now; existing idle orphan engine PID84989 can be gracefully stopped after verifying idle, then use own isolated socket and root. Run 60s all-track take, pause, crash recovery, sync selftest; document each honestly in docs/qa. 60min soak will run at integration. Fix most urgent real recorder defects first. Native engine prompts are authorized as necessary to recorder functionality. Notify parent contract changes and permissions blockers promptly.
 ```
 
-### Goal 2: Research better-shot and voom
-
-**Suggested branch:** `goal/research-better-shot-voom`
-**Model:** `opus`
-**Effort:** `high`
-**Parallelization:** independent
-
+### Goal 2: Build usable Electron React desktop recorder and review/library UI
+**Suggested branch:** codex/rushes-desktop-20261011
+**Suggested worktree:** /Users/dave/Work/loom-clone-build-desktop-20261011
+**Parallelization:** Independent
 ```text
-You are reader goal 2 in a clean-room research run for David's Loom clone.
-Your working directory is your goal worktree of ~/Work/loom-clone (the repo root).
-First read docs/process/reader-brief.md completely and follow it exactly. It overrides anything below that conflicts with it.
+Read docs/PLAN.md applicable sections and its entire Clean-room rules for the build BEFORE acting. All existing repo code is permitted; reference clone code only within explicit permissible paths. No copyleft code; original implementations preferred. Read actual source before designing. Repo has Swift 6.4 and macOS 27 SDK; capture target macOS26.4+. Repo has no remote. Root owns central Beads openbrain-v05d and integration; do not write Beads. Work only in your prepared goal worktree. Keep PROGRESS.md with done/unverified/first unfinished step and checkpoint commits frequently. Do not delete, weaken, or skip verifiers/tests. Gates: /bin/bash scripts/check.sh plus your surface-specific behavioral tests. Always capture real exit codes and substantive output. Record honest real-vs-synthetic QA. No cloud deployment, outbound communication or external-account write. Socket is NDJSON {id,cmd,args} -> {id,ok,result/error}, events are separate. Root integrates Control/EngineController command routing and rushes CLI after your modules land, so do not modify those unless this goal explicitly owns them. Coordinate public contracts with parent early. Do not run real recordings concurrently with others; ask parent for exclusive capture slot. Before every code-related API question use official docs/context7 and primary web sources.
 
-Slugs: better-shot and voom. Write one note pair per slug.
-- better-shot: ~/Work/reference-repos/loom/KartikLabhshetwar__better-shot, BSD-3-Clause, permissive. Note: its camera recorder file is a near-copy (about 99% similar) of Screendrop's CameraRecordingManager.swift, added later; do not credit better-shot as the origin of that code, and focus on what better-shot adds: camera layouts, the teleprompter, export formats, screenshot tooling, any AI features, and its .agents/.claude skill files.
-- voom: ~/Work/reference-repos/loom/aritropaul__voom, MIT, permissive. A small Swift Loom alternative; capture its whole design, including recording flow, camera bubble, and any upload or sharing.
-
-Deliverables: docs/research/better-shot.md, docs/research/better-shot.json, docs/research/voom.md, docs/research/voom.json and your .progress/<first slug>.md file, committed on your branch.
-Done when: `python3 -I tools/checks/check_research.py better-shot voom` prints OK and `python3 -I tools/checks/check_clean.py docs/research/better-shot.md docs/research/better-shot.json docs/research/voom.md docs/research/voom.json` prints 0 on its first line.
+Own shell/ exclusively. Implement PLAN Phase2 Electron+TypeScript+React/Vite tray recorder. Bundled Swift engine path process launch and NDJSON socket client; no capture in renderer, use engine permission routes and engine camera preview. Secure preload/context isolation, validated IPC, local media protocol with path allowlist. Beautiful functional interface: source/camera/mic/audio choices, countdown, record/pause/resume/stop/restart/discard, tray and hotkeys, permission onboarding, floating protected bar and bubble, area selection. Library with recording list, review playback (screen+camera), title, trim, bubble layout, export presets share/full/editor-tracks/audio/youtube, captions/transcript/split/cut/speed controls; wire engine cmd names to agreements with parent. File export must be saved with native dialog. Settings for bucket/worker sharing, credentials safeStorage/Keychain seam (coordinate cloud goal). Phase6 teleprompter/drawing/diagnostics UI if contract supports. Package app with electron-builder, embedded engine/CLI/resources/acknowledgements. Provide scripts build/test/typecheck/package (app dir) and renderer dev server for visual review. Direct npm licenses acceptable only MIT/BSD/Apache/ISC/zlib/CC0; capture dependency notices into shell/DEPENDENCIES.md and license files, root merges notices. Pin Node20+ runtime appropriate current Electron/Vite documented engine requirements via .nvmrc in shell. Do not use mocked recordings in production. Work through real engine data; tests may stub. Coordinate engine/export/transcript/cloud contracts immediately. First checkpoint usable record+stop+library before editing polish. Unit tests meaningful and node/electron actual launch smoke. Do not start real capture until parent slot.
 ```
 
-### Goal 3: Research OpenScreen
-
-**Suggested branch:** `goal/research-openscreen`
-**Model:** `opus`
-**Effort:** `high`
-**Parallelization:** independent
-
+### Goal 3: Implement local rendering, exports and non-destructive editing
+**Suggested branch:** codex/rushes-postproduction-20261011
+**Suggested worktree:** /Users/dave/Work/loom-clone-build-postproduction-20261011
+**Parallelization:** Independent
 ```text
-You are reader goal 3 in a clean-room research run for David's Loom clone.
-Your working directory is your goal worktree of ~/Work/loom-clone (the repo root).
-First read docs/process/reader-brief.md completely and follow it exactly. It overrides anything below that conflicts with it.
+Read docs/PLAN.md applicable sections and its entire Clean-room rules for the build BEFORE acting. All existing repo code is permitted; reference clone code only within explicit permissible paths. No copyleft code; original implementations preferred. Read actual source before designing. Repo has Swift 6.4 and macOS 27 SDK; capture target macOS26.4+. Repo has no remote. Root owns central Beads openbrain-v05d and integration; do not write Beads. Work only in your prepared goal worktree. Keep PROGRESS.md with done/unverified/first unfinished step and checkpoint commits frequently. Do not delete, weaken, or skip verifiers/tests. Gates: /bin/bash scripts/check.sh plus your surface-specific behavioral tests. Always capture real exit codes and substantive output. Record honest real-vs-synthetic QA. No cloud deployment, outbound communication or external-account write. Socket is NDJSON {id,cmd,args} -> {id,ok,result/error}, events are separate. Root integrates Control/EngineController command routing and rushes CLI after your modules land, so do not modify those unless this goal explicitly owns them. Coordinate public contracts with parent early. Do not run real recordings concurrently with others; ask parent for exclusive capture slot. Before every code-related API question use official docs/context7 and primary web sources.
 
-Slug: openscreen
-Clone: ~/Work/reference-repos/loom/getopenscreen__openscreen (MIT, permissive). TypeScript/Electron app plus a Rust compositor crate.
-
-Beyond all 19 feature areas, establish exactly:
-- The project file format (the .openscreen document): what it stores, how sources and edits are represented.
-- The Rust compositor: what it renders (webcam picture-in-picture, backgrounds, cursor, zoom), how Electron talks to it.
-- The CLI (electron/cli/cliMain.ts and related): commands, JSON output, how an agent could drive export.
-- On-device captions and the AI edit assistant: models used, what runs locally, what calls out.
-- Capture on macOS versus Linux (PipeWire) and Windows.
-
-Deliverables: docs/research/openscreen.md, docs/research/openscreen.json and your .progress/<first slug>.md file, committed on your branch.
-Done when: `python3 -I tools/checks/check_research.py openscreen` prints OK and `python3 -I tools/checks/check_clean.py docs/research/openscreen.md docs/research/openscreen.json` prints 0 on its first line.
+Own Sources/RushCore/Export/, Sources/RushCore/Editing/, Tests/RushCoreTests/ExportTests.swift, EditingTests.swift, docs/design/postproduction.md. Implement PLAN Phase3 export and Phase4 editing via native AVFoundation without ffmpeg dependency: H264/AAC fast-start MP4, screen+camera bubble composition, six layouts, trim/cuts/speed, separate audio mixing levels, audio-only and editor-tracks with offsets.json (raw masters unchanged), share/full/youtube presets, render cache keyed by source+draft, atomic staged outputs/cancel. Build original Swift types compatible with existing RecordingManifest; root will route commands. Provide public facade PostproductionService(root: URL) async export/edit APIs plus JSONValue dispatcher if practical, with proposed cmd names export/edit.get/edit.set/thumbnail/chapters.export. Include atomic autosaving draft with backup, undo/redo model, clip-anchored zoom safe-zone planner from original design (OpenScreen MIT if inspected permissively with notices), captions burn-in support and cursor drawing seam. Read full applicable plan sections. Generate actual synthetic media tests, decode exported frames/audio, verify dimensions fast-start boxes and SHA unchanged. Use own worktree build storage. Root owns Package.swift; new source dirs under RushCore auto-included. Send interface contract to parent early. Large goal: checkpoint export primary working before richer editing; no fake success.
 ```
 
-### Goal 4: Research Cap
-
-**Suggested branch:** `goal/research-cap`
-**Model:** `opus`
-**Effort:** `high`
-**Parallelization:** independent
-
+### Goal 4: Build bucket and Worker sharing with viewer and security tests
+**Suggested branch:** codex/rushes-cloud-20261011
+**Suggested worktree:** /Users/dave/Work/loom-clone-build-cloud-20261011
+**Parallelization:** Independent
 ```text
-You are reader goal 4 in a clean-room research run for David's Loom clone.
-Your working directory is your goal worktree of ~/Work/loom-clone (the repo root).
-First read docs/process/reader-brief.md completely and follow it exactly. It overrides anything below that conflicts with it.
+Read docs/PLAN.md applicable sections and its entire Clean-room rules for the build BEFORE acting. All existing repo code is permitted; reference clone code only within explicit permissible paths. No copyleft code; original implementations preferred. Read actual source before designing. Repo has Swift 6.4 and macOS 27 SDK; capture target macOS26.4+. Repo has no remote. Root owns central Beads openbrain-v05d and integration; do not write Beads. Work only in your prepared goal worktree. Keep PROGRESS.md with done/unverified/first unfinished step and checkpoint commits frequently. Do not delete, weaken, or skip verifiers/tests. Gates: /bin/bash scripts/check.sh plus your surface-specific behavioral tests. Always capture real exit codes and substantive output. Record honest real-vs-synthetic QA. No cloud deployment, outbound communication or external-account write. Socket is NDJSON {id,cmd,args} -> {id,ok,result/error}, events are separate. Root integrates Control/EngineController command routing and rushes CLI after your modules land, so do not modify those unless this goal explicitly owns them. Coordinate public contracts with parent early. Do not run real recordings concurrently with others; ask parent for exclusive capture slot. Before every code-related API question use official docs/context7 and primary web sources.
 
-Slug: cap
-Clone: ~/Work/reference-repos/loom/CapSoftware__Cap (4,725 files). Licence: AGPL-3.0 for everything EXCEPT crates/camera*, crates/scap-* (MIT) and vendor/* (third-party permissive). Class: copyleft. So: outside the MIT paths, describe behaviour and design only, never reproduce Cap's own internal names, and use clean-room or idea-only. Ideas whose paths are all inside crates/camera* or crates/scap-* may use copy-with-notice.
-
-Cap is the most complete open-source Loom clone. It is large: read selectively (apps/desktop, apps/web, and the crates that matter), and checkpoint your .progress/cap.md file often. Beyond all 19 feature areas, establish:
-- Recording modes (for example an instant/share-fast mode versus a studio/edit-later mode): what differs in capture, files and upload.
-- How upload or share-link creation can start while recording is still running, and what the viewer gets first.
-- The web viewer: playback, comments, reactions, view analytics, transcripts.
-- Self-hosting: what services are needed, storage (S3-compatible), database, auth.
-- Separate tracks: whether camera, mic and system audio are stored separately, and the on-disk project layout.
-- Crash recovery, A/V sync, encoding choices, hardware encoders.
-- What the MIT camera and screen-capture crates give a new project that wants to reuse them.
-
-Deliverables: docs/research/cap.md, docs/research/cap.json and your .progress/<first slug>.md file, committed on your branch.
-Done when: `python3 -I tools/checks/check_research.py cap` prints OK and `python3 -I tools/checks/check_clean.py docs/research/cap.md docs/research/cap.json` prints 0 on its first line.
+Own cloud/, viewer/, worker/, Tests unrelated to Swift, docs/design/sharing.md. Implement PLAN Phase3/5 cloud sharing TypeScript service reusable by shell main: bucket provider S3 SigV4 multipart10MB upload/abort/resume with persistent job store and stable link, publish static viewer processing first then video/poster/captions/transcript, unshare, setup check. WorkerProvider and Cloudflare Worker R2+D1 backend with passwords PBKDF2, expiry scheduled deletion, comments/reactions/timestamp markers, play-based view counting, signed upload scoped id validation/size/type/CORS fixes. May read/copy only reference Recordly services/recordly-share with entire license/copy protocol; alternatively original. Worker web viewer with captions transcript seek/speed/chapters/download and OG. No accounts/SaaS/billing phase7. CLI deploy/setup commands implemented but actual cloud deployment belongs root and requires configured identity. Avoid plaintext credential persistence; sdk accepts secrets from secure caller. Vitest/node tests exercise actual HTTP routes with fake storage controlled fixtures, SigV4 official positive vector, part-resume, passwords throttling, range and traversal/escaping. Provide documented npm gates with lockfiles/runtime pin and all direct dependency notices. Send parent/shell API contract and credential requirements; do not scan env secrets. UI credentials only user-entered/safeStorage.
 ```
 
-### Goal 5: Research Recordly
-
-**Suggested branch:** `goal/research-recordly`
-**Model:** `opus`
-**Effort:** `high`
-**Parallelization:** independent
-
+### Goal 5: Implement on-device transcription, captions, metadata and automation extras
+**Suggested branch:** codex/rushes-transcript-20261011
+**Suggested worktree:** /Users/dave/Work/loom-clone-build-transcript-20261011
+**Parallelization:** Independent
 ```text
-You are reader goal 5 in a clean-room research run for David's Loom clone.
-Your working directory is your goal worktree of ~/Work/loom-clone (the repo root).
-First read docs/process/reader-brief.md completely and follow it exactly. It overrides anything below that conflicts with it.
+Read docs/PLAN.md applicable sections and its entire Clean-room rules for the build BEFORE acting. All existing repo code is permitted; reference clone code only within explicit permissible paths. No copyleft code; original implementations preferred. Read actual source before designing. Repo has Swift 6.4 and macOS 27 SDK; capture target macOS26.4+. Repo has no remote. Root owns central Beads openbrain-v05d and integration; do not write Beads. Work only in your prepared goal worktree. Keep PROGRESS.md with done/unverified/first unfinished step and checkpoint commits frequently. Do not delete, weaken, or skip verifiers/tests. Gates: /bin/bash scripts/check.sh plus your surface-specific behavioral tests. Always capture real exit codes and substantive output. Record honest real-vs-synthetic QA. No cloud deployment, outbound communication or external-account write. Socket is NDJSON {id,cmd,args} -> {id,ok,result/error}, events are separate. Root integrates Control/EngineController command routing and rushes CLI after your modules land, so do not modify those unless this goal explicitly owns them. Coordinate public contracts with parent early. Do not run real recordings concurrently with others; ask parent for exclusive capture slot. Before every code-related API question use official docs/context7 and primary web sources.
 
-Slug: recordly
-Clone: ~/Work/reference-repos/loom/webadderallorg__Recordly (1,151 files). Licence: AGPL-3.0 for everything EXCEPT services/recordly-share (MIT). Class: copyleft. Outside services/recordly-share, describe behaviour and design only, never reproduce Recordly's own internal names, and use clean-room or idea-only. Ideas whose paths are all inside services/recordly-share may use copy-with-notice.
-
-Recordly is the most-starred repo in the set (about 33,000 stars). Beyond all 19 feature areas, establish:
-- The Electron app plus its native macOS capture helpers (ScreenCaptureKit): process model and how frames and audio reach the encoder.
-- The webcam bubble and any auto-zoom, cursor smoothing or click effects: what makes them look polished.
-- The share service (services/recordly-share, MIT) and the supabase folder: upload flow, link format, storage, viewer.
-- Editing and export features, formats and speed.
-- What accounts for its popularity: features users clearly value.
-
-Deliverables: docs/research/recordly.md, docs/research/recordly.json and your .progress/<first slug>.md file, committed on your branch.
-Done when: `python3 -I tools/checks/check_research.py recordly` prints OK and `python3 -I tools/checks/check_clean.py docs/research/recordly.md docs/research/recordly.json` prints 0 on its first line.
-```
-
-### Goal 6: Research Screenity, Kap and Bloom
-
-**Suggested branch:** `goal/research-screenity-kap-bloom`
-**Model:** `opus`
-**Effort:** `high`
-**Parallelization:** independent
-
-```text
-You are reader goal 6 in a clean-room research run for David's Loom clone.
-Your working directory is your goal worktree of ~/Work/loom-clone (the repo root).
-First read docs/process/reader-brief.md completely and follow it exactly. It overrides anything below that conflicts with it.
-
-Slugs: screenity, kap and bloom. Write one note pair per slug.
-- screenity: ~/Work/reference-repos/loom/alyssaxuu__screenity, GPL-3.0, copyleft. A Chrome extension recorder. Describe behaviour and design only, never reproduce its internal names, and use clean-room or idea-only. Focus: annotation and drawing tools, cursor and click effects, camera overlay in the browser, local-only storage, the editor, and its UX polish.
-- kap: ~/Work/reference-repos/loom/wulkano__Kap, MIT, permissive. Electron macOS recorder, last commit 2024. Focus: the plugin system for share targets, export formats (GIF, MP4, WebM, APNG) and the conversion pipeline, the recording UI, and lessons from why it went stale.
-- bloom: ~/Work/reference-repos/loom/video-db__bloom, MIT, permissive. Local-first, "AI-ready" recorder. Focus: transcripts, embeddings or search over recordings, what is local versus cloud, and agent-facing interfaces.
-
-Deliverables: docs/research/screenity.md, .json, docs/research/kap.md, .json, docs/research/bloom.md, .json and your .progress/<first slug>.md file, committed on your branch.
-Done when: `python3 -I tools/checks/check_research.py screenity kap bloom` prints OK and `python3 -I tools/checks/check_clean.py docs/research/screenity.md docs/research/screenity.json docs/research/kap.md docs/research/kap.json docs/research/bloom.md docs/research/bloom.json` prints 0 on its first line.
+Own Sources/RushCore/Transcription/, Sources/RushCore/Metadata/, Sources/RushCore/Automation/, Sources/RushCore/Diagnostics/, Tests/RushCoreTests/{TranscriptionTests,MetadataTests,AutomationTests,DiagnosticsTests}.swift, docs/design/transcription.md. Implement PLAN Phase4 Apple SpeechAnalyzer transcribe from mic/system file, cue building no >4sec/>42chars strictly increasing, VTT/SRT/TXT/JSON, transcript timed words, silence/filler edit suggestions preserving kept words >=70ms breathing, on-device title/summary/chapter service (FoundationModels if available with accurate fallback), thumbnail PNG/JPG 1280x720/1920x1080 and chapters YouTube text if export agent owns thumbnails coordinate. Phase6 diagnostics redaction bundle, strict url scheme parser, authenticated loopback MCP with Host/Origin and read-only until opt-in; provide original Swift API dispatcher to parent. Local speech recognition teleprompter matching helper and camera blur helper if time. No outbound/model api calls. SpeechAnalyzer asset download needs explicit disclosed normal OS model availability; return structured actionable unsupported/permission errors instead of fabricating transcript. New modules auto-included RushCore. Original design or permitted Screendrop CC0 pieces with notice protocol. Root routes engine/CLI after contracts. Tests use synthetic ground truth and cue/invariant matrices plus real on-device transcription if actual speech fixture available; synthetic cannot prove real recognition. Coordinate editor/export API types early.
 ```
