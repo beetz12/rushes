@@ -10,7 +10,7 @@ This plan tells a build team how to make David's own Loom-style screen recorder 
 
 What we build:
 
-- A native macOS menu bar app plus a command-line tool, both written in Swift.
+- A macOS app with two parts. The recording engine, called LoomCore, is a Swift executable that owns capture, the writers, recovery and post-stop jobs. The desktop shell is an Electron app written in TypeScript and React that provides every window David sees; it starts the engine and talks to it over a local socket. A command-line tool, `loomclone`, drives the same engine for AI agents.
 - Each recording is one folder on David's Mac. In this plan that folder is called a "package".
 - A package holds up to four media files: screen, camera, microphone and system audio. In this plan each of these files is called a "track", and the untouched recorded files are called "masters".
 - All tracks share one clock. Every track's time zero is the same instant, so the files line up when they are dropped on any editor timeline at zero.
@@ -19,16 +19,18 @@ What we build:
 - With auto-share on, a share link is on the clipboard within 2 seconds of Stop. Without it, one click on Copy link does the same. The video uploads to a bucket David owns (Cloudflare R2 or any S3-compatible bucket). It plays on a small static viewer page stored in the same bucket.
 - An AI agent can start, stop, export and share through `loomclone` commands that print JSON.
 
-Base strategy (compared in Architecture): build a fresh, modular Swift codebase, and copy Screendrop's CC0 recording core into it file by file, together with small MIT and BSD-3 pieces from voom, OpenScreen and better-shot. We do not fork Screendrop whole, we do not start from OpenScreen, and we do not build a Rust app on Cap's MIT crates.
+Base strategy (compared in Architecture): build a fresh, modular Swift recording engine, and copy Screendrop's CC0 recording core into it file by file, together with small MIT and BSD-3 pieces from voom, OpenScreen and better-shot. Put an Electron, TypeScript and React shell in front of the engine; the shell drives the engine over a local socket with JSON requests and NDJSON events. We do not fork Screendrop whole, we do not start from OpenScreen, we do not build a Rust app on Cap's MIT crates, and we do not build the shell in native SwiftUI (that stays the compared fallback).
+
+Why this shape: David asked for a stack that is popular, performant and has a large developer community, for YouTube production output, for cloud publishing, and for an architecture that can later become a cloud SaaS. TypeScript, React and Electron are among the largest communities in desktop and web work (general knowledge about those ecosystems, not a finding from the notes), and they cover everything above the capture pipeline: the shell, the viewer and the share Worker are all TypeScript. Performance stays native because no permissive recorder in the notes captures macOS through Chromium: Screendrop, better-shot and voom capture in Swift inside the app, Kap records through a Swift recorder binary shipped with the app, OpenScreen captures through native helper processes, and Bloom captures through a closed native binary from its SDK.
 
 The evidence in one line per option:
 
 - Screendrop has the best permissively licensed macOS recording core in the notes: (4) for screen, camera, editing, transcription, project format and reliability. CC0 means we may copy it with no duty.
 - Forking Screendrop whole would also bring about 54,500 lines of Swift in one flat folder (the Screendrop note's snapshot figure; counting the pinned clone gives 55,671) with no test target, a screenshot tool David does not need, audio stored inside the screen file, and an automation score of (2).
-- OpenScreen has sharing (0), viewer (0), no live camera bubble, and mixes microphone and system audio into one track.
+- OpenScreen has sharing (0), viewer (0), no live camera bubble, and mixes microphone and system audio into one track. Its Electron-plus-native-helper shell is, however, the direct precedent for ours.
 - A Rust app on Cap's MIT crates would get camera and capture wrappers only. The pipeline, sync, recovery, rendering and upload would all have to be rebuilt clean-room from descriptions of AGPL code.
 
-The minimum viable product (MVP) is Phases 1 to 3: capture core and CLI, Loom-style recording UX, then review, share link and viewer. Phases 4 to 6 add transcripts and editing, a Cloudflare Worker share backend with comments, and extras.
+The minimum viable product (MVP) is Phases 1 to 3: capture core and CLI, the Electron shell with Loom-style recording UX, then review, share link and viewer. Phases 4 to 6 add transcripts and editing, a Cloudflare Worker share backend with comments, and extras. A Phase 7 sketch (cloud SaaS) is written down but is opened only when David says go.
 
 ## Product scope
 
@@ -40,26 +42,27 @@ This section has three parts: what the MVP includes, what comes later, and what 
 - Optional camera, microphone and system audio, each written to its own file on the shared clock.
 - Crash-safe recording: a crash or forced quit loses at most one fragment interval (one second) on every track.
 - Launch-time recovery of interrupted recordings, which never deletes footage.
-- Menu bar control, a floating control bar, a camera bubble, a countdown, pause and resume, global hotkeys and saved presets.
+- Menu bar control, a floating control bar, a camera bubble, a countdown, pause and resume, global hotkeys and saved presets. All of it is the Electron shell's UI over the engine.
 - A review window after Stop: trim start and end, place or hide the bubble, set microphone and system audio levels, set the title.
 - One-step share: render a share video, upload it to David's bucket, and serve it on a static viewer page.
-- Export presets: share MP4, full quality, editor tracks for David's editor, and audio only.
+- Export presets: share MP4, full quality, editor tracks for David's editor, audio only, and a YouTube preset (H.264 MP4 with the index at the front, 1080p60 or source size at a high bitrate).
 - A `loomclone` CLI that covers record, list, show, verify, export, share and unshare, with JSON output.
 
 ### Later (Phases 4 to 6)
 
 - On-device transcription, captions (SRT and WebVTT files, and burn-in), transcript-based cutting, filler and silence removal.
 - Clip editing with speed, click-driven auto zoom, and six screen-and-camera layouts.
-- On-device titles, summaries and chapters.
+- On-device titles, summaries and chapters, plus YouTube packaging: poster-frame thumbnails (PNG and JPG, 1280x720 and 1920x1080) and a chapters-to-YouTube-description text export from the chapters metadata.
 - Cloudflare Worker share mode with passwords, expiry, comments, reactions and view notifications.
 - A cursor-free recording mode with a redrawn cursor, a voice-following teleprompter, a local MCP server, App Intents, live drawing, a diagnostics bundle, and signed releases with updates if David wants to distribute the app.
+- A cloud SaaS tier: accounts, a multi-tenant Worker, a web library dashboard and quotas. This is the Phase 7 sketch and is opened only when David says go.
 
 ### Out of scope
 
 - Screenshots, scrolling capture, OCR text capture and the still-image annotation editor that Screendrop and better-shot carry.
 - Windows, Linux, a browser extension and mobile apps. macOS comes first; other platforms are a later question.
 - Meeting detection and speaker diarization (voom's meetings module).
-- Teams, organisations, sign-in, plan limits, analytics services, a render farm and Loom import (Cap's hosted product).
+- A multi-user cloud service: sign-in, teams, plan limits, analytics services and a render farm (Cap's hosted product) stay out until David opens Phase 7. Billing and marketing stay out even then. The SaaS readiness seams in Architecture keep the door open without adding MVP work.
 - Cloud transcription services and any upload that David did not ask for.
 
 ### Measured targets
@@ -83,34 +86,34 @@ These numbers are the targets the Roadmap checks. They are our goals, not claims
 How the best source was chosen: for each feature area we ranked the sources by the notes' quality score, then applied three filters before naming a Best source.
 
 1. Licence class. A copyleft source (Cap, Recordly and Screenity outside their permissive paths) is never a copy source. When it holds the top score, the row still names it and takes its design as clean-room or idea-only.
-2. Fit. Code is copied only when it fits a Swift and AVFoundation app and this plan's decisions. Rust crates, ffmpeg pipelines, Electron-only modules and still-image-only features are excluded as copy sources even when their licence is permissive; what they contribute arrives as an idea.
+2. Fit. Code is copied only when it fits the layer it will live in: the Swift and AVFoundation engine, or the TypeScript shell, viewer and worker. Rust crates, ffmpeg pipelines and still-image-only features are excluded as copy sources even when their licence is permissive; what they contribute arrives as an idea.
 3. Copyability. A file on a caution path or a copyleft_path is never copied, whatever its repo's licence.
 
-The Best source cell names the highest-scoring source left after those filters, and ties are broken by fit. Three rows show the filters at work. Export-formats: Kap scores (4) but its conversion path runs on ffmpeg we do not ship, so we copy Screendrop's (3) AVFoundation exporters and keep Kap's cache design as an idea. Compositing-render: OpenScreen (5), Recordly (5) and Cap (5) score higher than Screendrop (4), but OpenScreen's renderer is a Rust and ffmpeg add-on for Electron and the other two are copyleft, so Screendrop's Swift compositor is the copy source. Sharing-hosting: Cap scores (5) but is copyleft, so better-shot's (4) Swift uploader and Recordly's (3) MIT Worker are the copy sources.
+The Best source cell names the highest-scoring source left after those filters, and ties are broken by fit. Four rows show the filters at work. Export-formats: Kap scores (4) but its conversion path runs on ffmpeg we do not ship, so we copy Screendrop's (3) AVFoundation exporters and keep Kap's cache design as an idea. Compositing-render: OpenScreen (5), Recordly (5) and Cap (5) score higher than Screendrop (4), but OpenScreen's renderer is a Rust and ffmpeg add-on for Electron and the other two are copyleft, so Screendrop's Swift compositor is the copy source. Sharing-hosting: Cap scores (5) but is copyleft, so better-shot's (4) Swift uploader and Recordly's (3) MIT Worker are the copy sources. Platform-packaging: Screendrop (4), OpenScreen (4) and Kap (3) all ship notarized macOS releases, but Screendrop's path is Sparkle and a Go release tool around a native app; with an Electron shell we take the electron-builder and electron-updater patterns from Kap and OpenScreen as ideas and keep Screendrop's non-interactive release discipline as an idea too.
 
 "copy-with-notice" means we copy permissively licensed code and keep its licence notice. "clean-room" means we re-implement a copyleft design from the notes only. "idea-only" means we adopt a concept, not code. "own-design" means this plan defines the design.
 
 | Area | Phase | Best source | Licence | Reuse mode | Approach |
 |---|---|---|---|---|---|
-| `capture-screen` | 1 | screendrop (4): stream setup in `Screendrop/ScreenRecordingManager.swift`; openscreen (4): `electron/native/screencapturekit/Sources/OpenScreenCaptureCore/CaptureSizing.swift` | CC0-1.0; MIT | copy-with-notice | One ScreenCaptureKit stream per take: display (own app excluded), window (window-following filter, as voom does) or area (display filter with a source rectangle). Output size is the content rectangle times the point-to-pixel scale, long edge at most 3840 px, even numbers (OpenScreen helper). 60 fps, queue depth 3, synchronous hop into the writer queue so the stream drops frames instead of piling up memory (Screendrop). HEVC master with 1 s keyframes and 1 s fragments. Cap scores (5), but its capture code is AGPL Rust outside the MIT scap crates, and those crates do not fit a Swift app. |
+| `capture-screen` | 1 | screendrop (4): stream setup in `Screendrop/ScreenRecordingManager.swift`; openscreen (4): `electron/native/screencapturekit/Sources/OpenScreenCaptureCore/CaptureSizing.swift` | CC0-1.0; MIT | copy-with-notice | One ScreenCaptureKit stream per take: display (the shell app and the engine both excluded; Screendrop's single-app exclusion takes a list), window (window-following filter, as voom does) or area (display filter with a source rectangle). Output size is the content rectangle times the point-to-pixel scale, long edge at most 3840 px, even numbers (OpenScreen helper). 60 fps, queue depth 3, synchronous hop into the writer queue so the stream drops frames instead of piling up memory (Screendrop). HEVC master with 1 s keyframes and 1 s fragments. Cap scores (5), but its capture code is AGPL Rust outside the MIT scap crates, and those crates do not fit a Swift app. |
 | `capture-camera` | 1 | screendrop (4): `Screendrop/CameraRecordingManager.swift` | CC0-1.0 | copy-with-notice | A separate AVCaptureSession writes `camera.mov`: HEVC, 1920x1080 at 30 fps when the device offers it, else 1280x720 at 30 fps, at least 6 Mbit/s. The session warms up when the camera is selected and is reused to record. The frame duration is pinned to the chosen rate, and a reconnected camera is found again by its unique id or model id (behaviours the Cap note describes for its MIT camera crate, rewritten in Swift). Losing the camera mid-take is a warning, not a failure (Screenity design, clean-room). better-shot also scores (4), but its camera code is the same shared core, so we take Screendrop's copy. Cap scores (5) through a Rust crate that does not fit a Swift app. |
 | `capture-audio` | 1 | recordly (4): one time zero for all tracks, separate microphone and system audio files | AGPL-3.0 (design only) | clean-room | Microphone and system audio go to `mic.mov` and `system.mov` on the shared clock and are never mixed into the screen file. A late first sample gets leading silence. Retiming shifts every timing entry of a buffer (voom `AudioSampleTiming.swift`, MIT, copied with notice). Gaps over 250 ms are filled with silence driven by the session clock (OpenScreen principle). Muting one track writes silence, so the track stays continuous (Bloom idea). OpenScreen also scores (4) but mixes both sources into one track, which David's editor could not separate. |
-| `recording-controls` | 2 | better-shot (4): picker-to-transport bar with global stop, pause, restart and discard shortcuts | BSD-3-Clause | idea-only | Own SwiftUI bar: source (display, window, area), camera, microphone, system audio, then timer, pause, restart, stop and discard. Global hotkeys for start and stop, pause and discard. Countdown of 0, 3 or 5 s, cancelled by Escape. The pipeline warms during the countdown behind a start gate (Cap and Recordly designs, clean-room). The menu bar icon starts and stops (Kap idea). Saved presets (voom idea). Area picker with ratio and window snapping (Kap idea). |
-| `camera-overlay` | 2 (live bubble), 4 (layouts) | better-shot (4): `Sources/BetterShot/RecordingStudioStyle.swift:432-576`; screendrop (3): floating preview in `Screendrop/CameraRecordingManager.swift` | BSD-3-Clause; CC0-1.0 | copy-with-notice | Live: a round floating panel, default 200 pt with sizes 160, 200 and 280 pt, draggable, mirrored preview, excluded from capture. Its position is remembered as offsets from the nearest screen edges and clamped back on screen after display changes (Screenity idea). Edit time: the bubble is rebuilt from `camera.mov`. Phase 4 adds better-shot's six layouts from one pure layout function that preview and export share. |
+| `recording-controls` | 2 | better-shot (4): picker-to-transport bar with global stop, pause, restart and discard shortcuts | BSD-3-Clause | idea-only | Own React control bar in the shell: source (display, window, area), camera, microphone, system audio, then timer, pause, restart, stop and discard. Global hotkeys for start and stop, pause and discard. Countdown of 0, 3 or 5 s, cancelled by Escape. The pipeline warms during the countdown behind a start gate (Cap and Recordly designs, clean-room). The menu bar tray icon starts and stops (Kap idea). Saved presets (voom idea). Area picker with ratio and window snapping (Kap idea). |
+| `camera-overlay` | 2 (live bubble), 4 (layouts) | better-shot (4): `Sources/BetterShot/RecordingStudioStyle.swift:432-576`; bloom (2): bubble window shape in `src/main/index.js:225-253`; screendrop (3): camera warm-up in `Screendrop/CameraRecordingManager.swift` | BSD-3-Clause; MIT; CC0-1.0 | copy-with-notice | Live: a round frameless Electron window, always on top, non-activating and content-protected, showing compressed preview frames the engine publishes over the control socket from the same camera session that writes `camera.mov` (the wrinkle and the chosen answer are in Recording pipeline). Default 200 pt with sizes 160, 200 and 280 pt, draggable, mirrored preview, excluded from capture via the engine's filter. Its position is remembered as offsets from the nearest screen edges and clamped back on screen after display changes (Screenity idea). Edit time: the bubble is rebuilt from `camera.mov`. Phase 4 adds better-shot's six layouts from one pure layout function that preview and export share. |
 | `annotation` | 6 | voom (3): live drawing panel captured on purpose | MIT | idea-only | Later: a transparent full-screen drawing panel (pen, arrow, rectangle, text) that is deliberately included in the screen capture, so strokes land in `screen.mov`. Tool conventions follow the Screenity note (number-key tools, highlighter drawn under ink, arrows keep their handles), clean-room. better-shot (4) and Screendrop (3) score higher but annotate still images only, which is out of scope; Screenity (4) is copyleft. |
 | `compositing-render` | 3 | screendrop (4): `Screendrop/RecordingStudioExporter.swift`, `Screendrop/RecordingExportTiming.swift`, `Screendrop/StudioCameraBubbleScaler.swift` | CC0-1.0 | copy-with-notice | Offline compositor on a fixed output clock: each tick draws the newest screen frame at or before it and picks the camera frame by the same rule. Core Image and Metal, Lanczos bubble scaling, settled-frame reuse. The exporter's `ViewportTimeline` type lives in Screendrop's caution file, so we supply our own type. OpenScreen, Recordly and Cap score (5), but OpenScreen's renderer is a Rust and ffmpeg add-on for Electron and the other two are copyleft. We keep OpenScreen's rule that preview and export share one layout function with fractional sizes. |
 | `editing` | 3 (trim), 4 | screendrop (4): `Screendrop/RecordingClipTimeline.swift`, `Screendrop/RecordingTranscriptEditing.swift`, `Screendrop/RecordingCompositionBuilder.swift` | CC0-1.0 | copy-with-notice | Non-destructive clip list over untouched masters: split, delete, per-clip speed, undo. Transcript word cuts land inside pauses. Filler and silence removal. Auto zoom is planned from recorded clicks by a Swift port of OpenScreen's MIT planner (`src/lib/ai-edition/timeline/zoom-suggestions.ts`), plus Recordly's safe-zone pan rule (clean-room). Screendrop's and better-shot's zoom files are not used: one is a caution path, the other is AGPL. |
 | `transcription-captions` | 4 | screendrop (4): `Screendrop/RecordingTranscription.swift` | CC0-1.0 | copy-with-notice | On-device SpeechAnalyzer on `mic.mov` with word times. Cues hold at most 42 characters, break at pauses of 0.9 s and last at most 4 s. SRT, WebVTT, TXT and JSON files, as voom offers. Silence-aware re-segmentation and dropping words inside silence (Recordly design, clean-room). Runs in the background after Stop and never blocks review or share (Bloom idea). Cap scores (5) with cloud and local models; idea only. |
 | `ai-features` | 4 | voom (4): `Packages/VoomCore/Sources/VoomCore/Services/TextAnalysis/TextAnalysisService.swift` | MIT | copy-with-notice | Title, summary and chapters from a transcript sampled evenly across the whole recording. Apple's on-device model by default; a bring-your-own-key provider is an Open decision. The CLI exposes the transcript and accepts metadata, so David's own agents can write richer summaries. OpenScreen's chat editing agent (4) is deferred to the MCP work in Phase 6. |
-| `export-formats` | 3 | screendrop (3): `Screendrop/VideoCompressionModels.swift`, `Screendrop/VideoFileActions.swift`; kap (4): cache design in `main/conversion.ts` | CC0-1.0; MIT | copy-with-notice | AVFoundation only, no bundled ffmpeg. Presets: share (H.264 MP4 with the index at the front, long edge at most 1920 px, 30 fps), full (HEVC or H.264, MOV or MP4, source size, 30 or 60 fps), editor-tracks (APFS clones of the masters plus `offsets.json`) and audio (M4A or WAV). One render cache keyed by the edit document and preset (Kap cache plus Screendrop render stamp). Output is written to a staged file and renamed into place (OpenScreen idea). Kap scores (4), but through ffmpeg and gifsicle, which we do not ship. |
+| `export-formats` | 3 (presets), 4 (youtube extras) | screendrop (3): `Screendrop/VideoCompressionModels.swift`, `Screendrop/VideoFileActions.swift`; kap (4): cache design in `main/conversion.ts` | CC0-1.0; MIT | copy-with-notice | AVFoundation only, no bundled ffmpeg. Presets: share (H.264 MP4 with the index at the front, long edge at most 1920 px, 30 fps), full (HEVC or H.264, MOV or MP4, source size, 30 or 60 fps), editor-tracks (APFS clones of the masters plus `offsets.json`), audio (M4A or WAV) and youtube (H.264 MP4 with the index at the front, 1080p60 or source size at a high bitrate). Phase 4 adds poster-frame thumbnails (PNG and JPG, 1280x720 and 1920x1080) and a chapters-to-YouTube-description text export. One render cache keyed by the edit document and preset (Kap cache plus Screendrop render stamp). Output is written to a staged file and renamed into place (OpenScreen idea). Kap scores (4), but through ffmpeg and gifsicle, which we do not ship. |
 | `project-format` | 1 | screendrop (4): package layout; openscreen (4): atomic, versioned document | CC0-1.0; MIT | own-design | Our own schema (see Project format): one plain folder per take with four track files, `manifest.json` written at start, `input.ndjson`, `edit.json`, transcript and share state. Atomic writes (temporary file, fsync, rename) and forward-only schema versions. A SQLite index that can be rebuilt from the manifests (voom idea). |
 | `sharing-hosting` | 3 (bucket), 5 (Worker) | better-shot (4): `Sources/Sharing/R2Uploader.swift:10-117`, `Sources/Sharing/ShareManifest.swift`; recordly (3): `services/recordly-share/worker/src/uploads.js` | BSD-3-Clause; MIT | copy-with-notice | Bucket mode first: SigV4-signed requests to any S3-compatible bucket, multipart upload in 10 MB parts with abort and resume, link first, then media, then poster and transcript. Worker mode later: the MIT recordly-share Worker on R2 and D1 adds passwords, expiry and comments. We take Recordly's Worker rather than voom's, its MIT upstream, because it hashes passwords with PBKDF2 while the voom note flags voom's fast salted SHA-256. Cap scores (5) with upload while recording, which is deferred and would be clean-room. Screendrop's own Worker lives in a repo with no licence and is never used. |
 | `viewer-web` | 3 (static), 5 (feedback) | voom (4): `voom-share/web/src/scripts/player.ts` | MIT | copy-with-notice | A static viewer in the same bucket: native video element, poster, captions, click-to-seek transcript, chapters, start-time links, speed and download, plus a "processing" state that refreshes itself. Each share's HTML page carries Open Graph tags, so chat apps show a title and poster with no server. Phase 5 adds recordly-share's comment and reaction viewer. Cap's live HLS viewer (5) is deferred. |
 | `teleprompter-scripts` | 6 | screendrop (4): `Screendrop/TeleprompterSpeechEngine.swift`, `Screendrop/TeleprompterScript.swift` | CC0-1.0 | copy-with-notice | A notch or pill overlay excluded from capture. It follows the voice by teeing the recording's own microphone buffers into live on-device recognition, with a forward-only fuzzy match and an 8-word lookahead. |
-| `platform-packaging` | 1 (signed dev build), 6 (release) | screendrop (4): Sparkle appcast, notarized DMG, Homebrew cask, non-interactive release tool `cmd/screendrop-release/main.go` | CC0-1.0 | idea-only | macOS 26.4 or later on Apple silicon. XcodeGen spec plus a Swift package. Menu bar agent, hardened runtime, no App Sandbox. Every build is signed with one stable identity so macOS keeps its permission grants. A notarized DMG, updates and a Homebrew cask only if David chooses to distribute (Open decisions). |
+| `platform-packaging` | 1 (signed dev build), 2 (app bundle), 6 (release) | kap (3): electron-builder with notarisation (`package.json`, `build/entitlements.mac.inherit.plist`); openscreen (4): hardened-runtime signed and notarized DMG plus electron-updater (`electron-builder.json5`); screendrop (4): non-interactive release tool `cmd/screendrop-release/main.go` as an idea | MIT; CC0-1.0 | idea-only | macOS 26.4 or later on Apple silicon. electron-builder packages the app; the engine executable and `loomclone` ship inside the bundle and are signed with it (Bloom re-signs its nested capture app in an afterPack hook, `build/afterPack.js`, the same duty). Hardened runtime, no App Sandbox. Every build is signed with one stable identity so macOS keeps its permission grants. A notarized DMG, updates through electron-updater and a Homebrew cask only if David chooses to distribute (Open decisions). |
 | `performance-reliability` | 1 | screendrop (4): `Screendrop/RecordingRecoveryCoordinator.swift`, `Screendrop/ScreenRecordingManager.swift:472-635` | CC0-1.0 | copy-with-notice | Fragmented writers, launch recovery that never deletes footage, failures that finalize instead of discarding, an activity token against App Nap and idle sleep, and capture backpressure. Fixes taken from other notes: manifest with a status written at start (Cap, clean-room), input checkpointed every second, one shared pause clock, bounded finalize (Screenity, clean-room), post-stop decode test (Recordly, clean-room), torn-fragment salvage ported from OpenScreen `electron/recording/nativeMacCaptureSalvage.ts` (MIT). Cap and Screenity score (5) but are copyleft. |
-| `extensibility-automation` | 1 | voom (4): `Packages/VoomCLI/Sources/voom/main.swift`; openscreen (4): NDJSON events in `website/docs/cli.md` | MIT | copy-with-notice | `loomclone` talks to the running app over a local socket. It has a self-describing `guide --json`, JSON on stdout, JSON errors on stderr, NDJSON progress events, stable exit codes, and start and stop keyed by recording id. A bundled agent skill file tells agents to read the guide first. MCP server, App Intents and a URL scheme come in Phase 6. Cap scores (5) with the same shape; idea only. |
-| `privacy-security` | 2 | screendrop (4): `Screendrop/PreviewWindowCaptureExclusion.swift`, `Screendrop/CloudCredentialStore.swift`; bloom (2): onboarding flow in `src/renderer/ui/permissions.js` | CC0-1.0; MIT | copy-with-notice | Local-first: no network traffic except share uploads and model downloads. Secrets in the Keychain. Own UI excluded from capture. Keystroke logging off by default and limited to modifier chords when on. Permission checks that never prompt, with separate "not asked" and "denied" states (Cap and OpenScreen ideas), and a guided onboarding window (Bloom idea). The control socket is readable only by David's user. Signatures and credentials are stripped from logs (Cap idea). |
+| `extensibility-automation` | 1 | voom (4): `Packages/VoomCLI/Sources/voom/main.swift`; openscreen (4): NDJSON events in `website/docs/cli.md` | MIT | copy-with-notice | `loomclone` talks to the engine over its local socket (the engine serves it; the shell is just another client). It has a self-describing `guide --json`, JSON on stdout, JSON errors on stderr, NDJSON progress events, stable exit codes, and start and stop keyed by recording id. A bundled agent skill file tells agents to read the guide first. MCP server, App Intents and a URL scheme come in Phase 6. Cap scores (5) with the same shape; idea only. |
+| `privacy-security` | 2 | screendrop (4): `Screendrop/PreviewWindowCaptureExclusion.swift`, `Screendrop/CloudCredentialStore.swift`; bloom (2): onboarding flow in `src/renderer/ui/permissions.js` | CC0-1.0; MIT | copy-with-notice | Local-first: no network traffic except share uploads and model downloads. Secrets in the Keychain on the engine side; shell-held tokens go through Electron's safeStorage (OpenScreen pattern). Own UI excluded from capture by the engine filter plus window content protection. Keystroke logging off by default and limited to modifier chords when on. Permission checks that never prompt, with separate "not asked" and "denied" states (Cap and OpenScreen ideas), and a guided onboarding window (Bloom idea). The control socket is readable only by David's user. Signatures and credentials are stripped from logs (Cap idea). |
 
 ### How conflicts between sources are resolved
 
@@ -120,7 +123,8 @@ The Best source cell names the highest-scoring source left after those filters, 
 - **Fragment interval.** Screendrop and Cap use 2 s fragments; OpenScreen and Screenity use about 1 s. We use 1 s, so a crash loses at most one fragment.
 - **Master codec.** Screendrop records HEVC; OpenScreen records H.264. We record HEVC masters for quality per bit and render share files in H.264, because the voom note warns that HEVC MP4 may not play in every browser.
 - **Pixel format.** Screendrop captures BGRA. OpenScreen captures NV12 video range, and Recordly captures NV12 with BT.709 colour tags (the notes' capture sections). We capture NV12 (two sources agree, and it halves memory traffic).
-- **Capture process.** OpenScreen and Recordly run capture in a child helper process. Screendrop and voom capture inside the app. We capture inside the app, because macOS grants screen, camera and microphone permission to the app that owns the capture, and because fragments already bound crash loss. The helper's "JSON in, JSON lines out" shape is reused for our control socket.
+- **Capture process.** OpenScreen and Recordly run capture in a native child process; Screendrop and voom capture inside the app; Kap records through a Swift recorder binary that ships with the app; Bloom captures through a closed binary from its SDK. We run capture in the engine executable, which ships inside LoomClone.app and is started by the shell. macOS attributes Screen Recording, camera and microphone permission to the app bundle that owns the process, so one grant covers the shell, the engine and agent use for as long as the signature is stable. The helper's JSON-request and line-event shape is the same contract our control socket speaks.
+- **Live camera preview.** Bloom previews its bubble with a renderer-side camera stream because it never writes a camera file. OpenScreen records its macOS camera in the renderer and pays for it: browser WebM, with the offset measured from process start-up rather than shared capture timestamps. Our engine owns the one AVCaptureSession that writes `camera.mov`, so the bubble shows compressed preview frames published by the engine over the control socket, and the renderer never opens the camera.
 - **Cursor.** Screendrop, OpenScreen, Recordly and Cap hide the cursor and redraw it. voom bakes it in. David's editor may not draw a cursor, so the default is a baked cursor, with the pointer timeline always recorded. A cursor-free mode arrives in Phase 6 (Open decisions).
 - **Transcription engine.** Screendrop uses Apple's SpeechAnalyzer; OpenScreen and Recordly use whisper.cpp; voom uses Parakeet. We use SpeechAnalyzer: it is on-device, needs no model files of our own, and Screendrop's CC0 code already wraps it.
 - **Auto zoom rules.** Screendrop's, Cap's, OpenScreen's and Recordly's constants differ. We port OpenScreen's MIT planner because it is copyable code with tuned constants, and add Recordly's safe-zone pan rule from the note.
@@ -135,30 +139,30 @@ The Best source cell names the highest-scoring source left after those filters, 
 | Option | What the notes show we would get | What the notes show is missing or costly | Licence exposure | Verdict |
 |---|---|---|---|---|
 | A. Fork Screendrop whole (CC0, Swift, macOS) | Strongest permissive macOS core: separate `camera.mov` with an offset, 2 s fragmented writers, launch recovery, Studio editor, on-device transcription, teleprompter | About 54,500 lines in one flat folder (the note's snapshot; the clone counts 55,671), no test target, most services written as singletons; a screenshot tool David does not need; audio inside `screen.mov`; pause-sync and recovery-metadata gaps; automation (2); its share Worker is in an unlicensed repo | CC0; one caution file | Use as a parts bin, not as the base |
-| B. Fresh Swift codebase reusing permissive parts | The same Screendrop core, copied file by file into a tested module layout; voom's core, app and CLI split and its JSON CLI; OpenScreen's Swift sizing helper; better-shot's SigV4 uploader and layout function | More early work than a fork: the session state machine, clock and writers are rewritten around separate audio files and one pause clock | CC0, MIT and BSD-3 notices only | Recommended |
-| C. Start from OpenScreen (MIT, Electron, TypeScript, Rust compositor) | Compositor (5), CLI (4), project format (4), local Whisper | Sharing (0) and viewer (0); no live camera bubble; microphone and system audio mixed into one track; macOS camera recorded as browser WebM with an offset measured from process start-up; very large Rust modules | MIT, plus LGPL ffmpeg and other bundled parts | Reject as base; borrow ideas |
+| B. Fresh Swift engine with a native SwiftUI shell | The same Screendrop core, copied file by file into a tested module layout; voom's core, app and CLI split and its JSON CLI; OpenScreen's Swift sizing helper; better-shot's SigV4 uploader and layout function | One toolchain and the smallest footprint, but the smallest community for the UI layer too: no web skills transfer to a native shell, and every future web surface (viewer, SaaS) is written elsewhere anyway | CC0, MIT and BSD-3 notices only | Closest alternative; the fallback if David rejects an Electron shell |
+| C. Start from OpenScreen (MIT, Electron, TypeScript, Rust compositor) | Compositor (5), CLI (4), project format (4), local Whisper; the Electron 41 + React 18 + TypeScript + Vite shell is the precedent our shell follows | Sharing (0) and viewer (0); no live camera bubble; microphone and system audio mixed into one track; macOS camera recorded as browser WebM with an offset measured from process start-up; very large Rust modules | MIT, plus LGPL ffmpeg and other bundled parts | Reject as base; borrow ideas and the shell pattern |
 | D. Tauri or Rust app on Cap's MIT crates | Camera facade, ScreenCaptureKit wrapper and display and window enumeration (MIT) | Pipelines, sync, start gate, fragmenting, recovery, cursor capture, rendering and upload are AGPL and must be rebuilt clean-room; the crates pin forks of cidre, cpal and rust-ffmpeg plus a generated workspace-hack crate | MIT crates beside an AGPL tree; highest contamination exposure | Reject |
+| E. Swift LoomCore engine plus Electron, TypeScript and React shell | The engine is option B's core (Screendrop CC0 file by file, voom and OpenScreen Swift parts) packaged as one executable that owns capture, writers, recovery and jobs; the shell gets the proven Electron-plus-native-recorder shape: Kap is a TypeScript Electron main process with a React renderer recording through a Swift binary, OpenScreen is Electron 41 + React 18 + TypeScript + Vite with native helpers that, by its own stated invariant, own capture, timing and encoding while Electron owns orchestration | Two toolchains (Swift and Node) and two processes; the shell adds Chromium's memory footprint and its upgrade treadmill (both in Risks, with mitigations) | CC0, MIT and BSD-3 notices only | Recommended |
 
 ### Recommendation
 
-Choose option B. The deciding evidence:
+Choose option E: the Swift LoomCore engine behind an Electron, TypeScript and React shell. The deciding evidence:
 
-- David's must-haves are separate tracks on one clock, a live bubble, local-first storage, self-hosted links and agent control. Screendrop already covers most of the first three (a separate camera file on a shared clock, a live bubble, local packages) and is CC0. Its weak points (automation, audio layout, pause clock, recovery metadata, no Worker) are all in code we would rewrite anyway.
-- voom proves the target module shape: a core library shared by a menu bar app and a CLI, written in Swift.
-- Options C and D would each spend most of the effort replacing the parts David cares about most (capture layout and sharing for C; nearly everything for D).
-- macOS comes first, so the cross-platform reach of C and D buys nothing now.
+- The pipeline stays native. No permissive recorder in the notes captures macOS through Chromium: Screendrop, better-shot and voom capture in Swift inside the app, Kap records through a Swift recorder binary shipped with the app, OpenScreen captures through native helper processes, and Bloom captures through a closed native binary. Capture, writers, recovery and jobs live in the engine, so drop-sensitivity never touches JavaScript.
+- The stack requirement is met where it counts. TypeScript, React and Electron are popular, well-documented and among the largest developer communities for desktop and web work (general knowledge about those ecosystems, not a finding from the notes). The shell, the static viewer and the share Worker are all TypeScript, so one language covers everything above the engine, including the later SaaS tier.
+- The shape is proven on macOS over years. Kap's TypeScript main process drives a React renderer and a Swift recorder binary; OpenScreen's Electron app drives per-platform native helpers and states the same invariant we adopt. Both package, sign and notarize this shape with electron-builder (Kap notarizes in the builder config, OpenScreen in CI).
+- David's new asks ride existing seams. YouTube output is a preset plus two metadata exports (Editing and export). Cloud publishing is the bucket-plus-Worker tier unchanged. SaaS readiness is three seams named below, not new MVP work.
+- The fallback stays cheap. All product logic lives in the engine; the shell is a replaceable lid. If David later rejects Electron, option B's native shell mounts on the same engine and socket with no engine change.
 
 ### Repository layout
 
 ```text
 loom-clone/
-  Package.swift            # LoomCore library, loomclone CLI, unit tests
-  project.yml              # XcodeGen spec for LoomClone.app
-  App/                     # menu bar app: bar, bubble, review, settings, onboarding
+  Package.swift            # LoomCore library, loomcore-engine, loomclone CLI, tests
   Sources/LoomCore/
     Catalog/               # displays, windows, cameras, microphones
     Clock/                 # SessionClock: epoch, gate, pauses
-    Capture/               # ScreenCaptureKit stream, camera session
+    Capture/               # ScreenCaptureKit stream, camera session, preview frames
     Writers/               # fragmented AVAssetWriter per track
     Input/                 # pointer, clicks, keys -> input.ndjson
     Session/               # recording state machine, preflight
@@ -169,14 +173,16 @@ loom-clone/
     Meta/                  # titles, summaries, chapters
     Share/                 # SigV4, multipart, providers, viewer pages
     Control/               # command types, socket server and client
-  Sources/loomclone/       # CLI executable, a thin client
+  Sources/loomcore-engine/ # engine executable: boots LoomCore, serves control.sock
+  Sources/loomclone/       # CLI executable, a thin socket client
   Tests/LoomCoreTests/     # unit tests and small fixture movies
   Tests/Integration/       # scripted record and verify runs
+  shell/                   # Electron app: main process (TypeScript), renderer (React)
   viewer/                  # static share viewer, TypeScript, no framework
   worker/                  # Phase 5: adapted recordly-share Worker
   docs/agent/SKILL.md      # agent skill: "run loomclone guide --json first"
-  licenses/                # full licence texts of copied code
-  THIRD_PARTY_NOTICES.md   # one entry per copied file
+  licenses/                # licence texts of copied code and direct dependencies
+  THIRD_PARTY_NOTICES.md   # one entry per copied file and direct dependency
   tools/checks/            # existing plan and clean-room checks
 ```
 
@@ -186,7 +192,7 @@ loom-clone/
 |---|---|---|
 | Catalog | Lists displays, windows, cameras and microphones with stable ids | Screendrop `RecordingSourceCatalog.swift` (CC0) |
 | Clock | `SessionClock`: the epoch, the start gate, the pause list, and host-time to media-time mapping | Own design; pure and unit-tested |
-| Capture | `ScreenSource` (one ScreenCaptureKit stream with screen, system audio and microphone outputs) and `CameraSource` (AVCaptureSession) | Screendrop `ScreenRecordingManager.swift` stream parts, `CameraRecordingManager.swift`; OpenScreen `CaptureSizing.swift` (MIT) |
+| Capture | `ScreenSource` (one ScreenCaptureKit stream with screen, system audio and microphone outputs), `CameraSource` (AVCaptureSession) and the camera preview-frame publisher | Screendrop `ScreenRecordingManager.swift` stream parts, `CameraRecordingManager.swift`; OpenScreen `CaptureSizing.swift` (MIT) |
 | Writers | `TrackWriter`: one AVAssetWriter per file on one serial queue; fragments, retiming, silence fill, health checks, bounded finalize | Screendrop writer parts; voom `AudioSampleTiming.swift` (MIT) |
 | Input | Pointer, click, keystroke and cursor-image recorders writing append-only NDJSON | Screendrop `RecordingPointerCapture.swift`, `RecordingPointerArtworkCapture.swift`, `RecordingKeystrokeCapture.swift` |
 | Session | `RecordingSession` actor: the state machine, preflight checks, warnings | Own design, following Screendrop's start order |
@@ -196,20 +202,22 @@ loom-clone/
 | Transcribe | SpeechAnalyzer wrapper, cue builder, SRT and WebVTT writers, transcript edit planner, silence detector | Screendrop `RecordingTranscription.swift`, `RecordingTranscriptEditing.swift`; better-shot `Sources/Services/SilenceDetector.swift` (BSD-3) |
 | Meta | Title, summary and chapters | voom `TextAnalysisService.swift` approach (MIT) |
 | Share | SigV4 signer, multipart uploader, `ShareProvider` protocol, bucket and Worker providers, viewer page builder, Keychain store | better-shot `R2Uploader.swift`, `R2CredentialStore.swift`, `ShareManifest.swift` (BSD-3) |
-| Control | Codable request, response and event types; socket server in the app; client in the CLI; the guide | voom CLI conventions (MIT); OpenScreen NDJSON conventions (MIT) |
-| App target | Menu bar item, control bar, bubble panel, countdown, area picker, review window, settings, onboarding | Screendrop `PreviewWindowCaptureExclusion.swift` and bar ideas |
+| Control | Codable request, response and event types; socket server in the engine; client in the CLI; the guide | voom CLI conventions (MIT); OpenScreen NDJSON conventions (MIT) |
+| Engine target (`loomcore-engine`) | Boots LoomCore, serves `control.sock`, runs the job queue, publishes preview frames, delays quit while writers finish | Own design over LoomCore |
+| Shell main process | App lifecycle, tray, global shortcuts, window registry, launches and watches the engine, clipboard, notifications, settings | Own design; Kap's main-process shape (`main/index.ts`) and OpenScreen's single typed IPC channel (`technical-documentation/architecture/native-bridge.md`) as MIT ideas |
+| Shell renderer | Bar, bubble, countdown, area picker, review, library, settings and onboarding as React windows | Own design; Bloom's bar and bubble windows (`src/main/index.js:45-89`, `225-253`) as MIT ideas |
 | CLI target | Argument parsing (swift-argument-parser, Apache-2.0) mapped onto Control requests | voom `main.swift` output helpers (MIT) |
 
 ### Process model
 
-- One app process, `LoomClone.app`, runs as a menu bar agent (no Dock icon). It is not sandboxed and uses the hardened runtime with the camera and audio-input entitlements, as Screendrop and voom do.
-- The app hosts the recording engine, the UI, the job queue and the control server.
-- Real-time work runs on dedicated queues: the ScreenCaptureKit screen and audio output queues, the camera output queue, and one serial queue per `TrackWriter`. The main actor only drives UI and state.
-- `loomclone` is a separate small executable shipped inside the app bundle and linked onto David's `PATH` from Settings. It never captures anything.
-- The CLI connects to a Unix domain socket at `~/Library/Application Support/LoomClone/control.sock`. The socket's folder is mode 0700 and the server checks that the peer runs as the same user.
-- If the socket is not there, the CLI launches the app in the background through Launch Services and waits up to 5 s.
-- Why capture stays in the app: macOS attributes Screen Recording, camera and microphone permission to the app that owns the capture. A CLI that captured by itself would be attributed to whatever terminal or agent host started it. Keeping capture in the app gives one permission identity for both GUI and agent use, and the bubble and bar still appear during agent-started recordings.
-- `list`, `show` and `verify` can also read packages directly when the app is not running. They are read-only.
+- Two processes in production, both inside `LoomClone.app`: the Electron shell (main process plus renderer) and the engine executable `loomcore-engine`. The shell's main process starts the engine at launch and restarts it if it dies while no recording is running. The engine is a faceless process: no windows, no Dock presence.
+- Division of work follows OpenScreen's stated invariant: the native side owns capture, timing and encoding; Electron owns orchestration, windows and persistence the user sees. Concretely, the engine owns capture, the writers, recovery, the job queue, the control socket and the camera preview publisher; the shell owns every window, the tray, global shortcuts, the clipboard, notifications and settings.
+- How permission lands on one identity. macOS attributes Screen Recording, camera and microphone permission to the app bundle that owns the capturing process. The engine executable ships inside `LoomClone.app` and is launched by the shell, so all three permissions attach to the one bundle David grants once, and the CLI (also inside the bundle, linked onto David's `PATH` from Settings) needs no grant of its own. Kap and OpenScreen use exactly this shape: Kap records through a Swift recorder binary that ships with the app, OpenScreen through native helper processes it launches. Bloom's afterPack hook that re-signs its nested capture app shows the signing duty for nested native code; electron-builder signs ours with the bundle.
+- The CLI connects to a Unix domain socket at `~/Library/Application Support/LoomClone/control.sock`, served by the engine. The socket's folder is mode 0700 and the server checks that the peer runs as the same user. The shell connects to the same socket as a second client, so the engine treats GUI starts and agent starts identically and the bar and bubble appear for both.
+- If the socket is not there, the CLI launches the app in the background through Launch Services and waits up to 5 s; the app then starts the engine. During Phase 1, before the shell exists, the CLI starts the engine directly as a child process. In that standalone mode macOS attributes permissions to the bare engine binary; Phase 2's fresh-account walkthrough is the proof that the bundled path needs only the one bundle grant.
+- The engine can also run alone for development and integration tests (`loomcore-engine serve`), which is how Phase 1's gates run without any UI.
+- Real-time work runs on dedicated queues inside the engine: the ScreenCaptureKit screen and audio output queues, the camera output queue, and one serial queue per `TrackWriter`. Nothing in the shell is on a real-time path.
+- `list`, `show` and `verify` can also read packages directly when no engine is running. They are read-only.
 
 ### Platform APIs
 
@@ -219,23 +227,23 @@ loom-clone/
 - Core Media: the host time clock, conversion from the capture session's synchronization clock to the host clock, and sample-buffer copies with new timing.
 - VideoToolbox through AVAssetWriter's hardware HEVC and H.264 encoders; Core Image on Metal; IOSurface-backed pixel buffer pools.
 - Core Graphics: listen-only event taps, and the screen capture and listen-event preflight and request calls.
-- AppKit: status item, non-activating panels that join all Spaces, window sharing type, pasteboard (link and file reference), workspace (open System Settings panes, launch the app).
+- AppKit, only in the CLI: NSWorkspace to launch the app through Launch Services. The engine opens no windows.
+- Electron (shell): BrowserWindow with frameless, always-on-top, visible-on-all-workspaces and non-activating options for the bubble and the bar; window content protection so other capture tools skip our windows; Tray; globalShortcut; clipboard; safeStorage for tokens; and one typed IPC channel between renderer and main process, the native-bridge pattern OpenScreen documents.
 - Speech (SpeechAnalyzer, SpeechTranscriber, asset installation) and Foundation Models (on-device language model), both macOS 26.
-- Security (Keychain items), CryptoKit (SHA-256 and HMAC for SigV4), URLSession.
+- Security (Keychain items, engine side), CryptoKit (SHA-256 and HMAC for SigV4), URLSession.
 - ProcessInfo activities to block App Nap and idle sleep; volume free-space resource values.
-- Carbon hotkey registration for global shortcuts, as Screendrop does.
 - Later: App Intents, ServiceManagement (login item).
 
 ### Toolchain, build and test
 
-- Xcode 26 with Swift 6.2 in Swift 6 language mode and strict concurrency. Copied Screendrop files assume main-actor default isolation, so the targets that hold them set that isolation, or the files get explicit annotations.
-- XcodeGen (installed with Homebrew) generates the app project from `project.yml`, as better-shot does. The Swift package builds the core library and the CLI without Xcode's project file.
-- Build: `xcodegen generate`, then `xcodebuild -scheme LoomClone -configuration Debug build`. Core and CLI alone: `swift build`.
-- Unit tests: `swift test`. They cover pure code (clock, retiming, manifest, edit planner, layout, zoom planner, SigV4, recovery on fixture files) and need no permissions.
+- Engine: Xcode 26 with Swift 6.2 in Swift 6 language mode and strict concurrency. Copied Screendrop files assume main-actor default isolation, so the targets that hold them set that isolation, or the files get explicit annotations.
+- Shell: a standard npm project. TypeScript in strict mode, React, Vite as the dev server and electron-builder for packaging, the same family of tooling the OpenScreen note reports (Electron 41, React 18, Vite 7). We track the current Electron major rather than pinning an old one; that choice is the treadmill mitigation in Risks.
+- Build: engine and CLI with `swift build -c release`; shell with `npm ci && npm run build` (typecheck plus Vite); the app bundle with electron-builder, which copies the release engine binary and `loomclone` into the bundle and signs them with it.
+- Unit tests: `swift test` covers pure code (clock, retiming, manifest, edit planner, layout, zoom planner, SigV4, recovery on fixture files) and needs no permissions. Shell unit tests run in the Node toolchain (Vitest, our choice) over the IPC layer and the state stores.
 - Integration tests: `Tests/Integration/*.sh` drive the installed app through `loomclone`. Screen Recording, camera and microphone permission are granted once to the app, never to the terminal.
 - Every development build is signed with the same Apple Development certificate. macOS ties permission grants to the code signature, so a changing ad-hoc signature would make it ask again after each rebuild.
 - `viewer/` builds with `tsc`. `worker/` (Phase 5) needs Node and Wrangler, Cloudflare's Worker tool.
-- `scripts/check.sh` runs the builds, the unit tests, the notices check and `check_clean.py` on changed source files. It must pass before every commit.
+- `scripts/check.sh` runs the builds, the unit tests, the notices check, the typecheck and `check_clean.py` on changed source files. It must pass before every commit, and CI runs the same script on every dependency bump of the shell, because Electron and its ecosystem are where dependencies drift fastest.
 
 ### Control interface
 
@@ -279,13 +287,23 @@ socket: NDJSON {"id":"7","cmd":"record.start","args":{...}}
 
 `record start` without `--wait` returns as soon as recording begins and prints the recording id. `record stop` returns the package path and the track list. Stopping on SIGINT or SIGTERM, or on a `stop` line on stdin, applies when `--wait` is used. Closing stdin is not a stop (OpenScreen's rule).
 
+### SaaS readiness
+
+Single-user and local-first remains the product until David decides otherwise. Nothing in the MVP assumes a server, an account or a multi-tenant store. Three seams keep a later cloud service a clean extension rather than a rewrite:
+
+1. The control-socket contract. The engine's whole behaviour (record, stop, export, share, jobs, events) is specified as JSON requests and NDJSON events, and the shell and the CLI are only its first two clients. No product logic lives in UI code, so any future orchestrator drives the same commands and reads the same events.
+2. The TypeScript service tier. The static viewer (Phase 3) and the share Worker (Phase 5) already build and deploy as TypeScript on Cloudflare. A multi-tenant service extends that tier in the same language and runtime; no desktop code needs porting.
+3. The engine as sidecar. The shell knows the engine only through the socket, so a second platform's engine can slot in later exactly the way OpenScreen ships a Windows C++ capture helper beside its Swift and Linux ones, under one contract.
+
+Phase 7 (Roadmap) sketches what opening these seams would mean: web sign-in and accounts, a multi-tenant Worker on R2 and D1, a web library dashboard and quotas. Billing and marketing are explicitly out even then.
+
 ## Recording pipeline
 
 ### Sources per capture mode
 
 | Mode | Screen source | Microphone source | System audio | Camera |
 |---|---|---|---|---|
-| Display | Display filter that excludes our app | ScreenCaptureKit microphone output | ScreenCaptureKit audio output, our process excluded | AVCaptureSession |
+| Display | Display filter that excludes the shell app and the engine | ScreenCaptureKit microphone output | ScreenCaptureKit audio output, our process excluded | AVCaptureSession |
 | Window | Desktop-independent window filter, which follows the window when it moves or is covered | same | same | same |
 | Area | Display filter with a source rectangle | same | same | same |
 | Camera only | none | AVCaptureSession audio input | none | AVCaptureSession |
@@ -359,10 +377,11 @@ States: `idle`, `preparing`, `armed` (capturing behind a closed gate during the 
 
 ### Live UI kept out of the footage
 
-- The stream's content filter excludes our whole app. Every panel we show (bar, bubble, countdown, area picker, review, teleprompter) also gets a window sharing type of none, so other capture tools skip it too (Screendrop uses both guards).
-- The stream starts only after setup UI and permission prompts are gone (Screendrop's start order).
-- The bubble panel is non-activating, visible on all Spaces and over full-screen apps, and never takes focus (Bloom idea).
-- The bubble shows a preview layer attached to the same AVCaptureSession that feeds `camera.mov`. Warm-up and recording therefore share one session, as in Screendrop, and the first recorded camera frame is already well exposed.
+- The engine's content filter excludes a list of applications: the shell app, and the engine's own identity whenever the engine runs outside the bundle in development. Screendrop's CC0 filter code excludes one app; the same ScreenCaptureKit call takes a list, so both processes are covered.
+- Every shell window (bar, bubble, countdown, area picker, review, library, teleprompter) also sets window content protection, the Electron setting that hides a window from other capture tools. Filter plus content protection is the same dual guard Screendrop uses with its filter plus window sharing type.
+- The engine starts the stream only after setup UI and permission prompts are gone (Screendrop's start order). The shell keeps that order: the engine arms behind the gate while the countdown runs.
+- The bubble window is always on top, visible on all Spaces and over full-screen apps, and never takes focus (Bloom idea, now an Electron window).
+- The bubble shows compressed preview frames the engine publishes over the control socket: small JPEG images, about 512 px wide, at up to 30 per second (our own design). They come from the same AVCaptureSession that feeds `camera.mov`, so warm-up and recording share one session, as in Screendrop, and the first recorded camera frame is already well exposed. A second browser-side camera session in the renderer would open another capture pipeline for the same device and risk contention, and some virtual cameras serve only one client at all (general knowledge, not from the notes); that is why the preview comes from the engine and the renderer never opens the camera.
 - The live bubble's position and size are written to the manifest at Stop, so the first render places the bubble where David saw it. Screendrop does not save the dragged position.
 
 ## Project format
@@ -385,7 +404,7 @@ States: `idle`, `preparing`, `armed` (capturing behind a closed gate during the 
     transcript.json                    # words and cues on the source timeline
     captions.vtt                       # derived from transcript.json
     poster.jpg                         # poster frame
-    renders/<key>.mp4                  # cached deliverables
+    renders/<key>.mp4                  # cached deliverables (also .jpg/.png thumbnails)
     renders/<key>.json                 # render stamp for that deliverable
     share/state.json                   # provider, share id, upload id, part tags
     share/share.json                   # last public manifest uploaded
@@ -525,6 +544,7 @@ The review window opens after Stop unless "share and close" is on. It contains:
 | Preset | Container and codec | Size and rate | Audio | Use |
 |---|---|---|---|---|
 | `share` | MP4, H.264 High, index at the front (faststart) | long edge at most 1920 px, 30 fps, 0.15 bit per pixel per frame (OpenScreen's export rule; about 9.3 Mbit/s at 1080p30) | AAC 48 kHz stereo 160 kbit/s mix | viewer page, chat, email |
+| `youtube` | MP4, H.264 High, index at the front (faststart) | 1080p at 60 fps, or source size at a high bitrate (16 Mbit/s at 1080p60, scaled by pixel count); both options offered | AAC 48 kHz stereo 160 kbit/s mix | YouTube uploads, including 1080p60 |
 | `full` | MP4 or MOV; HEVC or H.264 | source size; 30 or 60 fps | AAC mix | archive, uploads elsewhere |
 | `editor-tracks` | the masters as APFS clones, plus `offsets.json` | source | separate microphone and system files | David's editor |
 | `audio` | M4A (AAC) or WAV | none | mix | cleanup tools, podcasts |
@@ -533,6 +553,15 @@ The review window opens after Stop unless "share and close" is on. It contains:
 - `offsets.json` in an editor-tracks export lists each file with its `offsetMs` relative to the screen file, with audio `latencyMs` already folded in.
 - An APFS clone is a copy-on-write copy: it takes no time and no extra space (Kap and Screendrop both use it).
 - A change of container only (MOV to MP4) is a passthrough remux, not a re-render (Screendrop).
+
+### YouTube packaging
+
+For David's channel. The `youtube` preset ships with the other presets in Phase 3; the metadata pieces ride Phase 4:
+
+- The `youtube` preset is H.264 MP4 with the index at the front, either 1080p60 or source size at a high bitrate. H.264 MP4 is the upload format YouTube handles most simply (general knowledge about YouTube's upload guidance, not a finding from the notes).
+- Poster-frame thumbnail export: any frame of the composition as PNG and JPG at 1280x720 and 1920x1080, YouTube's 16:9 thumbnail sizes (general knowledge). Thumbnails go through the same render cache as video.
+- A chapters-to-YouTube-description text export built from the chapters metadata: one line per chapter, each starting with a zero-padded timestamp, the first chapter at 0:00.
+- Captions: the SRT file written by Phase 4 transcription is the caption format YouTube's upload accepts (general knowledge).
 
 ### Render cache
 
@@ -649,58 +678,62 @@ Cap reserves the link before capture, uploads 2 s fragments by presigned PUT whi
 
 Each phase lists its work in build order, then its "Done when" checks. A check is a command, a file or a measured number. "David's Mac" means his macOS 27 machine; measured numbers are recorded in `docs/qa/<phase>.md`.
 
-### Phase 1: Capture core, package format and CLI
+### Phase 1: Capture engine, package format and CLI
 
 Scope, in build order:
 
-1. Skeleton: `Package.swift` (LoomCore, loomclone, tests), `project.yml` for the app (menu bar agent, hardened runtime, camera and audio-input entitlements, camera and microphone usage strings), `THIRD_PARTY_NOTICES.md`, `licenses/`, and `scripts/check.sh` that builds, tests and runs the clean-room check on changed source files.
+1. Skeleton: `Package.swift` (LoomCore library, `loomcore-engine` executable, `loomclone` CLI, tests), `THIRD_PARTY_NOTICES.md`, `licenses/`, and `scripts/check.sh` that builds, tests and runs the clean-room check on changed source files. No app bundle yet; the engine is a plain executable this phase and macOS permissions attach to it directly.
 2. Catalog: displays and windows from ScreenCaptureKit, cameras and microphones from AVFoundation device discovery, each with a stable id.
 3. `SessionClock` with unit tests: epoch, gate, pauses, media-time mapping, drop rules.
 4. `TrackWriter`: fragmented writer, retiming (voom helper), silence fill, health checks, backpressure, bounded finalize, HEVC-to-H.264 fallback.
 5. `ScreenSource` with screen, system audio and microphone outputs; `CameraSource` with frame-duration pinning; the input recorder.
 6. `RecordingSession` state machine, package creation, manifest writes, atomic file helper, SQLite index.
 7. Recovery, salvage port and `verify`.
-8. Control server in the app, the CLI client and `guide`.
-9. `selftest sync` (the app flashes a full-screen white window and plays a tone at the same host time, then measures both in `screen.mov` and `system.mov`; in selftest mode only, the stream includes that one window and our own audio, which normal recordings exclude) and `analyze clap` (finds the clap's audio onset in `mic.mov` and the largest frame-to-frame change in `camera.mov`).
+8. Control socket server in the engine, the CLI client and `guide`. The CLI starts the engine directly when no socket is present (standalone mode; the shell takes over engine startup in Phase 2).
+9. `selftest sync` (the engine flashes a full-screen white window and plays a tone at the same host time, then measures both in `screen.mov` and `system.mov`; in selftest mode only, the stream includes that one window and our own audio, which normal recordings exclude) and `analyze clap` (finds the clap's audio onset in `mic.mov` and the largest frame-to-frame change in `camera.mov`).
 
 Done when:
 
-- `swift build -c release`, `swift test`, `xcodegen generate` and `xcodebuild -scheme LoomClone -configuration Release build` all exit 0. The tests cover `SessionClock`, audio retiming, manifest round-trips, recovery and salvage.
+- `swift build -c release` and `swift test` exit 0, producing LoomCore, `loomcore-engine` and `loomclone`. The tests cover `SessionClock`, audio retiming, manifest round-trips, recovery and salvage.
 - `loomclone guide --json` exits 0, its output parses as JSON, and it lists every command in the Control interface block.
 - `loomclone targets` lists at least one display, the built-in camera and the built-in microphone, each with an id that is the same across two runs.
-- `loomclone record start --display main --camera default --mic default --system-audio --duration 60 --wait` exits 0. The new package holds `screen.mov`, `camera.mov`, `mic.mov`, `system.mov`, `input.ndjson` and `manifest.json` with status `complete`.
+- `loomclone record start --display main --camera default --mic default --system-audio --duration 60 --wait` exits 0 (the CLI starts the engine on demand). The new package holds `screen.mov`, `camera.mov`, `mic.mov`, `system.mov`, `input.ndjson` and `manifest.json` with status `complete`.
 - `loomclone verify <id>` reports every track decodable, each track's duration within 50 ms of the manifest duration, and `offsetMs` 0 on every track.
 - A 60 s recording with pauses at 10 s and 30 s (each 10 s long) verifies, and every track's duration equals 40 s within 100 ms.
 - `loomclone selftest sync --seconds 20 --pause-at 8` reports the screen-to-system-audio offset, after the stored latency, within 17 ms, before and after the pause.
 - `loomclone analyze clap <id>` on a recording with five hand claps reports a camera-to-microphone offset within 40 ms for each clap.
-- Crash test: start a recording, kill the app with `kill -9` after 30 s, relaunch it. `loomclone list --json` shows the recording with status `recovered`, `verify` shows every track at 29 s or longer, and `input.ndjson` has events after 29 s.
-- A 60-minute recording of the main display at native resolution with camera and both audio tracks finishes. The app's memory footprint, logged every minute, is within 50 MB at minute 60 of its value at minute 5. Dropped screen frames are 1 % or fewer (from `droppedFrames`).
-- `python3 -I tools/checks/check_clean.py` run on every file under `Sources/` and `App/` (passed explicitly) prints 0 on its first line. A script confirms that every file with a "Derived from" header has an entry in `THIRD_PARTY_NOTICES.md`.
+- Crash test: start a recording, kill the engine with `kill -9` after 30 s, start the engine again (or run `loomclone recover`). `loomclone list --json` shows the recording with status `recovered`, `verify` shows every track at 29 s or longer, and `input.ndjson` has events after 29 s.
+- A 60-minute recording of the main display at native resolution with camera and both audio tracks finishes. The engine's memory footprint, logged every minute, is within 50 MB at minute 60 of its value at minute 5. Dropped screen frames are 1 % or fewer (from `droppedFrames`).
+- `python3 -I tools/checks/check_clean.py` run on every file under `Sources/` (passed explicitly) prints 0 on its first line. A script confirms that every file with a "Derived from" header has an entry in `THIRD_PARTY_NOTICES.md`.
 
-### Phase 2: Loom-style recording UX
+### Phase 2: Loom-style recording UX (the Electron shell)
 
 Scope, in build order:
 
-1. Menu bar item: click to open the bar, click again to stop while recording (Kap idea), with a recording indicator.
-2. Control bar: source picker (display, window, area), camera, microphone and system audio toggles, presets, then timer, pause, restart, stop and discard. Its position is stored as offsets from the nearest screen edges (Screenity idea).
-3. Camera bubble: opens and warms the camera as soon as the camera is selected; draggable; three sizes; excluded from capture; position written to the manifest at Stop.
-4. Countdown overlay of 0, 3 or 5 s, cancelled by Escape, with the pipeline armed behind the gate.
-5. Global hotkeys for start and stop, pause and resume, and discard (with confirmation).
-6. Area picker with ratio snapping and snapping to an app window (Kap idea).
-7. Per-track mute for microphone and system audio, and the silent-microphone warning.
-8. Onboarding window: one Grant button per permission, with the microphone asked before Screen Recording so the screen prompt does not fire too early (Bloom's order), the camera asked when it is first selected, deep links to the right System Settings pane after a denial, and a "relaunch to apply" step for Screen Recording.
-9. Low-disk refusal and camera-loss handling in the UI.
+1. Shell skeleton: `shell/` with an Electron main process in TypeScript and a React renderer on Vite. The main process packages the app (electron-builder config, hardened runtime, camera and microphone usage strings), launches the engine from inside the bundle, connects to the control socket, restarts an idle engine that dies, and never assumes UI and engine share a process.
+2. Tray menu bar item: click to open the bar, click again to stop while recording (Kap idea), with a recording indicator. No Dock icon.
+3. Control bar: source picker (display, window, area), camera, microphone and system audio toggles, presets, then timer, pause, restart, stop and discard. Its position is stored as offsets from the nearest screen edges (Screenity idea).
+4. Camera bubble: a frameless, always-on-top, non-activating, content-protected Electron window that opens and warms the camera as soon as the camera is selected, showing the engine's preview frames; draggable; three sizes; excluded from capture by the engine's filter; position written to the manifest at Stop.
+5. Countdown overlay of 0, 3 or 5 s, cancelled by Escape, with the pipeline armed behind the gate.
+6. Global hotkeys for start and stop, pause and resume, and discard (with confirmation).
+7. Area picker with ratio snapping and snapping to an app window (Kap idea).
+8. Per-track mute for microphone and system audio, and the silent-microphone warning.
+9. Onboarding window: one Grant button per permission, with the microphone asked before Screen Recording so the screen prompt does not fire too early (Bloom's order), the camera asked when it is first selected, deep links to the right System Settings pane after a denial, and a "relaunch to apply" step for Screen Recording.
+10. Low-disk refusal and camera-loss handling in the UI.
 
 Done when:
 
+- `npm ci && npm run build` in `shell/` exits 0, and the built app starts the bundled engine (the shell log names the engine path inside the app bundle).
 - With countdown 0 and the camera warm, the median time from hotkey to the `recording-started` log event is 700 ms or less over 10 runs.
 - With a 3 s countdown, the log shows the epoch within 17 ms of the countdown's end in 10 of 10 runs.
 - In test mode the bubble shows a solid magenta frame. A frame scan of `screen.mov` from that recording finds no magenta region, and none of the bar's test colour either.
+- The bubble preview runs while `camera.mov` is being written, and `loomclone verify` afterwards reports `droppedFrames` within the 1 % budget: the preview path never starves the recording path.
 - The bubble is dragged to the top-left during a recording; the manifest's `bubble.center` and the first review render place it within 1 % of that position.
 - Microphone muted for 5 s mid-recording: `mic.mov` RMS in that window is below -60 dBFS, and the track's duration is unchanged.
 - An external camera is unplugged mid-recording: the recording continues, the manifest has a `camera-lost` warning, and `camera.mov` ends within 0.5 s of the unplug time.
 - `loomclone record start` with less than 2 GB free exits 1 with error code `low-disk`.
-- A walkthrough on a fresh macOS user account goes from first launch to a finished recording using only our Grant buttons and the system prompts. The steps are recorded in `docs/qa/onboarding.md`.
+- A walkthrough on a fresh macOS user account goes from first launch to a finished recording using only our Grant buttons and the system prompts, with the engine launched by the shell from inside the bundle, so the permissions attach to `LoomClone.app` and not to a bare binary. The steps are recorded in `docs/qa/onboarding.md`.
+- The shell's resident memory over that walkthrough stays under 500 MB (Activity Monitor sample), bounding the Chromium footprint named in Risks.
 
 ### Phase 3: Review, share render, share link and viewer
 
@@ -708,7 +741,7 @@ Scope, in build order:
 
 1. Copy the exporter, timing and bubble scaler from Screendrop; add our own `ViewportTimeline` and layout function (bubble and screen-only for now).
 2. Review window with trim, bubble controls, audio levels and title.
-3. Export presets, render cache, staged writes, editor-tracks export with `offsets.json`, "Open in editor" command template.
+3. Export presets (share, full, editor-tracks, audio, youtube), render cache, staged writes, editor-tracks export with `offsets.json`, "Open in editor" command template.
 4. SigV4 signer and multipart uploader, `BucketProvider`, Keychain store, `share setup --check`.
 5. Viewer: page template, `viewer.js`, `viewer.css`, Open Graph tags.
 6. Stop-to-link flow, copy-link button states (disabled, generating, copied for 2.5 s, as Bloom does), copying the file itself to the pasteboard (Kap idea).
@@ -720,7 +753,8 @@ Done when:
 - A 5-minute 1080p30 recording with camera renders the `share` preset in 75 s or less on David's Mac.
 - `curl -sI` on the video URL named in `share.json` shows status 200, `Content-Type: video/mp4` and `Accept-Ranges: bytes`. A request with `Range: bytes=0-99` returns 206.
 - The first two top-level boxes of the uploaded video are `ftyp` and `moov` (checked by a small script in `tools/checks/`), so playback starts before the download ends.
-- The viewer plays the video with captions off and on in Safari and Chrome on macOS and in Safari on iOS. During processing it shows the placeholder and switches to the player by itself.
+- `loomclone export <id> --preset youtube -o yt.mp4` on a 60 fps recording writes a 1920x1080 H.264 MP4 whose first two top-level boxes are `ftyp` and `moov`, and the source-size option keeps the capture resolution.
+- The viewer plays the video with captions off and on in Safari and Chrome on macOS and in Safari on iOS, using a fixture WebVTT file placed in the share (transcription itself arrives in Phase 4). During processing it shows the placeholder and switches to the player by itself.
 - A Slack or iMessage preview of the link shows the title and the poster.
 - Killing the app mid-upload and relaunching it resumes the upload (the log shows skipped parts), and the final object size equals the local file size.
 - `loomclone unshare <id>` exits 0, a listing of `s/<id>/` returns no keys, and the link returns 404.
@@ -737,7 +771,7 @@ Scope, in build order:
 3. Transcript word cuts, filler removal, silence removal (transcript-based and level-based).
 4. Auto zoom planner port, spring-driven `ViewportTimeline`, zoom cue editing.
 5. better-shot's six layouts, squircle bubble, caption burn-in.
-6. Title, summary and chapters on device; `loomclone meta set`.
+6. Title, summary and chapters on device; `loomclone meta set`; poster-frame thumbnail export (PNG and JPG, 1280x720 and 1920x1080) and the chapters-to-YouTube-description text export.
 7. Library window with search by title and transcript, and Move to Trash with undo.
 
 Done when:
@@ -750,6 +784,7 @@ Done when:
 - A render of each of the six layouts matches its golden frame within a small pixel-difference threshold.
 - Within 30 s of the transcript finishing, `share.json` names a captions file and a transcript file, both exist under `s/<id>/`, and the link is unchanged.
 - On-device chapters for a 10-minute recording start at 0 and the last chapter starts after 70 % of the duration.
+- Thumbnail export writes the same frame as PNG and JPG at both 1280x720 and 1920x1080, and the chapters description export starts with a chapter at 0:00 and lists every chapter as timestamp plus title.
 - The SHA-256 of every master file is unchanged after a full editing session (automated test).
 - Killing the app with `kill -9` while editing and relaunching it reopens the last draft.
 
@@ -782,7 +817,7 @@ Scope (each item is independent):
 - Live drawing panel included in the capture.
 - Diagnostics bundle with home paths and URL queries removed (Screenity idea).
 - Camera background blur with Apple Vision person segmentation.
-- Release path if David chooses it: notarized DMG, signed updates, Homebrew cask.
+- Release path if David chooses it: electron-builder notarized DMG, updates through electron-updater, Homebrew cask.
 
 Done when:
 
@@ -791,7 +826,24 @@ Done when:
 - An MCP client lists the tools; a request without the bearer token gets 401; a request with a non-loopback Host header is refused (curl tests).
 - `shortcuts run "Start Recording"` starts a recording and `shortcuts run "Stop Recording"` returns the package path.
 - `loomclone diagnostics -o diag.zip` produces an archive in which a search finds no home-folder path and no URL query string.
-- If a release is made: `spctl --assess --type execute` accepts the app, and an update from one build to the next succeeds on a second Mac.
+- If a release is made: `spctl --assess --type execute` accepts the app, and an update from one build to the next through electron-updater succeeds on a second Mac.
+
+### Phase 7: SaaS (sketch; opened only when David says go)
+
+This phase is written down so the seams stay honest, not scheduled. Nothing before it assumes it exists. Scope sketch, if opened:
+
+1. Web sign-in and accounts on the TypeScript service tier (Cloudflare Worker, D1).
+2. A multi-tenant Worker on R2 and D1: one storage namespace per account, share links scoped to accounts, the recordly-share MIT code as the starting point beside the Phase 5 worker.
+3. A web library dashboard in the viewer's TypeScript, listing an account's recordings with the same share-link actions.
+4. Quotas per account (storage and shares), enforced at upload.
+5. Explicitly out even here: billing, marketing pages, and any change to the local-first desktop product.
+
+Done when (checked only if David opens this phase):
+
+- A second test account sees only its own recordings, and a Phase 5 share link made before the switch still resolves unchanged.
+- `loomclone share <id>` works against the multi-tenant Worker with an account token, and bucket mode keeps working side by side in Settings.
+- An upload past the quota fails with a clear error code and leaves no partial public object.
+- The desktop app records, edits and shares with no account signed in: local-first survives the cloud tier.
 
 ### Later, unscheduled
 
@@ -842,7 +894,8 @@ Done when:
 - A port to another language (for example OpenScreen TypeScript to Swift) counts as a copy and gets the same header and entry.
 - The app bundle includes `THIRD_PARTY_NOTICES.md` and `licenses/`, shown under About, Acknowledgements. BSD-3 requires the notice in the documentation of binary distributions; MIT requires it in all copies.
 - `worker/` keeps `services/recordly-share/LICENSE` verbatim (MIT, copyright line naming Aritro Paul, voom's author) and adds a note naming Recordly's repository, SHA and path, because the Recordly note says that service was adapted from voom.
-- `scripts/check.sh` fails if a file with a "Derived from" header is missing from `THIRD_PARTY_NOTICES.md`, or if the notices name a file that does not exist.
+- Direct dependencies carry notices too, not only copied files: SwiftPM dependencies (swift-argument-parser is Apache-2.0) and the shell's npm dependencies (electron, react, electron-builder, electron-updater and friends) are listed in `THIRD_PARTY_NOTICES.md` with their licence and version, their licence texts go into `licenses/`, and the bundle's acknowledgements show them. The plan's licence rule for new dependencies (MIT, BSD, Apache-2.0, ISC, zlib, CC0) covers npm packages exactly as it covers Swift packages.
+- `scripts/check.sh` fails if a file with a "Derived from" header is missing from `THIRD_PARTY_NOTICES.md`, if the notices name a file that does not exist, or if a direct dependency of the engine or the shell has no licence entry.
 
 ### A feature that only a copyleft repo has
 
@@ -882,11 +935,14 @@ The start gate, separate audio files on one time zero, the warm-start countdown,
   - Options: (a) macOS 26.4, Screendrop's target; (b) macOS 15, which still has microphone capture through ScreenCaptureKit but no SpeechAnalyzer.
   - Recommended default: (a). Copied code compiles unchanged and David runs macOS 27.
 - **Signing and distribution.**
-  - Options: (a) personal builds signed with one Apple Development certificate; (b) a notarized Developer ID DMG with updates and a Homebrew cask.
-  - Recommended default: (a). The stable signature keeps macOS permission grants across rebuilds. Choose (b) only if the app will be shared with others.
+  - Options: (a) personal builds packaged with electron-builder and signed with one Apple Development certificate, kept on David's Mac; (b) a notarized Developer ID DMG with electron-updater updates and a Homebrew cask.
+  - Recommended default: (a). The stable signature keeps macOS permission grants across rebuilds and keeps TCC on the one bundle identity for shell and engine. Choose (b) only if the app will be shared with others; Kap and OpenScreen both notarize this exact shape, so the path is proven, but updates and cask maintenance are real ongoing work.
 - **Storage location.**
   - Options: (a) `~/Movies/LoomClone`; (b) Application Support, as Screendrop does.
   - Recommended default: (a), so David's editor and Finder can reach the files.
+- **SaaS timing.**
+  - Options: (a) keep the product single-user and local-first, and open Phase 7 only when David says go; (b) open Phase 7 immediately after Phase 6; (c) never build a cloud tier.
+  - Recommended default: (a), not until David says go. The three seams in SaaS readiness keep the option cheap; building accounts, multi-tenancy and quotas before anyone asks for them would slow every phase before it.
 - **Product and command names.**
   - Options: keep loom-clone and `loomclone`, or choose a new name before Phase 2 adds visible UI.
   - Recommended default: choose before Phase 2. Avoid "Loom" in anything that is ever published, because it is another company's product name.
@@ -915,6 +971,10 @@ The start gate, separate audio files on one time zero, the warm-start countdown,
 | SpeechAnalyzer quality or language coverage falls short | Medium | Low | Whisper through OpenScreen's pinned-model approach stays a deferred option |
 | Editing features grow until they duplicate David's own editor | Medium | Medium | Phase 4 limited to cuts, zoom, layouts and captions; editor-tracks export is a first-class preset |
 | An agent starts a recording David did not expect | Low | High | Socket limited to David's user; the bar, the bubble and the system recording indicator always show; every control request is logged |
+| The Electron shell adds Chromium's memory footprint: an idle Electron app commonly occupies roughly 200 to 400 MB of resident memory across its main and renderer processes (general knowledge, not measured in the notes) | Certain | Low | All real-time work stays in the Swift engine; the shell is UI only. The Phase 1 memory target is measured on the engine, and Phase 2 adds a 500 MB shell ceiling to the walkthrough |
+| TCC nuance of the bundled engine: a relocated, re-signed or standalone-run engine binary would prompt for permissions separately from the bundle | Medium | Medium | The engine always ships inside `LoomClone.app` and is signed with the bundle by electron-builder (Bloom re-signs its nested capture app in an afterPack hook, the same duty); the Phase 2 fresh-account walkthrough is the standing proof that one grant covers shell, engine and CLI |
+| Camera preview wrinkle: the bubble depends on preview frames crossing the control socket, and a busy renderer could lag the bubble | Low | Low | Frames are small JPEGs (about 512 px) at up to 30 per second over a local socket; the engine drops preview frames first under load, and recording is never delayed by preview backpressure (Phase 2 done-when checks the drop budget with preview running) |
+| Chromium upgrade treadmill: Electron and npm dependencies age, and migrations pile up (Kap pinned Electron 13, used the remote module later Electron dropped, and its whole stack then stalled; the Kap note marks the remote-module drop as general knowledge) | High over years | Medium | Track the current Electron major from day one, avoid deprecated APIs, CI runs `scripts/check.sh` on every dependency bump, and all product logic lives in the Swift engine so a shell rewrite stays cheap |
 
 ## Sources and licences
 
@@ -925,12 +985,12 @@ The usable sharing sources are better-shot's own-bucket design (bucket mode, Pha
 | `fayazara/Screendrop` (screendrop) at 062a9787d05f | CC0-1.0 | Recording core: camera writer and warm-up, stream setup and backpressure, own-UI exclusion, recovery and failure handling, pointer and keystroke capture, exporter and timing, bubble scaler, composition builder, clip timeline, transcription and transcript cuts, credential store, teleprompter; the release tool as an idea | copy-with-notice (CC0 needs no notice; we record provenance anyway); `Screendrop/RecordingViewportTimeline.swift` not copied (caution path) | None legally. Provenance row for every file, plus better-shot's BSD-3 notice for files that also exist in better-shot |
 | `KartikLabhshetwar/better-shot` (better-shot) at 164d8b92b3ca | BSD-3-Clause, except four files under AGPL-3.0-only (adapted from Cap) and three under GPLv3 (adapted from MacShot) | SigV4 signer and its check, share manifest design, R2 credential store, six-layout function, level-based silence detector; ideas: render stamp, global shortcuts, strict URL scheme | copy-with-notice for BSD-3 files; the seven copyleft files are never opened | Keep the copyright notice, the list of conditions and the disclaimer in source; reproduce them in the app's acknowledgements for binary copies; never use the author's name to promote the app (BSD-3 clause 3) |
 | `aritropaul/voom` (voom) at 410fb860b666 | MIT | CLI JSON contract and output helpers, audio retiming helper, metadata generation approach, transcript file formats, passthrough edits, share player script, one-click deploy service, share Worker essentials (as Recordly's upstream) | copy-with-notice | Keep the MIT notice (copyright Aritro Paul) in copied files and in the app's acknowledgements |
-| `getopenscreen/openscreen` (openscreen) at 2896c1f7b9ad | MIT (its bundled LGPL ffmpeg build, whisper.cpp and models carry their own terms; we take none of them) | `CaptureSizing.swift`, torn-fragment salvage (ported), click zoom planner (ported), transcript cut breath rule, atomic save pattern, NDJSON CLI conventions, MCP security model | copy-with-notice; ports keep the notice | Keep the MIT notice (copyright line as in its LICENSE file) in copied and ported files and in the acknowledgements |
+| `getopenscreen/openscreen` (openscreen) at 2896c1f7b9ad | MIT (its bundled LGPL ffmpeg build, whisper.cpp and models carry their own terms; we take none of them) | `CaptureSizing.swift`, torn-fragment salvage (ported), click zoom planner (ported), transcript cut breath rule, atomic save pattern, NDJSON CLI conventions, MCP security model; TypeScript/Electron patterns for our shell: the single typed native-bridge IPC channel (`technical-documentation/architecture/native-bridge.md`), hidden CLI-runner windows (`electron/cli/cliMain.ts`), the MCP TypeScript SDK server, electron-builder signed-and-notarized DMG with electron-updater | copy-with-notice; ports keep the notice; the TS/Electron patterns are idea-only unless code is actually copied | Keep the MIT notice (copyright line as in its LICENSE file) in copied and ported files and in the acknowledgements |
 | `CapSoftware/Cap` (cap) at a32e4806b300 | AGPL-3.0, with MIT for the cap-camera and scap crate families | Nothing copied. The MIT crates are Rust and do not fit the Swift stack. Ideas: start gate, per-track offsets with a status manifest, agent CLI shape, non-prompting permission checks, upload resume, log scrubbing, pixel-based bitrate; deferred: upload while recording, live HLS | clean-room and idea-only, from the note only | None, because no code is copied. The clean-room process applies |
 | `webadderallorg/Recordly` (recordly) at 535d1cfafa87 | AGPL-3.0, with MIT for `services/recordly-share` | The share Worker and viewer from `services/recordly-share` (Phase 5). Clean-room ideas: separate audio files on one time zero, warm-start countdown, decode test, safe-zone zoom pan, caption re-segmentation, atomic save with a backup | copy-with-notice for `services/recordly-share` only; clean-room and idea-only for the rest | Keep `services/recordly-share/LICENSE` (MIT, copyright Aritro Paul) and name Recordly's repository, SHA and path in our notices |
 | `alyssaxuu/screenity` (screenity) at dddeeb668ad2 | GPL-3.0, no permissive paths | Ideas only: bounded finalize, single-owner file writer, never overwriting the last take, click log on the media clock, bubble geometry, silent-microphone detection, robust camera acquisition, edge-anchored bar, diagnostics bundle | clean-room and idea-only, from the note only | None, because no code is copied |
-| `wulkano/Kap` (kap) at c42692fa63ac | MIT | Ideas and small ports: share-target shape, conversion cache, persisted active recording, file-on-pasteboard and open-with, cropper snapping, menu bar control, ETA rule, APFS clones | mostly idea-only; copy-with-notice for any ported code | Keep the MIT notice (copyright line as in its LICENSE file) for ported code |
-| `video-db/bloom` (bloom) at 65aa9bf555d2 | MIT (its package.json says ISC; the LICENSE file governs) | Ideas: per-track mute, capture-excluded bar, row-first post-stop state machine, guided permissions, copy-link states, delete with undo, stable ids as the agent handle | mostly idea-only; copy-with-notice for any ported UI logic | Keep the MIT notice for ported code |
+| `wulkano/Kap` (kap) at c42692fa63ac | MIT | Ideas and small ports: share-target shape, conversion cache, persisted active recording, file-on-pasteboard and open-with, cropper snapping, menu bar control, ETA rule, APFS clones; TypeScript/Electron patterns for our shell: main-process orchestration in `main/index.ts`, the remote-state push layer (`main/remote-states/setup-remote-state.ts`), electron-builder with notarisation | mostly idea-only; copy-with-notice for any ported code | Keep the MIT notice (copyright line as in its LICENSE file) for ported code |
+| `video-db/bloom` (bloom) at 65aa9bf555d2 | MIT (its package.json says ISC; the LICENSE file governs) | Ideas: per-track mute, capture-excluded bar, row-first post-stop state machine, guided permissions, copy-link states, delete with undo, stable ids as the agent handle; Electron window patterns for our shell: the content-protected bar and the round always-on-top bubble window (`src/main/index.js:45-89`, `225-253`), and the afterPack re-sign of the nested capture app (`build/afterPack.js`) | mostly idea-only; copy-with-notice for any ported UI logic | Keep the MIT notice for ported code |
 
 ## Ideas considered
 
@@ -952,7 +1012,7 @@ Every best idea from the nine research notes, with a decision. "Adopt" means it 
 | better-shot-screencapture-early-return | reject | - | Screenshots are out of scope |
 | better-shot-updater-team-check | defer | - | Only matters if David chooses public distribution |
 | bloom-per-track-pause | adopt | 2 | Per-track mute that writes silence, keeping each track continuous |
-| bloom-capture-excluded-control-bar | adopt | 2 | Bar excluded from capture, click-through outside the bar, visible on all Spaces |
+| bloom-capture-excluded-control-bar | adopt | 2 | Bar excluded from capture, click-through outside the bar, visible on all Spaces; now Electron content protection plus the engine's filter |
 | bloom-row-first-state-machine | adopt | 1 | Manifest written before capture; post-stop jobs resume after restarts |
 | bloom-nonblocking-transcript-pipeline | adopt | 4 | Transcription never blocks review or share; no speech is a normal outcome |
 | bloom-guided-permissions | adopt | 2 | One Grant button per permission, screen asked last, denied state links to Settings |
@@ -979,7 +1039,7 @@ Every best idea from the nine research notes, with a decision. "Adopt" means it 
 | cap-typed-timestamped-comments | defer | - | recordly-share's comments and reactions cover Phase 5; voice and video replies are not needed |
 | cap-live-transcript-while-recording | defer | - | Depends on upload while recording |
 | cap-scrub-presigned-urls-in-logs | adopt | 3 | Signatures and credentials stripped from every log line |
-| cap-out-of-process-muxer | reject | - | AVAssetWriter in-process with 1 s fragments already bounds crash loss |
+| cap-out-of-process-muxer | reject | - | The engine is already a separate process from the shell, and 1 s fragments bound a writer crash; splitting the muxer out as well would only add IPC to every frame |
 | kap-share-service-contract | adopt | 3 | Share targets (copy link, save, copy file, open in editor) ask for their file lazily |
 | kap-conversion-cache | adopt | 3 | Merged with the render stamp into one cache keyed by inputs |
 | kap-record-hooks-crash-cleanup | defer | - | Do Not Disturb while recording is a later nicety |
@@ -995,7 +1055,7 @@ Every best idea from the nine research notes, with a decision. "Adopt" means it 
 | kap-apfs-clone-copy | adopt | 3 | Editor-tracks export and same-container saves use APFS clones |
 | openscreen-separate-camera-file-int-offset | adopt | 1 | Whole-millisecond offsets beside exact nanoseconds in the manifest |
 | openscreen-fragmented-mp4-salvage | adopt | 1 | Box-walking salvage ported to Swift as the second recovery step |
-| openscreen-stdio-capture-helper-contract | reject | - | Capture stays in the app for permission identity; the JSON-in, NDJSON-out shape is reused for the socket |
+| openscreen-stdio-capture-helper-contract | adopt | 1 | The engine sidecar is this contract: one JSON request at start, pause, resume and stop lines, JSON-line events back, capture owned by the native binary; ours ships inside the bundle so permission still lands on the app |
 | openscreen-headless-cli-ndjson | adopt | 1 | stdout carries only protocol, stop by signal or stdin line, atomic outputs |
 | openscreen-local-mcp-shared-tools | adopt | 6 | MCP server on loopback sharing our command table, with token and Host and Origin checks |
 | openscreen-cursor-as-telemetry-sidecar | adopt | 6 | Cursor data mode stores deduplicated cursor images with fractional hotspots; the pointer timeline is recorded from Phase 1 |
@@ -1009,7 +1069,7 @@ Every best idea from the nine research notes, with a decision. "Adopt" means it 
 | openscreen-fresh-permission-read | adopt | 2 | An "asked before" flag plus a relaunch step, because the screen permission answer is cached per process |
 | openscreen-one-compositor-fractional-scene | adopt | 3 | The principle only: one layout function with fractional sizes for preview and export; the Rust compositor is not used |
 | openscreen-staged-export-publish | adopt | 3 | Partial file renamed into place; cancel deletes it |
-| recordly-line-protocol-capture-helper | reject | - | Capture stays in the app; the control socket already gives agents a line protocol |
+| recordly-line-protocol-capture-helper | adopt | 1 | Clean-room: the engine executable now runs capture outside the shell's process with a line protocol, so a shell crash cannot take the writers down with it; implemented from the note only |
 | recordly-shared-time-zero-separate-tracks | adopt | 1 | Clean-room: one time zero, separate audio files, leading silence; no mixed track inside the screen file |
 | recordly-camera-offset-manifest | adopt | 1 | Idea-only: a versioned manifest naming files and offsets, derived from host-clock timestamps rather than wall-clock |
 | recordly-warm-start-countdown | adopt | 1 | Clean-room: pipeline armed during the countdown; ready only after a real frame |
