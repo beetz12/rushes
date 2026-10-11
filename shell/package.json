@@ -1,0 +1,106 @@
+{
+  "name": "rushes-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "description": "Rushes native recording desktop shell",
+  "author": "David He",
+  "main": "dist/main/index.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && node scripts/build.mjs && vite build",
+    "dev": "vite --host 127.0.0.1",
+    "start": "electron .",
+    "test": "vitest run",
+    "smoke": "RUSHES_SMOKE=1 electron .",
+    "package": "npm run build && node scripts/package.mjs",
+    "licenses": "node scripts/licenses.mjs"
+  },
+  "dependencies": {
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "zod": "4.6.6"
+  },
+  "devDependencies": {
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3",
+    "typescript": "7.0.2",
+    "vite": "8.3.4",
+    "@vitejs/plugin-react": "6.1.2",
+    "esbuild": "0.28.2",
+    "vitest": "5.0.3",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "@types/node": "22.18.10"
+  },
+  "build": {
+    "appId": "com.nexai.rushes",
+    "productName": "Rushes",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../.build/release/rushcore-engine",
+        "to": "bin/rushcore-engine"
+      },
+      {
+        "from": "../.build/release/rushes",
+        "to": "bin/rushes"
+      },
+      {
+        "from": "../THIRD_PARTY_NOTICES.md",
+        "to": "THIRD_PARTY_NOTICES.md"
+      },
+      {
+        "from": "../licenses",
+        "to": "licenses"
+      },
+      {
+        "from": "licenses",
+        "to": "licenses/npm"
+      },
+      {
+        "from": "DEPENDENCIES.md",
+        "to": "DEPENDENCIES.md"
+      },
+      {
+        "from": "../cloud/dist",
+        "to": "cloud"
+      },
+      {
+        "from": "../viewer/dist",
+        "to": "viewer"
+      },
+      {
+        "from": "../cloud/package.json",
+        "to": "cloud/package.json"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.video",
+      "target": [
+        "dir"
+      ],
+      "hardenedRuntime": true,
+      "extendInfo": {
+        "LSUIElement": true,
+        "NSCameraUsageDescription": "Rushes records your camera as a separate video track.",
+        "NSMicrophoneUsageDescription": "Rushes records your microphone as a separate audio track.",
+        "NSAudioCaptureUsageDescription": "Rushes records system audio when you enable it."
+      },
+      "binaries": [
+        "Contents/Resources/bin/rushcore-engine",
+        "Contents/Resources/bin/rushes"
+      ]
+    }
+  },
+  "type": "module"
+}
