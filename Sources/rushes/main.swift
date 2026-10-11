@@ -129,11 +129,14 @@ func parseCLI(_ arguments: [String]) -> CLIInvocation {
     } else if command == "selftest", !rest.isEmpty {
         invocation.command = "selftest \(rest[0])"
         parseArguments(Array(rest.dropFirst()), into: &invocation)
-    } else if ["permissions", "camera"].contains(command), !rest.isEmpty {
+    } else if ["permissions", "camera", "edit", "meta", "transcript", "captions", "chapters", "mcp"].contains(command), !rest.isEmpty {
         invocation.command = "\(command) \(rest[0])"
         parseArguments(Array(rest.dropFirst()), into: &invocation)
     } else if command == "analyze", !rest.isEmpty {
         invocation.command = "analyze \(rest[0])"
+        parseArguments(Array(rest.dropFirst()), into: &invocation)
+    } else if command == "share", let subcommand = rest.first, ["setup", "status", "enrich"].contains(subcommand) {
+        invocation.command = "share \(subcommand)"
         parseArguments(Array(rest.dropFirst()), into: &invocation)
     } else {
         parseArguments(rest, into: &invocation)
@@ -149,11 +152,17 @@ func parseArguments(_ words: [String], into invocation: inout CLIInvocation) {
         "--display", "--window", "--camera", "--mic", "--duration",
         "--countdown", "--title", "--id", "--limit",
         "--seconds", "--pause-at", "--area", "--cursor", "--permission", "--track", "--muted",
+        "--preset", "--output", "--format", "--locale", "--summary", "--chapters", "--args", "--edit",
+        "--word-ids", "--word-id", "--text", "--start-ms", "--end-ms", "--at-ms", "--speed", "--clip-id", "--layout",
+        "--width", "--height", "--fps", "--codec", "--container",
     ]
     var index = 0
     while index < words.count {
         let word = words[index]
-        if word.hasPrefix("--") {
+        if word == "-o" {
+            guard index + 1 < words.count else { fail("usage", "-o needs a path") }
+            invocation.flags["--output"] = words[index + 1]; index += 2
+        } else if word.hasPrefix("--") {
             let (name, inlineValue) = splitFlag(word)
             if let inlineValue {
                 invocation.flags[name] = inlineValue
@@ -609,6 +618,58 @@ case "analyze clap":
     exit(0)
 
 default:
+    let serviceCommand = invocation.command.replacingOccurrences(of: " ", with: ".")
+    if ExtendedCommandRouter.commands.contains(serviceCommand) || serviceCommand == "recover" {
+        var args: [String: JSONValue] = [:]
+        if let id = invocation.positional.first { args["id"] = .string(id) }
+        let strings = ["--preset": "preset", "--output": "path", "--format": "format", "--locale": "locale",
+                       "--title": "title", "--word-id": "wordId", "--text": "text", "--clip-id": "clipId",
+                       "--layout": "layout", "--codec": "codec", "--container": "container"]
+        for (flag, key) in strings { if let value = invocation.flags[flag] { args[key] = .string(value) } }
+        for (flag, key) in ["--start-ms": "startMs", "--end-ms": "endMs", "--at-ms": "atMs", "--speed": "speed",
+                            "--width": "width", "--height": "height", "--fps": "fps"] {
+            if let raw = invocation.flags[flag] {
+                guard let value = Double(raw), value.isFinite else { fail("usage", "\(flag) needs a finite number") }
+                args[key] = .double(value)
+            }
+        }
+        for (flag, key) in ["--wait": "wait", "--allow-asset-download": "allowAssetDownload", "--remove-fillers": "removeFillers",
+                            "--remove-silence": "removeSilence", "--level-silence": "levelSilence"] {
+            if invocation.switches.contains(flag) { args[key] = .bool(true) }
+        }
+        if let words = invocation.flags["--word-ids"] { args["wordIds"] = .array(words.split(separator: ",").map { .string(String($0)) }) }
+        if let path = invocation.flags["--edit"] {
+            do { args["edit"] = try JSONDecoder().decode(JSONValue.self, from: Data(contentsOf: URL(fileURLWithPath: path))) }
+            catch { fail("usage", "--edit must name a readable edit JSON file") }
+        }
+        if let raw = invocation.flags["--args"] {
+            do {
+                guard let extra = try JSONDecoder().decode(JSONValue.self, from: Data(raw.utf8)).object else {
+                    fail("usage", "--args needs a JSON object")
+                }
+                args.merge(extra) { _, new in new }
+            } catch { fail("usage", "--args needs valid JSON") }
+        }
+        if let path = invocation.flags["--summary"] {
+            do { args["summary"] = .string(try String(contentsOfFile: path, encoding: .utf8)) }
+            catch { fail("usage", "--summary must name a readable UTF-8 file") }
+        }
+        if let path = invocation.flags["--chapters"] {
+            do { args["chapters"] = try JSONDecoder().decode(JSONValue.self, from: Data(contentsOf: URL(fileURLWithPath: path))) }
+            catch { fail("usage", "--chapters must name a readable JSON file") }
+        }
+        if serviceCommand == "captions.export" || serviceCommand == "chapters.export" || serviceCommand == "diagnostics" {
+            if let path = args.removeValue(forKey: "path") { args["outputPath"] = path }
+        }
+        let response = runRequest(invocation, cmd: serviceCommand, args: .object(args), timeout: 1800)
+        if serviceCommand == "transcribe", let format = args["format"]?.string, format != "json" {
+            var output: [String: JSONValue] = ["id": args["id"] ?? .null, "format": .string(format)]
+            if let path = args["path"] { output["outputPath"] = path }
+            let exported = runRequest(invocation, cmd: "captions.export", args: .object(output), timeout: 120)
+            printJSON(exported.result ?? .object([:]))
+        } else { printJSON(response.result ?? .object([:])) }
+        exit(0)
+    }
     fail(
         "usage",
         "unknown command `\(invocation.command)`; run `rushes guide --json`"

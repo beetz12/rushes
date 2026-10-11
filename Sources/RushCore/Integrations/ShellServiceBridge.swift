@@ -16,7 +16,7 @@ public struct ShellServiceBridge: Sendable {
     }
 
     public func forward(_ request: ControlRequest, timeout: TimeInterval = 900) async throws -> ControlResponse {
-        guard ["share", "share.setup", "share.status", "unshare"].contains(request.cmd) else {
+        guard ["share", "share.setup", "share.status", "share.enrich", "share.configure", "unshare"].contains(request.cmd) else {
             throw ControlFailure(code: ControlErrorCode.unknownCommand,
                                  message: "command is not a desktop cloud operation")
         }

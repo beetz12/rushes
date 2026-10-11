@@ -136,6 +136,8 @@ public actor EngineController: ControlHandling {
 
     private let config: EngineControllerConfig
     private let index: PackageIndex
+    private let extended: ExtendedCommandRouter
+    private var startupWarnings: [String] = []
 
     private var active: ActiveRecording?
     private var previewStarting = false
@@ -161,7 +163,11 @@ public actor EngineController: ControlHandling {
 
     public init(config: EngineControllerConfig) throws {
         self.config = config
-        self.index = try PackageIndex(databaseURL: config.indexDatabaseURL)
+        let index = try PackageIndex(databaseURL: config.indexDatabaseURL)
+        self.index = index
+        let socket = config.socketPath.isEmpty ? ControlServer.defaultSocketPath : URL(fileURLWithPath: config.socketPath)
+        self.extended = ExtendedCommandRouter(root: config.recordingsRoot, index: index,
+            shellSocket: socket.deletingLastPathComponent().appendingPathComponent("shell.sock"))
     }
 
     // MARK: - Boot and shutdown
@@ -170,9 +176,15 @@ public actor EngineController: ControlHandling {
     /// index from the manifests (docs/PLAN.md, Crash safety and recovery;
     /// the manifest is the source of truth, the index is a cache).
     public func prepare() async {
-        _ = try? await PackageRecovery(root: config.recordingsRoot)
-            .recover(interruptedAtLaunch: true)
-        _ = try? await index.rebuild(root: config.recordingsRoot)
+        do {
+            _ = try await PackageRecovery(root: config.recordingsRoot).recover(interruptedAtLaunch: true)
+            _ = try await index.rebuild(root: config.recordingsRoot)
+            for entry in try RecordingPackage.scanManifests(root: config.recordingsRoot) {
+                try await extended.refreshIndex(id: entry.manifest.id)
+            }
+        } catch {
+            startupWarnings.append("Recovery/index refresh failed: \(error)")
+        }
     }
 
     /// Installs a test-side event collector.
@@ -318,11 +330,24 @@ public actor EngineController: ControlHandling {
             return .success(id: request.id, result: try await showResult(request))
         case "verify":
             return .success(id: request.id, result: try await verifyResult(request))
+        case "recover":
+            guard active == nil, !starting, !finishing else {
+                throw ControlFailure(code: "wrong-state", message: "Stop the active take before recovery.")
+            }
+            let recovered = try await PackageRecovery(root: config.recordingsRoot).recover(interruptedAtLaunch: false)
+            _ = try await index.rebuild(root: config.recordingsRoot)
+            return .success(id: request.id, result: .object(["recovered": .array(recovered.map {
+                .object(["id": .string($0.packageID), "path": .string($0.folderPath),
+                         "durationSeconds": $0.recoveredDurationSeconds.map(JSONValue.double) ?? .null])
+            })]))
         case "selftest.sync":
             return try await selftestSyncResult(request)
         case "analyze.clap":
             return .success(id: request.id, result: try await analyzeClapResult(request))
         default:
+            if ExtendedCommandRouter.commands.contains(request.cmd) {
+                return .success(id: request.id, result: try await extended.handle(request))
+            }
             throw ControlFailure(
                 code: ControlErrorCode.unknownCommand,
                 message: "no command named \(request.cmd); run guide")
@@ -338,6 +363,7 @@ public actor EngineController: ControlHandling {
                 "permissions": await permissionsResult(),
                 "version": .string(config.version),
                 "pid": .int(Int64(getpid())),
+                "warnings": .array(startupWarnings.map(JSONValue.string)),
             ]
             if !config.socketPath.isEmpty {
                 object["socket"] = .string(config.socketPath)

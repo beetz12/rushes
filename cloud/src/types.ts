@@ -85,8 +85,16 @@ export function assertAssetFile(file: string): string { if (!ASSET_FILE.test(fil
     throw new ShareError('INVALID_ASSET', 'Invalid share asset filename.'); return file; }
 export function requireHTTPS(value: string, allowLocalHTTP = false): URL {
     const url = new URL(value);
-    if (url.username || url.password || url.search || url.hash || (url.protocol !== 'https:' && !(allowLocalHTTP && url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))))
-        throw new ShareError('INVALID_URL', 'An HTTPS URL without credentials or query is required.');
+    for (const component of ['username', 'password', 'search', 'hash'] as const) {
+        if (url[component].length > 0) {
+            throw new ShareError('INVALID_URL', `Endpoint URL must not contain ${component}.`);
+        }
+    }
+    const localDevelopment = allowLocalHTTP && url.protocol === 'http:'
+        && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    if (url.protocol !== 'https:' && !localDevelopment) {
+        throw new ShareError('INVALID_URL', 'Use HTTPS or explicitly allowed local development HTTP.');
+    }
     return url;
 }
 /** Runtime projection keeps untrusted input and future private settings out of public manifests/jobs. */

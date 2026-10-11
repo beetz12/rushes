@@ -97,7 +97,7 @@ public struct ControlGuide: Codable, Equatable, Sendable {
             version: version,
             protocolVersion: "1",
             socket: socketPath,
-            commands: commandDocs(),
+            commands: commandDocs() + ExtendedCommandRouter.commandDocs,
             events: eventDocs(),
             exitCodes: exitDocs())
     }
