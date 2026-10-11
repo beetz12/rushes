@@ -17,6 +17,7 @@ final class NativeRenderer: @unchecked Sendable {
         let track: AVAssetTrack
         let offsetMs: Double
         let transform: CGAffineTransform
+        let durationMs:Double
     }
     private final class FrameReader {
         let reader: AVAssetReader
@@ -24,16 +25,28 @@ final class NativeRenderer: @unchecked Sendable {
         var current: CMSampleBuffer?
         var next: CMSampleBuffer?
         let source: VideoSource
-        init(source: VideoSource, startMs: Double, endMs: Double) throws {
+        var seed:CIImage?
+        init(source: VideoSource, startMs: Double, endMs: Double) async throws {
             self.source=source
             reader=try AVAssetReader(asset: source.asset)
             output=AVAssetReaderTrackOutput(track: source.track,outputSettings:[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_32BGRA])
             output.alwaysCopiesSampleData=false
             reader.add(output)
-            let start=max(0,startMs-source.offsetMs)
-            reader.timeRange=CMTimeRange(start: CMTime(seconds: start/1000,preferredTimescale: 600_000),end: CMTime(seconds: max(start+1,endMs-source.offsetMs)/1000,preferredTimescale: 600_000))
+            let start=min(max(0,startMs-source.offsetMs),max(0,source.durationMs-1))
+            let end=min(source.durationMs,max(start+1,endMs-source.offsetMs))
+            reader.timeRange=CMTimeRange(start: CMTime(seconds:start/1000,preferredTimescale:600_000),end:CMTime(seconds:end/1000,preferredTimescale:600_000))
             guard reader.startReading() else { throw renderFailure(reader.error?.localizedDescription ?? "Video reader could not start") }
             next=output.copyNextSampleBuffer()
+            // Seed the cut with the actual previous frame. A static screen can
+            // have no sample near the trim point, so starting its reader there
+            // alone would create a black first frame.
+            let generator=AVAssetImageGenerator(asset:source.asset)
+            generator.appliesPreferredTrackTransform=true
+            generator.requestedTimeToleranceBefore = .positiveInfinity
+            generator.requestedTimeToleranceAfter = .zero
+            let requestMs=min(max(0,startMs-source.offsetMs),max(0,source.durationMs-1))
+            let frame=try await generator.image(at:CMTime(seconds:requestMs/1000,preferredTimescale:600_000)).image
+            seed=CIImage(cgImage:frame)
         }
         func image(at sourceMs: Double) throws -> CIImage? {
             let time=(sourceMs-source.offsetMs)/1000
@@ -42,7 +55,7 @@ final class NativeRenderer: @unchecked Sendable {
                 current=sample; next=output.copyNextSampleBuffer()
             }
             if reader.status == .failed { throw renderFailure(reader.error?.localizedDescription ?? "Video decoding failed") }
-            guard let sample=current, let buffer=CMSampleBufferGetImageBuffer(sample) else { return nil }
+            guard let sample=current, let buffer=CMSampleBufferGetImageBuffer(sample) else { return seed }
             let image=CIImage(cvPixelBuffer:buffer).transformed(by:source.transform)
             return image.transformed(by:CGAffineTransform(translationX:-image.extent.minX,y:-image.extent.minY))
         }
@@ -53,7 +66,7 @@ final class NativeRenderer: @unchecked Sendable {
         let url=try safeTrackURL(track.file)
         let asset=AVURLAsset(url:url)
         guard let media=try await asset.loadTracks(withMediaType:.video).first else { throw renderFailure("No video stream in \(track.file)") }
-        return VideoSource(asset:asset,track:media,offsetMs:Double(track.offsetMs-(manifest.tracks.first(where:{$0.kind == .screen})?.offsetMs ?? 0)),transform:try await media.load(.preferredTransform))
+        return VideoSource(asset:asset,track:media,offsetMs:Double(track.offsetMs-(manifest.tracks.first(where:{$0.kind == .screen})?.offsetMs ?? 0)),transform:try await media.load(.preferredTransform),durationMs:try await asset.load(.duration).seconds*1000)
     }
     func safeTrackURL(_ file: String) throws -> URL {
         try PostproductionPaths.file(file,in:package.folderURL)
@@ -164,8 +177,8 @@ final class NativeRenderer: @unchecked Sendable {
                     let outputMs=Double(frame)*1000/Double(options.fps)
                     guard let mapped=edit.sourceTime(at:outputMs) else { break }
                     if mapped.clip.id != lastClip {
-                        screenReader=try screen.map { try FrameReader(source:$0,startMs:mapped.clip.sourceStartMs,endMs:mapped.clip.sourceEndMs) }
-                        cameraReader=try camera.map { try FrameReader(source:$0,startMs:mapped.clip.sourceStartMs,endMs:mapped.clip.sourceEndMs) }
+                        if let screen { screenReader=try await FrameReader(source:screen,startMs:mapped.clip.sourceStartMs,endMs:mapped.clip.sourceEndMs) }
+                        if let camera { cameraReader=try await FrameReader(source:camera,startMs:mapped.clip.sourceStartMs,endMs:mapped.clip.sourceEndMs) }
                         lastClip=mapped.clip.id
                     }
                     if mapped.sourceMs < lastSource { pointerIndex=0; pointer=nil }

@@ -12,7 +12,7 @@ public actor PostproductionService {
     private struct History { var current:EditDocument; var undo:[EditDocument]=[]; var redo:[EditDocument]=[] }
     private var histories:[String:History]=[:]
     private var activeExports:Set<String>=[]
-    private var pendingDrafts:[String:Int]=[:]
+    private var pendingDrafts:[String:UUID]=[:]
     public init(root:URL = RecordingPackage.defaultRoot) { self.root=root }
     private func package(_ id:String) throws -> RecordingPackage {
         guard let package=RecordingPackage.resolve(root:root,id:id) else { throw ControlFailure(code:ControlErrorCode.notFound,message:"No recording with ID \(id)") }
@@ -29,12 +29,13 @@ public actor PostproductionService {
         if let current=histories[id]?.current { return current }
         let package=try package(id),manifest=try package.readManifest()
         let length=try await duration(package,manifest:manifest)
-        let draft=package.folderURL.appendingPathComponent("edit.draft.json"),saved=package.folderURL.appendingPathComponent("edit.json")
+        let draft=try PostproductionPaths.file("edit.draft.json",in:package.folderURL,requireExists:false),saved=try PostproductionPaths.file("edit.json",in:package.folderURL,requireExists:false)
         var edit:EditDocument
         if FileManager.default.fileExists(atPath:draft.path) { edit=try JSONDecoder().decode(EditDocument.self,from:Data(contentsOf:draft)) }
         else if FileManager.default.fileExists(atPath:saved.path) { edit=try JSONDecoder().decode(EditDocument.self,from:Data(contentsOf:saved)) }
         else {
             edit=EditDocument(durationMs:length,title:manifest.title)
+            if !manifest.tracks.contains(where:{$0.kind == .screen && $0.present}) && manifest.tracks.contains(where:{$0.kind == .camera && $0.present}) { edit.layout.preset = .cameraOnly }
             let input=try PostproductionPaths.file(manifest.input?.file ?? "input.ndjson",in:package.folderURL,requireExists:false)
             if let data=try? Data(contentsOf:input),let text=String(data:data,encoding:.utf8) {
                 let samples=text.split(separator:"\n").compactMap { try? JSONDecoder().decode(PointerSample.self,from:Data($0.utf8)) }
@@ -52,12 +53,13 @@ public actor PostproductionService {
         history.undo.append(old); if history.undo.count>100 { history.undo.removeFirst() }; history.redo=[]
         var next=edit; next.revision=old.revision+1
         history.current=next; histories[id]=history
-        pendingDrafts[id]=next.revision
+        let autosaveToken=UUID()
+        pendingDrafts[id]=autosaveToken
         // Coalesce overlapping slider/typing requests; completion of the latest
         // request confirms its atomic write. Explicit save cancels a pending draft.
         do { try await Task.sleep(for:.milliseconds(250)) }
-        catch { if pendingDrafts[id] == next.revision { try writeDraft(next,package:package); pendingDrafts.removeValue(forKey:id) }; throw error }
-        if pendingDrafts[id] == next.revision { try writeDraft(next,package:package); pendingDrafts.removeValue(forKey:id) }
+        catch { if pendingDrafts[id] == autosaveToken { try writeDraft(next,package:package); pendingDrafts.removeValue(forKey:id) }; throw error }
+        if pendingDrafts[id] == autosaveToken { try writeDraft(next,package:package); pendingDrafts.removeValue(forKey:id) }
         return next
     }
     public func applyCuts(id:String,cuts:[EditCut]) async throws -> EditDocument {
@@ -123,7 +125,19 @@ public actor PostproductionService {
                 for file in files where file.lastPathComponent.hasPrefix(partial.lastPathComponent+".") { try? FileManager.default.removeItem(at:file) }
             }
         }
-        let dimensions=try await renderer.render(to:partial,progress:progress)
+        let dimensions:(Int,Int)
+        if options.preset == .full {
+            var siblingOptions=options; siblingOptions.container=options.container == "mov" ? "mp4" : "mov"
+            let siblingKey=try cacheKey(package:package,manifest:manifest,edit:edit,options:siblingOptions)
+            let sibling=renders.appendingPathComponent("\(siblingKey).\(siblingOptions.container)")
+            if let data=try? Data(contentsOf:renders.appendingPathComponent("\(siblingKey).json")),
+               let prior=try? JSONDecoder().decode(ExportResult.self,from:data),FileManager.default.fileExists(atPath:sibling.path) {
+                guard let session=AVAssetExportSession(asset:AVURLAsset(url:sibling),presetName:AVAssetExportPresetPassthrough) else { throw renderFailure("Cannot create container remux") }
+                session.shouldOptimizeForNetworkUse=true
+                try await session.export(to:partial,as:options.container == "mov" ? .mov : .mp4)
+                dimensions=(prior.width,prior.height)
+            } else { dimensions=try await renderer.render(to:partial,progress:progress) }
+        } else { dimensions=try await renderer.render(to:partial,progress:progress) }
         try Task.checkCancellation()
         try AtomicFileWriter.posixRename(from:partial,to:cache)
         let result=ExportResult(id:id,path:output.path,preset:options.preset.rawValue,cacheKey:key,cached:false,durationMs:edit.durationMs,width:dimensions.0,height:dimensions.1,fps:options.preset == .audio ? 0 : options.fps)
@@ -190,6 +204,26 @@ public actor PostproductionService {
         try AtomicFileWriter.writeEncodable(edit,to:staged.appendingPathComponent("edit.json"),encoder:ControlWire.encoder)
         try AtomicFileWriter.posixRename(from:staged,to:output)
         return ExportResult(id:manifest.id,path:output.path,preset:"editor-tracks",cacheKey:key,cached:false,durationMs:edit.durationMs,width:0,height:0,fps:0)
+    }
+    public func layoutFrames(id:String,layout override:EditLayout? = nil,canvasAspect:Double? = nil) async throws -> JSONValue {
+        let package=try package(id),manifest=try package.readManifest(),edit=try await getEdit(id:id)
+        let layout=override ?? edit.layout
+        var candidate=edit; candidate.layout=layout
+        try candidate.validate(sourceDurationMs:try await duration(package,manifest:manifest))
+        let track=manifest.tracks.first { $0.kind == .screen && $0.present } ?? manifest.tracks.first { $0.kind == .camera && $0.present }
+        var aspect=Double(track?.width ?? 1920)/Double(track?.height ?? 1080)
+        if layout.canvas == "16:9" { aspect=16/9 }
+        if layout.canvas == "1:1" { aspect=1 }
+        if layout.canvas == "9:16" { aspect=9/16 }
+        if let value=canvasAspect { aspect=value }
+        guard aspect.isFinite,aspect>0,aspect<=20 else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"Invalid canvas aspect ratio") }
+        let hasCamera=manifest.tracks.contains { $0.kind == .camera && $0.present }
+        let frames=LayoutPlanner.frames(layout:layout,canvasAspect:aspect,hasCamera:hasCamera)
+        func rectangle(_ rect:CGRect?) -> JSONValue {
+            guard let rect else { return .null }
+            return .object(["x":.double(rect.minX),"y":.double(rect.minY),"width":.double(rect.width),"height":.double(rect.height)])
+        }
+        return .object(["screen":rectangle(frames.screen),"camera":rectangle(frames.camera),"roundCamera":.bool(frames.roundCamera),"canvasAspect":.double(aspect)])
     }
     public func thumbnail(id:String,to output:URL,atMs:Double = 0,width:Int = 1280,height:Int = 720) async throws -> JSONValue {
         guard [(1280,720),(1920,1080)].contains(where:{$0.0 == width && $0.1 == height}),atMs.isFinite,atMs>=0,["png","jpg","jpeg"].contains(output.pathExtension.lowercased()) else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"Thumbnail must be PNG/JPG, 1280x720 or 1920x1080, with a nonnegative timestamp") }

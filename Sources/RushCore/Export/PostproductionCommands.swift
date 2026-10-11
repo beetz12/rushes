@@ -1,11 +1,16 @@
 import Foundation
 
 extension PostproductionService {
-    public static let commands:Set<String> = ["export","edit.get","edit.set","edit.undo","edit.redo","edit.save","edit.discard","edit.cut","edit.split","thumbnail"]
+    public static let commands:Set<String> = ["export","edit.get","edit.set","edit.undo","edit.redo","edit.save","edit.discard","edit.cut","edit.split","thumbnail","layout.frames"]
     public func handle(_ request:ControlRequest) async throws -> JSONValue {
         guard let id=request.param("id")?.string,!id.isEmpty else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"A recording ID is required") }
         switch request.cmd {
         case "edit.get": return try JSONValue(encoding:await getEdit(id:id))
+        case "layout.frames":
+            let override:EditLayout?
+            if let value=request.param("layout") { override=try JSONDecoder().decode(EditLayout.self,from:ControlWire.encoder.encode(value)) }
+            else { override=nil }
+            return try await layoutFrames(id:id,layout:override,canvasAspect:request.param("canvasAspect")?.double)
         case "edit.undo": return try JSONValue(encoding:await undo(id:id))
         case "edit.redo": return try JSONValue(encoding:await redo(id:id))
         case "edit.save": return try JSONValue(encoding:await save(id:id))
@@ -47,7 +52,9 @@ extension PostproductionService {
             guard let preset=ExportPreset(rawValue:request.param("preset")?.string ?? "share") else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"Unknown export preset") }
             let path=request.param("path")?.string ?? request.param("output")?.string
             guard let path,!path.isEmpty else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"Export output path is required") }
-            let options=ExportOptions(preset:preset,codec:request.param("codec")?.string ?? "h264",container:request.param("container")?.string,fps:request.param("fps")?.int.map(Int.init),sourceSize:request.param("sourceSize")?.bool ?? false)
+            let extensionType=URL(fileURLWithPath:path).pathExtension.lowercased()
+            let inferredContainer=(preset == .audio && ["m4a","wav"].contains(extensionType)) || (preset == .full && ["mov","mp4"].contains(extensionType)) ? extensionType : nil
+            let options=ExportOptions(preset:preset,codec:request.param("codec")?.string ?? "h264",container:request.param("container")?.string ?? inferredContainer,fps:request.param("fps")?.int.map(Int.init),sourceSize:request.param("sourceSize")?.bool ?? false)
             return try JSONValue(encoding:await export(id:id,options:options,to:URL(fileURLWithPath:path)))
         case "thumbnail":
             guard let path=request.param("path")?.string ?? request.param("output")?.string else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"Thumbnail output path is required") }

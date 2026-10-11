@@ -25,13 +25,13 @@ struct SyntheticExportFixture {
         ]))
     }
     func cleanup() { try? FileManager.default.removeItem(at:root) }
-    static func video(to url:URL,camera:Bool,allGreen:Bool = false) async throws {
+    static func video(to url:URL,camera:Bool,allGreen:Bool = false,frameCount:Int = 60) async throws {
         let width=camera ? 160 : 320,height=camera ? 160 : 180
         let writer=try AVAssetWriter(outputURL:url,fileType:.mov)
         let input=AVAssetWriterInput(mediaType:.video,outputSettings:[AVVideoCodecKey:AVVideoCodecType.h264,AVVideoWidthKey:width,AVVideoHeightKey:height])
         let adaptor=AVAssetWriterInputPixelBufferAdaptor(assetWriterInput:input,sourcePixelBufferAttributes:[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_32BGRA,kCVPixelBufferWidthKey as String:width,kCVPixelBufferHeightKey as String:height])
         writer.add(input); guard writer.startWriting() else { throw renderFailure("Fixture writer failed") }; writer.startSession(atSourceTime:.zero)
-        for frame in 0..<60 {
+        for frame in 0..<frameCount {
             while !input.isReadyForMoreMediaData { try await Task.sleep(for:.milliseconds(1)) }
             var pixel:CVPixelBuffer?
             guard CVPixelBufferPoolCreatePixelBuffer(nil,adaptor.pixelBufferPool!,&pixel) == kCVReturnSuccess,let pixel else { throw renderFailure("Fixture pixel allocation") }
@@ -44,29 +44,29 @@ struct SyntheticExportFixture {
             CVPixelBufferUnlockBaseAddress(pixel,[])
             guard adaptor.append(pixel,withPresentationTime:CMTime(value:Int64(frame),timescale:30)) else { throw renderFailure("Fixture append") }
         }
-        input.markAsFinished(); writer.endSession(atSourceTime:CMTime(seconds:2,preferredTimescale:600)); await writer.finishWriting()
+        input.markAsFinished(); writer.endSession(atSourceTime:CMTime(value:Int64(frameCount),timescale:30)); await writer.finishWriting()
         guard writer.status == .completed else { throw renderFailure(writer.error?.localizedDescription ?? "Fixture finish") }
     }
-    static func audio(to url:URL,frequency:Float) async throws {
+    static func audio(to url:URL,frequency:Float,onsetMs:Double = 0) async throws {
         let writer=try AVAssetWriter(outputURL:url,fileType:.mov)
         let input=AVAssetWriterInput(mediaType:.audio,outputSettings:[AVFormatIDKey:kAudioFormatMPEG4AAC,AVSampleRateKey:48_000,AVNumberOfChannelsKey:1,AVEncoderBitRateKey:128_000])
         writer.add(input); guard writer.startWriting() else { throw renderFailure("Audio fixture writer") }; writer.startSession(atSourceTime:.zero)
         for frame in stride(from:0,to:96_000,by:1024) {
             while !input.isReadyForMoreMediaData { try await Task.sleep(for:.milliseconds(1)) }
             let count=min(1024,96_000-frame)
-            let sample=try audioSample(frame:frame,count:count,frequency:frequency)
+            let sample=try audioSample(frame:frame,count:count,frequency:frequency,onsetFrame:Int(onsetMs*48))
             guard input.append(sample) else { throw renderFailure(writer.error?.localizedDescription ?? "Audio fixture append") }
         }
         input.markAsFinished(); writer.endSession(atSourceTime:CMTime(seconds:2,preferredTimescale:600)); await writer.finishWriting()
         guard writer.status == .completed else { throw renderFailure(writer.error?.localizedDescription ?? "Audio fixture finish") }
     }
-    static func audioSample(frame:Int,count:Int,frequency:Float) throws -> CMSampleBuffer {
+    static func audioSample(frame:Int,count:Int,frequency:Float,onsetFrame:Int = 0) throws -> CMSampleBuffer {
         var asbd=AudioStreamBasicDescription(mSampleRate:48_000,mFormatID:kAudioFormatLinearPCM,mFormatFlags:kAudioFormatFlagIsFloat|kAudioFormatFlagIsPacked,mBytesPerPacket:4,mFramesPerPacket:1,mBytesPerFrame:4,mChannelsPerFrame:1,mBitsPerChannel:32,mReserved:0)
         var format:CMAudioFormatDescription?
         guard CMAudioFormatDescriptionCreate(allocator:kCFAllocatorDefault,asbd:&asbd,layoutSize:0,layout:nil,magicCookieSize:0,magicCookie:nil,extensions:nil,formatDescriptionOut:&format) == noErr,let format else { throw renderFailure("Fixture PCM format") }
         var block:CMBlockBuffer?
         guard CMBlockBufferCreateWithMemoryBlock(allocator:kCFAllocatorDefault,memoryBlock:nil,blockLength:count*4,blockAllocator:kCFAllocatorDefault,customBlockSource:nil,offsetToData:0,dataLength:count*4,flags:0,blockBufferOut:&block) == noErr,let block else { throw renderFailure("Fixture PCM allocation") }
-        let values=(0..<count).map { i in Float(0.3)*sin(2*Float.pi*frequency*Float(frame+i)/48_000) }
+        let values=(0..<count).map { i in frame+i < onsetFrame ? Float(0) : Float(0.3)*sin(2*Float.pi*frequency*Float(frame+i)/48_000) }
         _=values.withUnsafeBytes { CMBlockBufferReplaceDataBytes(with:$0.baseAddress!,blockBuffer:block,offsetIntoDestination:0,dataLength:count*4) }
         var timing=CMSampleTimingInfo(duration:CMTime(value:1,timescale:48_000),presentationTimeStamp:CMTime(value:Int64(frame),timescale:48_000),decodeTimeStamp:.invalid)
         var sample:CMSampleBuffer?
@@ -87,6 +87,24 @@ struct SyntheticExportFixture {
         }
         guard ok else { throw renderFailure("Fixture decode pixel context") }
         return (image.width,image.height,bytes)
+    }
+    static func audioWindowRMS(_ url:URL,start:Double,end:Double) async throws -> Double {
+        let asset=AVURLAsset(url:url),track=try await asset.loadTracks(withMediaType:.audio)[0]
+        let reader=try AVAssetReader(asset:asset)
+        let output=AVAssetReaderTrackOutput(track:track,outputSettings:[AVFormatIDKey:kAudioFormatLinearPCM,AVSampleRateKey:48_000,AVNumberOfChannelsKey:2,AVLinearPCMBitDepthKey:32,AVLinearPCMIsFloatKey:true,AVLinearPCMIsNonInterleaved:false])
+        reader.add(output); guard reader.startReading() else { throw renderFailure("Window reader failed") }
+        var sum=0.0,count=0
+        while let sample=output.copyNextSampleBuffer(),let block=sample.dataBuffer {
+            let length=CMBlockBufferGetDataLength(block)
+            var values=[Float](repeating:0,count:length/4)
+            _=values.withUnsafeMutableBytes { CMBlockBufferCopyDataBytes(block,atOffset:0,dataLength:length,destination:$0.baseAddress!) }
+            for (index,value) in values.enumerated() {
+                let time=sample.presentationTimeStamp.seconds+Double(index/2)/48_000
+                if time>=start && time<end { sum += Double(value*value); count += 1 }
+            }
+        }
+        guard reader.status == .completed,count>0 else { throw renderFailure("Window decode failed") }
+        return sqrt(sum/Double(count))
     }
     static func audioRMS(_ url:URL) async throws -> Double {
         let asset=AVURLAsset(url:url),tracks=try await asset.loadTracks(withMediaType:.audio)
@@ -215,4 +233,84 @@ struct ExportTests {
         #expect(!items.contains(where:{$0.hasPrefix(".partial-")}))
         await #expect(throws:ControlFailure.self) { try await service.export(id:fixture.package.id,to:fixture.package.trackURL(for:.screen)) }
     }
+    @Test func everyRenderedLayoutAndAudioLatency() async throws {
+        let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
+        let service=PostproductionService(root:fixture.root)
+        var edit=try await service.getEdit(id:fixture.package.id)
+        edit.clips=[EditClip(id:"c1",sourceStartMs:300,sourceEndMs:500)]
+        for preset in LayoutPreset.allCases {
+            edit.layout.preset=preset
+            _=try await service.setEdit(id:fixture.package.id,edit:edit)
+            let output=fixture.root.appendingPathComponent("layout-\(preset.rawValue).mp4")
+            _=try await service.export(id:fixture.package.id,to:output)
+            let pixels=try await SyntheticExportFixture.pixels(output,at:0.1)
+            let red=stride(from:0,to:pixels.data.count,by:4).filter { pixels.data[$0]>160 && pixels.data[$0+2]<50 }.count
+            let blue=stride(from:0,to:pixels.data.count,by:4).filter { pixels.data[$0+2]>160 && pixels.data[$0]<50 }.count
+            #expect(preset == .screenOnly ? red == 0 : red > 100)
+            #expect(preset == .cameraOnly ? blue == 0 : blue > 100)
+        }
+        try FileManager.default.removeItem(at:fixture.package.trackURL(for:.microphone))
+        try await SyntheticExportFixture.audio(to:fixture.package.trackURL(for:.microphone),frequency:440,onsetMs:500)
+        edit.clips=[EditClip(id:"c1",sourceStartMs:250,sourceEndMs:1750)]
+        edit.audio.systemGain=0
+        _=try await service.setEdit(id:fixture.package.id,edit:edit)
+        let audio=fixture.root.appendingPathComponent("latency.wav")
+        _=try await service.export(id:fixture.package.id,options:ExportOptions(preset:.audio,container:"wav"),to:audio)
+        // Onset 500ms minus latency 120ms minus trim 250ms = 130ms.
+        #expect(try await SyntheticExportFixture.audioWindowRMS(audio,start:0.025,end:0.075)<0.005)
+        #expect(try await SyntheticExportFixture.audioWindowRMS(audio,start:0.19,end:0.24)>0.12)
+    }
+    @Test func unsafeSourcePathsAndOtherTakeOverwriteRejected() async throws {
+        let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
+        let second=try RecordingPackage.create(root:fixture.root,date:Date().addingTimeInterval(1))
+        let secondManifest=RecordingManifest(id:second.id,status:.complete,tracks:[.init(kind:.screen)])
+        try second.writeManifest(secondManifest)
+        try AtomicFileWriter.write(Data("original".utf8),to:second.trackURL(for:.screen))
+        let service=PostproductionService(root:fixture.root)
+        await #expect(throws:ControlFailure.self) { try await service.export(id:fixture.package.id,to:second.trackURL(for:.screen)) }
+        #expect(try String(contentsOf:second.trackURL(for:.screen),encoding:.utf8) == "original")
+        var manifest=try fixture.package.readManifest()
+        manifest.tracks[0].file="../outside.mov"
+        try fixture.package.writeManifest(manifest)
+        await #expect(throws:ControlFailure.self) { try await PostproductionService(root:fixture.root).export(id:fixture.package.id,to:fixture.root.appendingPathComponent("unsafe.mp4")) }
+        manifest=try fixture.package.readManifest(); manifest.tracks[0].file="screen.mov"; manifest.input = .init(file:"../outside.ndjson")
+        try fixture.package.writeManifest(manifest)
+        await #expect(throws:ControlFailure.self) { try await PostproductionService(root:fixture.root).getEdit(id:fixture.package.id) }
+    }
+
+    @Test func arbitraryTrimStartsWithPreviousDecodedFrameAndFullContainerRemux() async throws {
+        let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
+        let service=PostproductionService(root:fixture.root)
+        var edit=try await service.getEdit(id:fixture.package.id)
+        edit.clips=[EditClip(id:"c1",sourceStartMs:125,sourceEndMs:425)]
+        edit.layout.preset = .screenOnly
+        _=try await service.setEdit(id:fixture.package.id,edit:edit)
+        let mp4=fixture.root.appendingPathComponent("full.mp4")
+        _=try await service.export(id:fixture.package.id,options:ExportOptions(preset:.full),to:mp4)
+        let first=try await SyntheticExportFixture.pixels(mp4,at:0)
+        #expect(first.data[(90*320+160)*4+2]>170)
+        let mov=fixture.root.appendingPathComponent("remux.mov")
+        _=try await service.export(id:fixture.package.id,options:ExportOptions(preset:.full,container:"mov"),to:mov)
+        let before=try await AVURLAsset(url:mp4).loadTracks(withMediaType:.video),after=try await AVURLAsset(url:mov).loadTracks(withMediaType:.video)
+        let beforeFormats=try await before[0].load(.formatDescriptions),afterFormats=try await after[0].load(.formatDescriptions)
+        #expect(CMFormatDescriptionGetMediaSubType(beforeFormats[0]) == CMFormatDescriptionGetMediaSubType(afterFormats[0]))
+        #expect(try await SyntheticExportFixture.pixels(mov,at:0).data == first.data)
+    }
+
+    @Test func shorterCameraKeepsItsLastFrameAcrossLaterCuts() async throws {
+        let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
+        try FileManager.default.removeItem(at:fixture.package.trackURL(for:.camera))
+        try await SyntheticExportFixture.video(to:fixture.package.trackURL(for:.camera),camera:true,frameCount:12)
+        let service=PostproductionService(root:fixture.root)
+        var edit=try await service.getEdit(id:fixture.package.id)
+        edit.clips=[EditClip(id:"c1",sourceStartMs:1500,sourceEndMs:1800)]
+        edit.layout.bubble.center=[0.75,0.5]; edit.layout.bubble.size=0.25
+        _=try await service.setEdit(id:fixture.package.id,edit:edit)
+        let output=fixture.root.appendingPathComponent("short-camera.mp4")
+        _=try await service.export(id:fixture.package.id,to:output)
+        let pixels=try await SyntheticExportFixture.pixels(output,at:0)
+        #expect(pixels.data[(90*320+240)*4]>170)
+        #expect(pixels.data[(90*320+30)*4+1]>170)
+    }
+
 }

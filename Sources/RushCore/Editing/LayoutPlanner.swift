@@ -79,15 +79,20 @@ public struct ViewportState: Equatable, Sendable {
 public struct ViewportTimeline: Sendable {
     public private(set) var state = ViewportState()
     private var velocity = [0.0,0.0,0.0]
+    private var activeCue:String?
+    private var panFocus=[0.5,0.5]
     public init() {}
     public mutating func tick(clip: EditClip, sourceMs: Double, cues: [ZoomCue], pointer: [Double]?, dt: Double) -> ViewportState {
         let cue = cues.first { $0.clipId == clip.id && $0.sourceStartMs <= sourceMs && $0.sourceEndMs > sourceMs }
-        var target=[cue?.scale ?? 1,cue?.focus[0] ?? 0.5,cue?.focus[1] ?? 0.5]
+        if activeCue != cue?.id { activeCue=cue?.id; panFocus=cue?.focus ?? [0.5,0.5] }
+        var target=[cue?.scale ?? 1,panFocus[0],panFocus[1]]
         if cue != nil, let pointer, pointer.count == 2 {
             // A quarter of the viewport width is the inner-box half width.
+            // Retain the chosen focus while the pointer stays inside that box.
             let safeHalf=0.25/target[0]
-            if abs(pointer[0]-target[1]) > safeHalf { target[1]=pointer[0] }
-            if abs(pointer[1]-target[2]) > safeHalf { target[2]=pointer[1] }
+            if abs(pointer[0]-panFocus[0]) > safeHalf { panFocus[0]=pointer[0] }
+            if abs(pointer[1]-panFocus[1]) > safeHalf { panFocus[1]=pointer[1] }
+            target[1]=panFocus[0]; target[2]=panFocus[1]
         }
         let half=0.5/target[0]
         target[1]=max(half,min(1-half,target[1])); target[2]=max(half,min(1-half,target[2]))

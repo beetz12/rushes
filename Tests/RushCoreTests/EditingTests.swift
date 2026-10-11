@@ -67,6 +67,9 @@ struct EditingTests {
         var timeline=ViewportTimeline()
         for _ in 0..<240 { _=timeline.tick(clip:clip,sourceMs:10_500,cues:cues,pointer:[0.98,0.98],dt:1/60) }
         #expect(timeline.state.scale>1.2 && timeline.state.x <= 1-0.5/timeline.state.scale+0.001)
+        let held=timeline.state.x
+        for _ in 0..<240 { _=timeline.tick(clip:clip,sourceMs:10_600,cues:cues,pointer:[0.90,0.90],dt:1/60) }
+        #expect(abs(timeline.state.x-held)<0.002)
         for _ in 0..<240 { _=timeline.tick(clip:clip,sourceMs:14_500,cues:cues,pointer:nil,dt:1/60) }
         #expect(abs(timeline.state.scale-1)<0.001)
     }
@@ -78,6 +81,9 @@ struct EditingTests {
         #expect(result["clips"]?.array?.first?["sourceStartMs"]?.int == 200)
         let full=try await service.handle(ControlRequest(id:"2",cmd:"edit.set",args:.object(["id":.string(fixture.package.id),"edit":result])))
         #expect(full["layout"]?["preset"]?.string == "side-by-side")
+        let frames=try await service.handle(ControlRequest(id:"frames",cmd:"layout.frames",args:.object(["id":.string(fixture.package.id),"canvasAspect":.double(16/9),"layout":.object(["preset":.string("side-by-side")])])))
+        #expect(frames["screen"]?["width"]?.double == 0.64)
+        #expect(frames["camera"]?["x"]?.double == 0.68)
         await #expect(throws:ControlFailure.self) { try await service.handle(ControlRequest(id:"3",cmd:"edit.set",args:.object(["id":.string(fixture.package.id),"layout":.string("unknown")]))) }
     }
 }
