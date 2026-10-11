@@ -119,3 +119,12 @@ owned text fixture moved into actual Trash, directory inode/device and payload
 verified, restored and payload verified, then only owned fixture cleaned. Exact
 script/log saved /tmp/rush-native-trash-smoke.swift and .log. No user media involved.
 Screen-only soak minute46 healthy; final60min decode remains first unfinished step.
+
+Geometry checkpoint: read-only CaptureRig.captureGeometry() -> CaptureGeometry?
+exposes selected source rect in global top-left points, mode and optional displayID.
+Native windows read fresh CG bounds each call; moved/resized/vanished source stays
+honest. Area preserves exact selected rect, display retains negative monitor
+origin, camera-only nil. Diagnostic rigs use only synthetic dimensions. Root owns
+record.geometry route. Geometry+forwarding7tests pass, source clean0; no UI/device
+capture for these tests. Release build passed. Screen-only soak minute52 healthy:
+150899 encoded,117writerdrops,pending0,physical17285984B,RSSproxy47923200B.

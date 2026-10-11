@@ -74,6 +74,7 @@ public protocol CaptureRig: Sendable {
     func stop() async
     func adoptClock(_ clock: SessionClock) async
     func setDrawingWindow(windowID: String?) async throws
+    func captureGeometry() async -> CaptureGeometry?
 }
 
 /// Builds the capture for one armed session. The production factory wires
@@ -90,6 +91,7 @@ public protocol CaptureRigFactory: Sendable {
 extension CaptureRig {
     public func adoptClock(_ clock: SessionClock) async {}
     public func setDrawingWindow(windowID: String?) async throws {}
+    public func captureGeometry() async -> CaptureGeometry? { nil }
 }
 
 extension CaptureRigFactory {
@@ -314,6 +316,8 @@ private final class ProductionCaptureRig: CaptureRig, @unchecked Sendable {
         try await screenSource.setDrawingWindow(windowID: windowID)
     }
 
+    func captureGeometry() async -> CaptureGeometry? { CaptureGeometry.current(for: request) }
+
     /// Synchronous lock-confined accessors: the async surface must not hold
     /// an NSLock across a suspension point.
     private func installRecorder(_ recorder: InputRecorder) {
@@ -509,6 +513,8 @@ private final class StubCaptureRig: CaptureRig, @unchecked Sendable {
         installPump(timer)
         timer.resume()
     }
+
+    func captureGeometry() async -> CaptureGeometry? { CaptureGeometry.synthetic(for: context.request) }
 
     /// Synchronous lock-confined accessors: the async surface must not hold
     /// an NSLock across a suspension point.
