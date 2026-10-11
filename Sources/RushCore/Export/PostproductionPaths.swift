@@ -22,8 +22,11 @@ enum PostproductionPaths {
         return expected
     }
     static func managedFile(_ name:String,in directory:URL) throws -> URL {
-        let expected=directory.appendingPathComponent(name)
-        let resolved=try file(name,in:directory,requireExists:false)
+        // Normalize the parent first: Foundation can represent the same macOS
+        // temporary directory using /var or /private/var aliases.
+        let canonical=directory.resolvingSymlinksInPath()
+        let expected=canonical.appendingPathComponent(name)
+        let resolved=try file(name,in:canonical,requireExists:false)
         guard resolved.standardizedFileURL.path == expected.standardizedFileURL.path else { throw renderFailure("Managed cache file must not be a symbolic link: \(name)") }
         return expected
     }
