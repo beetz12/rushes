@@ -128,3 +128,22 @@ origin, camera-only nil. Diagnostic rigs use only synthetic dimensions. Root own
 record.geometry route. Geometry+forwarding7tests pass, source clean0; no UI/device
 capture for these tests. Release build passed. Screen-only soak minute52 healthy:
 150899 encoded,117writerdrops,pending0,physical17285984B,RSSproxy47923200B.
+
+The SCREEN-only take ran 60 minutes and finalized a complete 3456x2234 HEVC MOV,
+duration 3600.078797833s in the manifest, first sample 0, no warnings. Minute 5 to
+60 physical footprint grew 3,325,952 bytes (3.17MiB); writer counters at minute 60
+173132 encoded / 158 drops (~0.091%), pending 0. However record.stop timed out at
+180s because finish() waits for a full decode before replying. The manifest and
+7,266,105,349-byte movie survived; owned PID48464 gracefully retired. Parent owns
+the Stop fix: background verification job with an immediate finalized response.
+The original soak is not labeled a full end-to-end pass. Independent saved-file
+ffprobe: duration3600.078333s (0.465ms from manifest), start0,173134 declared frames.
+Full ffmpeg VideoToolbox decode is still running; output null-mux DTS quantization
+warnings are recorded, not hidden or treated as input decoder failures.
+
+Video timescale correction approved by parent: default native scale600 duplicates
+close source PTS. Actual HEVC+H264 sparse 60-second MOV tests failed with scale1e9
+(writer failed / AVFoundation read -11829, OSStatus -12848). Scale1e6 passes both:
+exact decoded PTS0,100000ns,59.98s,60.02s, duration60.04s within50ms, native full
+read completed, stale-manifest recovery kept movie bytes and strict verify passed.
+Video-only setter leaves audio format clock intact. No physical capture for tests.

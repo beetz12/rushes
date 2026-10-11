@@ -117,6 +117,12 @@ internal final class AVAssetFileWriter: TrackFileWriting, @unchecked Sendable {
                     width: configuration.videoWidth, height: configuration.videoHeight)
             }
             input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
+            // Preserve sub-millisecond video timestamps. The default
+            // MOV scale of 600 can collapse a live frame and a nearby static
+            // heartbeat frame onto the same stored presentation time.
+            // Nanosecond scale 1e9 fails a native MOV with a sixty-second sparse
+            // gap; microsecond scale preserves close frames and long gaps.
+            input.mediaTimeScale = 1_000_000
             adaptor = AVAssetWriterInputPixelBufferAdaptor(
                 assetWriterInput: input,
                 sourcePixelBufferAttributes: [
