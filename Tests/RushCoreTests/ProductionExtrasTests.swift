@@ -221,6 +221,10 @@ struct ProductionExtrasTests {
         try policy.write(to: folder)
         #expect(try ProductionEffectsPolicy.read(from: folder) == policy)
         let literal = folder.appendingPathComponent("production-effects.json")
+        try Data("malformed".utf8).write(to: literal)
+        #expect(throws: ControlFailure.self) { try ProductionEffectsPolicy.read(from: folder) }
+        try Data(repeating: 32, count: 65_537).write(to: literal)
+        #expect(throws: ControlFailure.self) { try ProductionEffectsPolicy.read(from: folder) }
         try FileManager.default.removeItem(at: literal)
         let master = folder.appendingPathComponent("camera.mov")
         let bytes = Data("unchanged camera master".utf8)

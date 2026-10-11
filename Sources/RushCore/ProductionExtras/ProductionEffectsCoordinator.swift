@@ -37,10 +37,15 @@ public struct ProductionEffectsPolicy: Codable, Equatable, Sendable {
     public static func read(from packageURL: URL) throws -> ProductionEffectsPolicy {
         let file = try RecordingPackage.open(folderURL: packageURL).validatedMediaURL("production-effects.json")
         guard FileManager.default.fileExists(atPath: file.path) else { return .init() }
-        let data = try Data(contentsOf: file)
-        guard data.count <= 65_536 else { throw ControlFailure(code: "invalid-effects-policy") }
-        let policy = try JSONDecoder().decode(Self.self, from: data)
-        try policy.validate(); return policy
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: 65_537) ?? Data()
+        guard data.count <= 65_536 else { throw ControlFailure(code: "invalid-effects-policy", message: "Camera effects policy exceeds its size limit.") }
+        do {
+            let policy = try JSONDecoder().decode(Self.self, from: data)
+            try policy.validate(); return policy
+        } catch let failure as ControlFailure { throw failure }
+        catch { throw ControlFailure(code: "invalid-effects-policy", message: "The recording's camera effects policy is malformed; the requested protection was not bypassed.") }
     }
     public func write(to packageURL: URL) throws {
         try validate()
