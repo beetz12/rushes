@@ -79,6 +79,7 @@ public final class TrackWriter: @unchecked Sendable {
     private var lastAudioEndNs: Int64?
     private var donorAudioBuffer: CMSampleBuffer?
     private var isMuted = false
+    private var microphoneObserver: @Sendable (CMSampleBuffer, CMTime) -> Void = { _, _ in }
     private var pendingVideo: [(pixelBuffer: CVPixelBuffer, mediaTimeNs: Int64)] = []
     private var framesWritten: Int64 = 0
     private var silenceFramesWritten: Int64 = 0
@@ -174,6 +175,11 @@ public final class TrackWriter: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Optional bounded on-device speech tee. The observer must copy/submit quickly and never capture another device.
+    public func setMicrophoneObserver(_ observer: @escaping @Sendable (CMSampleBuffer, CMTime) -> Void) {
+        queue.sync { microphoneObserver = observer }
     }
 
     // MARK: - Appending video
@@ -370,6 +376,9 @@ public final class TrackWriter: @unchecked Sendable {
             } else if let retimed = AudioSampleTiming.retime(
                 sampleBuffer, to: CMTime(exactNanoseconds: mediaNs))
             {
+                if configuration.kind == .microphone {
+                    microphoneObserver(retimed, CMTime(exactNanoseconds: mediaNs))
+                }
                 appendAudioSample(
                     retimed, startNs: mediaNs, endNs: mediaNs + durationNs, synthesized: false)
             } else {

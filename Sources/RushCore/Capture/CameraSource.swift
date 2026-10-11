@@ -277,6 +277,8 @@ public final class CameraSource: @unchecked Sendable {
     private var receivedFrame = false
     private var observer: NSObjectProtocol?
     private var previewSink: (@Sendable (Data) -> Void)?
+    private var previewTransform: (@Sendable (CVPixelBuffer) -> CVPixelBuffer?)?
+    private var previewTransformGeneration: UInt64 = 0
 
     // Lock-confined (both queues and callers touch these).
     private var throttle = PreviewThrottle()
@@ -294,6 +296,11 @@ public final class CameraSource: @unchecked Sendable {
     public var previewHandler: (@Sendable (Data) -> Void)? {
         get { lock.withLock { previewSink } }
         set { lock.withLock { previewSink = newValue } }
+    }
+
+    /// Optional privacy transform applied only on the bounded preview queue. nil output suppresses the frame.
+    public func setPreviewTransform(_ transform: (@Sendable (CVPixelBuffer) -> CVPixelBuffer?)?) {
+        lock.withLock { previewTransform = transform; previewTransformGeneration &+= 1 }
     }
 
     /// Public entry point with the production seams.
@@ -621,7 +628,15 @@ public final class CameraSource: @unchecked Sendable {
         let frame = PreviewPixelBuffer(pixelBuffer)
         previewQueue.async { [self, frame] in
             defer { lock.withLock { previewBusy = false } }
-            if let jpeg = previewEncoder.encode(frame.value, targetWidth: target) { handler(jpeg) }
+            let (transform, generation) = lock.withLock { (previewTransform, previewTransformGeneration) }
+            let processed: CVPixelBuffer
+            if let transform {
+                guard let output = transform(frame.value) else { return }
+                processed = output
+            } else { processed = frame.value }
+            guard lock.withLock({ generation == previewTransformGeneration }) else { return }
+            if let jpeg = previewEncoder.encode(processed, targetWidth: target),
+               lock.withLock({ generation == previewTransformGeneration }) { handler(jpeg) }
         }
     }
 
