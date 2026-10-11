@@ -72,7 +72,11 @@ struct CLIInvocation {
 
 func parseCLI(_ arguments: [String]) -> CLIInvocation {
     let tokens = Array(arguments.dropFirst())
+    // The plan's default socket (docs/PLAN.md, Process model): the engine
+    // serves `~/Library/Application Support/Rushes/control.sock`, and the CLI
+    // connects there unless `--socket` or `RUSHES_SOCKET` says otherwise.
     var socket = ProcessInfo.processInfo.environment["RUSHES_SOCKET"]
+        ?? ControlServer.defaultSocketPath.path
     var enginePath = ProcessInfo.processInfo.environment["RUSHES_ENGINE"]
     var index = 0
 
@@ -100,12 +104,13 @@ func parseCLI(_ arguments: [String]) -> CLIInvocation {
     guard !words.isEmpty else {
         fail("usage", "a command is required; run `rushes guide --json` for every command")
     }
-    guard let socketPath = socket, !socketPath.isEmpty else {
+    guard !socket.isEmpty else {
         fail(
             "usage",
             "no socket path: pass --socket PATH or set RUSHES_SOCKET",
             extra: ["enginePath": enginePath.map(JSONValue.string) ?? .null])
     }
+    let socketPath = socket
 
     let command = words[0]
     let rest = Array(words.dropFirst())
@@ -115,6 +120,12 @@ func parseCLI(_ arguments: [String]) -> CLIInvocation {
         command: command)
     if command == "record", !rest.isEmpty {
         invocation.command = "record \(rest[0])"
+        parseArguments(Array(rest.dropFirst()), into: &invocation)
+    } else if command == "selftest", !rest.isEmpty {
+        invocation.command = "selftest \(rest[0])"
+        parseArguments(Array(rest.dropFirst()), into: &invocation)
+    } else if command == "analyze", !rest.isEmpty {
+        invocation.command = "analyze \(rest[0])"
         parseArguments(Array(rest.dropFirst()), into: &invocation)
     } else {
         parseArguments(rest, into: &invocation)
@@ -129,6 +140,7 @@ func parseArguments(_ words: [String], into invocation: inout CLIInvocation) {
     let valueFlags: Set<String> = [
         "--display", "--window", "--camera", "--mic", "--duration",
         "--countdown", "--title", "--id", "--limit",
+        "--seconds", "--pause-at",
     ]
     var index = 0
     while index < words.count {
@@ -502,6 +514,44 @@ case "record pause":
 
 case "record resume":
     let response = runRequest(invocation, cmd: "record.resume")
+    printJSON(response.result ?? .object([:]))
+    exit(0)
+
+case "selftest sync":
+    var args: [String: JSONValue] = [:]
+    var seconds = 20.0
+    var pauseAt: Double?
+    if let raw = invocation.flags["--seconds"] {
+        guard let value = Double(raw), value >= 6, value <= 600 else {
+            fail("usage", "--seconds needs a number between 6 and 600")
+        }
+        seconds = value
+    }
+    args["seconds"] = .double(seconds)
+    if let raw = invocation.flags["--pause-at"] {
+        // The plan spells the flag as a list (`--pause-at S,S`); one pause is
+        // what the selftest schedules, so the first value wins.
+        guard let first = raw.split(separator: ",").first,
+              let value = Double(first), value > 1, value < seconds - 3 else {
+            fail("usage", "--pause-at needs a second between 1 and seconds-3")
+        }
+        pauseAt = value
+        args["pauseAt"] = .double(value)
+    }
+    // The request covers the whole take plus finalization and measurement.
+    let response = runRequest(
+        invocation, cmd: "selftest.sync", args: .object(args),
+        timeout: seconds + (pauseAt.map { _ in 3 } ?? 0) + 120)
+    printJSON(response.result ?? .object([:]))
+    exit(0)
+
+case "analyze clap":
+    guard let id = invocation.positional.first, !id.isEmpty else {
+        fail("usage", "analyze clap needs a recording id: rushes analyze clap ID")
+    }
+    let response = runRequest(
+        invocation, cmd: "analyze.clap", args: .object(["id": .string(id)]),
+        timeout: 120)
     printJSON(response.result ?? .object([:]))
     exit(0)
 

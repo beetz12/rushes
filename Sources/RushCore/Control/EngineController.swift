@@ -62,6 +62,12 @@ public struct EngineControllerConfig: Sendable {
     public var version: String
     /// Echoed inside the guide so a reader knows where this engine listens.
     public var socketPath: String
+    /// Where `selftest sync` keeps the measured system-audio latency.
+    public var selftestLatencyURL: URL
+    /// Builds the selftest's signal emitter. Injectable so the suite runs the
+    /// command path headless (a no-op signal) without flashing a window or
+    /// playing a tone on the test machine.
+    public var makeSelftestSignal: @Sendable () -> any SelftestSignaling
 
     public init(
         recordingsRoot: URL = RecordingPackage.defaultRoot,
@@ -79,7 +85,9 @@ public struct EngineControllerConfig: Sendable {
             Int64(DispatchTime.now().uptimeNanoseconds)
         },
         version: String = "0.1.0-dev",
-        socketPath: String = ""
+        socketPath: String = "",
+        selftestLatencyURL: URL = SelftestLatencyStore.defaultURL,
+        makeSelftestSignal: @escaping @Sendable () -> any SelftestSignaling = { SelftestSignalEmitter() }
     ) {
         self.recordingsRoot = recordingsRoot
         self.indexDatabaseURL = indexDatabaseURL
@@ -91,6 +99,8 @@ public struct EngineControllerConfig: Sendable {
         self.hostNowNs = hostNowNs
         self.version = version
         self.socketPath = socketPath
+        self.selftestLatencyURL = selftestLatencyURL
+        self.makeSelftestSignal = makeSelftestSignal
     }
 }
 
@@ -224,6 +234,10 @@ public actor EngineController: ControlHandling {
             return .success(id: request.id, result: try await showResult(request))
         case "verify":
             return .success(id: request.id, result: try await verifyResult(request))
+        case "selftest.sync":
+            return try await selftestSyncResult(request)
+        case "analyze.clap":
+            return .success(id: request.id, result: try await analyzeClapResult(request))
         default:
             throw ControlFailure(
                 code: ControlErrorCode.unknownCommand,
@@ -333,6 +347,234 @@ public actor EngineController: ControlHandling {
         request.param("id")?.string?.nilIfEmpty
     }
 
+    // MARK: - selftest sync
+
+    /// Runs the whole selftest take in the engine process (docs/PLAN.md,
+    /// Roadmap Phase 1 item 9): record the main display plus system audio in
+    /// selftest mode (the stream includes the engine's own flash window and
+    /// its own tone), flash and tone together twice - once before the pause,
+    /// once after it - stop, measure both files, apply the stored latency and
+    /// report the residuals. The freshly measured latency is stored for the
+    /// next run after this run's offsets are computed, so a run always tests
+    /// against what a previous run measured, never against itself.
+    private func selftestSyncResult(_ request: ControlRequest) async throws -> ControlResponse? {
+        guard active == nil else {
+            throw ControlFailure(
+                code: ControlErrorCode.alreadyActive,
+                message: "a recording is already active; stop it before running the selftest")
+        }
+        func invalid(_ message: String) -> ControlFailure {
+            ControlFailure(code: ControlErrorCode.invalidParams, message: message)
+        }
+        let seconds = request.param("seconds")?.double ?? 20
+        guard seconds >= 6, seconds <= 600 else {
+            throw invalid("seconds must be between 6 and 600")
+        }
+        // `--pause-at S` (optionally a list): the media second at which the
+        // shared clock pauses for three seconds.
+        let pauseAtSeconds: Double?
+        if let pauseParam = request.param("pauseAt")?.string?.nilIfEmpty {
+            guard let first = pauseParam.split(separator: ",").first,
+                  let value = Double(first), value > 1, value < seconds - 3 else {
+                throw invalid("pauseAt must name a second between 1 and seconds-3")
+            }
+            pauseAtSeconds = value
+        } else if let value = request.param("pauseAt")?.double {
+            guard value > 1, value < seconds - 3 else {
+                throw invalid("pauseAt must name a second between 1 and seconds-3")
+            }
+            pauseAtSeconds = value
+        } else {
+            pauseAtSeconds = nil
+        }
+        let pauseLengthSeconds: Double = 3
+
+        // The take: display + system audio only; the selftest flag opens the
+        // filter and the system-audio stream to our own window and tone.
+        let startRequest = ControlRequest(
+            id: request.id, cmd: "record.start",
+            args: .object([
+                "display": .string("main"),
+                "systemAudio": .bool(true),
+                "selftest": .bool(true),
+                "title": .string("selftest sync"),
+                "wait": .bool(false),
+            ]))
+        _ = try await recordStart(startRequest)
+        guard let recording = active else {
+            throw ControlFailure(
+                code: ControlErrorCode.internalError,
+                message: "the selftest take did not stay active")
+        }
+
+        // Schedule on the host clock. Flash targets sit well clear of the
+        // pause edges, and the stop lands at a media duration of `seconds`.
+        let snapshot = await recording.session.snapshot()
+        let epochHostNs = snapshot.epochHostNs ?? config.hostNowNs()
+        let flashPreOffset: Double
+        let pauseStartOffset: Double?
+        let flashPostOffset: Double
+        let stopOffset: Double
+        if let pauseAt = pauseAtSeconds {
+            flashPreOffset = min(2.5, max(1.0, pauseAt - 2.5))
+            pauseStartOffset = pauseAt
+            flashPostOffset = pauseAt + pauseLengthSeconds + 2
+            stopOffset = pauseAt + pauseLengthSeconds + (seconds - pauseAt)
+        } else {
+            flashPreOffset = seconds * 0.35
+            pauseStartOffset = nil
+            flashPostOffset = seconds * 0.75
+            stopOffset = seconds
+        }
+
+        func sleepUntil(hostNs: Int64) async {
+            let remaining = hostNs - config.hostNowNs()
+            if remaining > 0 {
+                try? await Task.sleep(nanoseconds: UInt64(remaining))
+            }
+        }
+
+        // Prepare the signal before committing to the schedule: an engine
+        // with no audio output must fail the selftest, not the take.
+        let emitter = config.makeSelftestSignal()
+        do {
+            try emitter.prepare()
+        } catch {
+            _ = try? await stopActive()
+            throw ControlFailure(
+                code: "selftest-signal-failed", message: String(describing: error))
+        }
+
+        let preFlashHostNs = epochHostNs + Int64(flashPreOffset * 1e9)
+        let postFlashHostNs = epochHostNs + Int64(flashPostOffset * 1e9)
+        await sleepUntil(hostNs: preFlashHostNs - 300_000_000)
+        emitter.fire(atHostNs: preFlashHostNs)
+
+        if let pauseStart = pauseStartOffset {
+            await sleepUntil(hostNs: epochHostNs + Int64(pauseStart * 1e9))
+            try? await transition(.pause)
+            await sleepUntil(hostNs: epochHostNs + Int64((pauseStart + pauseLengthSeconds) * 1e9))
+            try? await transition(.resume)
+        }
+
+        await sleepUntil(hostNs: postFlashHostNs - 300_000_000)
+        emitter.fire(atHostNs: postFlashHostNs)
+        await sleepUntil(hostNs: epochHostNs + Int64(stopOffset * 1e9))
+
+        let stopped: StoppedRecording
+        do {
+            stopped = try await stopActive()
+        } catch {
+            emitter.stop()
+            throw error
+        }
+        emitter.stop()
+
+        // Measure off the actor: AVAssetReader work must not block commands.
+        let screenURL = recording.package.trackURL(for: .screen)
+        let systemURL = recording.package.trackURL(for: .systemAudio)
+        let clock: SessionClock
+        if let manifestClock = (try? recording.package.readManifest())?.clock {
+            clock = manifestClock.sessionClock
+        } else {
+            clock = SessionClock(epochNs: epochHostNs)
+        }
+        func mediaMs(ofHostNs hostNs: Int64) -> Double {
+            Double(clock.mediaTimeNs(atHostNs: hostNs)) / 1_000_000
+        }
+        let preFlashMediaMs = mediaMs(ofHostNs: preFlashHostNs)
+        let postFlashMediaMs = mediaMs(ofHostNs: postFlashHostNs)
+        let preWindow = ClosedRange(
+            uncheckedBounds: (preFlashMediaMs - 200, preFlashMediaMs + 1_200))
+        let postWindow = ClosedRange(
+            uncheckedBounds: (postFlashMediaMs - 200, postFlashMediaMs + 1_200))
+
+        let measurement: SelftestSyncMeasurement
+        do {
+            measurement = try await Task.detached(priority: .userInitiated) {
+                try await SelftestSyncMeasurement.measure(
+                    screenURL: screenURL,
+                    systemAudioURL: systemURL,
+                    preWindowMs: preWindow,
+                    postWindowMs: postWindow)
+            }.value
+        } catch {
+            throw ControlFailure(
+                code: "selftest-measurement-failed", message: String(describing: error))
+        }
+        guard measurement.complete else {
+            func text(_ value: Double?) -> String {
+                value.map { String(format: "%.1f", $0) } ?? "nil"
+            }
+            let detail = "pre flash=\(text(measurement.pre.flashMs))"
+                + " tone=\(text(measurement.pre.toneMs));"
+                + " post flash=\(text(measurement.post.flashMs))"
+                + " tone=\(text(measurement.post.toneMs))"
+            throw ControlFailure(
+                code: "selftest-measurement-failed",
+                message: "the flash or the tone was not found in the recorded files: \(detail)")
+        }
+
+        // Apply the previously stored latency, then store the fresh one.
+        let store = SelftestLatencyStore(url: config.selftestLatencyURL)
+        let appliedLatencyMs = store.load()?.systemAudioLatencyMs ?? 0
+        let measuredLatencyMs = (
+            (measurement.pre.rawOffsetMs ?? 0) + (measurement.post.rawOffsetMs ?? 0)) / 2
+        var report = SelftestSyncReport(
+            recordingId: stopped.id,
+            packagePath: stopped.packagePath,
+            measurement: measurement,
+            appliedLatencyMs: appliedLatencyMs,
+            measuredLatencyMs: measuredLatencyMs)
+        report.pass = report.pass && stopped.status == RecordingManifest.Status.complete.rawValue
+        if var manifest = try? recording.package.readManifest() {
+            if let index = manifest.tracks.firstIndex(where: { $0.kind == .systemAudio }) {
+                manifest.tracks[index].latencyMs = Int(measuredLatencyMs.rounded())
+            }
+            try? recording.package.writeManifest(manifest)
+            await upsertIndexRow(for: recording.package)
+        }
+        try? store.save(SelftestLatencyStore.Stored(
+            systemAudioLatencyMs: measuredLatencyMs,
+            measuredAt: ISO8601DateFormatter().string(from: Date()),
+            recordingId: stopped.id))
+        return .success(id: request.id, result: try JSONValue(encoding: report))
+    }
+
+    // MARK: - analyze clap
+
+    /// Camera-versus-microphone offset of a finished recording: claps are
+    /// audio attacks in `mic.mov`, each matched with the strongest
+    /// frame-to-frame change in `camera.mov` near it
+    /// (docs/PLAN.md, Roadmap Phase 1 item 9).
+    private func analyzeClapResult(_ request: ControlRequest) async throws -> JSONValue {
+        guard let id = requiredID(request, command: "analyze clap") else {
+            throw ControlFailure(
+                code: ControlErrorCode.invalidParams, message: "analyze clap needs a recording id")
+        }
+        let package = try await resolvePackage(id: id)
+        let cameraURL = package.trackURL(for: .camera)
+        let microphoneURL = package.trackURL(for: .microphone)
+        for (url, name) in [(cameraURL, "camera.mov"), (microphoneURL, "mic.mov")] {
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                throw ControlFailure(
+                    code: ControlErrorCode.notFound,
+                    message: "\(name) is missing in \(package.folderURL.path)")
+            }
+        }
+        let analysis: ClapAnalysis
+        do {
+            analysis = try await Task.detached(priority: .userInitiated) {
+                try await ClapAnalysis.analyze(
+                    cameraURL: cameraURL, microphoneURL: microphoneURL)
+            }.value
+        } catch {
+            throw ControlFailure(
+                code: "clap-analysis-failed", message: String(describing: error))
+        }
+        return try JSONValue(encoding: analysis)
+    }
+
     // MARK: - record.start
 
     private func recordStart(_ request: ControlRequest) async throws -> ControlResponse? {
@@ -367,6 +609,7 @@ public actor EngineController: ControlHandling {
                 session: session,
                 request: sessionRequest,
                 package: startedPackage,
+                selftest: request.param("selftest")?.bool == true,
                 warning: { [weak self] code, message in
                     Task { await self?.captureWarning(code: code, message: message) }
                 },

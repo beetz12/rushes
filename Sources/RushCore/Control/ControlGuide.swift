@@ -225,6 +225,40 @@ public struct ControlGuide: Codable, Equatable, Sendable {
                              description: "Recording id."),
                 ],
                 result: "{packageId, ok, trackChecks: [{kind, file, ok, skipped, issues}], issues}"),
+            CommandDoc(
+                name: "selftest.sync",
+                cli: ["selftest sync"],
+                summary: "Screen-to-system-audio sync selftest. The engine records itself in"
+                    + " selftest mode (the stream includes the engine's own flash window and"
+                    + " its own tone), flashes a full-screen white window and plays a tone at"
+                    + " the same host instant - twice, around one pause - then measures both"
+                    + " signals in screen.mov and system.mov and reports the offset after the"
+                    + " stored latency. The freshly measured latency is stored for the next"
+                    + " run, so a passing run proves run-to-run stability within one 60 fps"
+                    + " frame (17 ms).",
+                usage: "rushes selftest sync [--seconds N] [--pause-at S]",
+                params: [
+                    ParamDoc(name: "seconds", flag: "--seconds", type: "seconds",
+                             description: "Media length of the selftest take. Default 20."),
+                    ParamDoc(name: "pauseAt", flag: "--pause-at", type: "seconds",
+                             description: "Media second at which the take pauses for 3 s,"
+                                 + " so the offset is measured before and after a pause."),
+                ],
+                result: "{recordingId, packagePath, pre: {flashMs, toneMs, rawOffsetMs, offsetMs},"
+                    + " post: {...}, appliedLatencyMs, storedLatencyMs, pass, toleranceMs: 17}"),
+            CommandDoc(
+                name: "analyze.clap",
+                cli: ["analyze clap"],
+                summary: "Camera-to-microphone offset from a recording with hand claps in"
+                    + " view of the camera: each clap's audio onset in mic.mov is matched"
+                    + " with the strongest frame-to-frame change in camera.mov near it;"
+                    + " every offset must sit within 40 ms.",
+                usage: "rushes analyze clap ID",
+                params: [
+                    ParamDoc(name: "id", type: "string", required: true,
+                             description: "Recording id of a take with camera and microphone."),
+                ],
+                result: "{claps: [{tMs, audioMs, visualMs, offsetMs}], toleranceMs: 40, pass}"),
         ]
     }
 

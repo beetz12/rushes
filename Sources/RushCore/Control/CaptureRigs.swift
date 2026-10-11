@@ -29,16 +29,23 @@ public struct CaptureContext: Sendable {
     /// the controller stops the take early and keeps the footage.
     public let streamFailure: @Sendable (String) -> Void
 
+    /// Selftest mode (`selftest sync`): the stream includes the engine's own
+    /// flash window and our own tone in system audio, which normal
+    /// recordings exclude (docs/PLAN.md, Roadmap Phase 1 item 9).
+    public let selftest: Bool
+
     public init(
         session: RecordingSession,
         request: SessionRequest,
         package: RecordingPackage,
+        selftest: Bool = false,
         warning: @escaping @Sendable (String, String?) -> Void,
         streamFailure: @escaping @Sendable (String) -> Void
     ) {
         self.session = session
         self.request = request
         self.package = package
+        self.selftest = selftest
         self.warning = warning
         self.streamFailure = streamFailure
     }
@@ -94,7 +101,7 @@ public struct ProductionCaptureRigFactory: CaptureRigFactory {
                 width: dimensions.width,
                 height: dimensions.height,
                 capturesSystemAudio: request.systemAudio,
-                excludesOwnProcessAudio: true,
+                excludesOwnProcessAudio: !context.selftest,
                 capturesMicrophone: request.microphoneId != nil,
                 microphoneDeviceID: Self.microphoneDeviceUniqueID(
                     for: request.microphoneId))
@@ -111,7 +118,7 @@ public struct ProductionCaptureRigFactory: CaptureRigFactory {
                 exclusion: ScreenExclusionList(
                     shellBundleID: nil,
                     engineBundleID: Bundle.main.bundleIdentifier),
-                selftest: false)
+                selftest: context.selftest)
             screenSource = source
         }
 
