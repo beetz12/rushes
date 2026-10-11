@@ -89,18 +89,16 @@ export const ASSET_FILE = /^(video-[a-f0-9]{8}\.mp4|poster-[a-f0-9]{8}\.(?:jpg|p
 export function assertAssetFile(file: string): string { if (!ASSET_FILE.test(file))
     throw new ShareError('INVALID_ASSET', 'Invalid share asset filename.'); return file; }
 export function requireHTTPS(value: string, allowLocalHTTP = false): URL {
-    const url = new URL(value);
-    for (const component of ['username', 'password', 'search', 'hash'] as const) {
-        if (url[component].length > 0) {
-            throw new ShareError('INVALID_URL', `Endpoint URL must not contain ${component}.`);
-        }
+    const endpointAddress = new URL(value);
+    const privateComponents = ['username', 'password', 'search', 'hash'] as const;
+    for (const component of privateComponents) {
+        if (endpointAddress[component].length > 0) throw new ShareError('INVALID_URL', `Endpoint URL must not contain ${component}.`);
     }
-    const localDevelopment = allowLocalHTTP && url.protocol === 'http:'
-        && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-    if (url.protocol !== 'https:' && !localDevelopment) {
-        throw new ShareError('INVALID_URL', 'Use HTTPS or explicitly allowed local development HTTP.');
-    }
-    return url;
+    const allowedSchemes = new Set(['https:']);
+    const developmentHosts = new Set(['localhost', '127.0.0.1', '[::1]']);
+    if (allowLocalHTTP && developmentHosts.has(endpointAddress.hostname)) allowedSchemes.add('http:');
+    if (!allowedSchemes.has(endpointAddress.protocol)) throw new ShareError('INVALID_URL', 'Use HTTPS or explicitly allowed local development HTTP.');
+    return endpointAddress;
 }
 /** Runtime projection keeps untrusted input and future private settings out of public manifests/jobs. */
 export function metadataPatch(input: Partial<MetadataPatch>): Partial<MetadataPatch> {

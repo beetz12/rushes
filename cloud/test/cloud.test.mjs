@@ -246,3 +246,9 @@ test('bucket ready republish atomically replaces video plus edited metadata and 
     await assert.rejects(()=>p.publish(removed,{video:newVideo,width:320,height:240,durationMs:1000,transcript:'transcript-ffffffff.json'}),e=>e.code==='BUCKET_HTTP'&&e.status===404);
     assert.equal(f.manifestWrites.length,failedBefore);assert.deepEqual(await(await fetch(next.url+'/share.json')).json(),removed.manifest);
 });
+test('endpoint policy keeps HTTPS, rejects credential/query fragments and limits explicit HTTP to loopback',async()=>{
+    const {requireHTTPS}=await import('../dist/index.js');
+    assert.equal(requireHTTPS('https://media.example/').protocol,'https:');
+    for(const endpoint of ['https://owner:private@media.example/','https://media.example/?secret=x','https://media.example/#private','http://media.example/','ftp://media.example/'])assert.throws(()=>requireHTTPS(endpoint,true),e=>e.code==='INVALID_URL');
+    for(const endpoint of ['http://localhost:8000/','http://127.0.0.1:8000/','http://[::1]:8000/']){assert.equal(requireHTTPS(endpoint,true).protocol,'http:');assert.throws(()=>requireHTTPS(endpoint),e=>e.code==='INVALID_URL');}
+});
