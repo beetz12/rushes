@@ -35,6 +35,7 @@ licenses/ and .github/workflows/ci.yml need new-surface coverage or a browser CI
 | Capture | browser/src/capture/**, browser/test/capture*.mjs; docs/runs/browser-cloud-2026-10-12/slices/capture.md, docs/design/browser-capture-recovery.md | Shared contracts, package/config, paid plan |
 | Service | browser-worker/src/**, browser-worker/schema.sql, browser-worker/migrations/**, browser-worker/test/** except contracts.test.mjs, browser-worker/README.md, browser-worker/.env.example; docs/runs/browser-cloud-2026-10-12/slices/service.md, docs/design/browser-service-tenancy.md | Shared browser contracts, package/config, personal Worker exemplars |
 | UI | browser/src/main.tsx, browser/src/components/**, browser/src/api.ts, browser/src/upload.ts, browser/src/style.css, browser/test/ui*.mjs; docs/runs/browser-cloud-2026-10-12/slices/ui.md, docs/design/browser-upload-client.md | Shared contracts and capture APIs |
+| Independent M1 probe | browser/test/matrix*.mjs, docs/runs/browser-cloud-2026-10-12/slices/m1.md | Capture/shared source read-only; isolated synthetic browser |
 
 Every added helper stays under its slice prefix. Contract or ownership changes
 require root coordination. Writers use separate worktrees from the exact wave-zero
@@ -68,7 +69,7 @@ Auth endpoints: GET /auth/google/start, GET /auth/google/callback.
 | GET /api/config | none | BrowserConfig |
 | GET /api/session | none | SessionResponse |
 | POST /api/logout | {} | {ok:true} |
-| GET /api/recordings | none | LibraryResponse |
+| GET /api/recordings | Optional opaque cursor query; bounded page50 | LibraryResponse with nextCursor |
 | POST /api/recordings | CreateRecordingInput | RecordingDetail |
 | GET /api/recordings/:id | none | RecordingDetail |
 | PATCH /api/recordings/:id | {title:string} | RecordingDetail |

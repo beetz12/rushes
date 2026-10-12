@@ -71,7 +71,7 @@ export type RecordingSummary = {
 };
 export type RecordingDetail = RecordingSummary & { manifest: DraftManifest | null; chunks: ChunkDescriptor[] };
 export type ApiError = { error: { code: string; message: string } };
-export type LibraryResponse = { recordings: RecordingSummary[]; usage: Usage };
+export type LibraryResponse = { recordings: RecordingSummary[]; usage: Usage; nextCursor?: string | null };
 export type CreateRecordingInput = { clientId: string; title: string; mode: CaptureMode };
 export type ChunkGrantInput = Omit<ChunkDescriptor, 'checkpointMs'>;
 export type ChunkGrant = { url: string; token: string; expiresAt: string; acknowledged: boolean };
