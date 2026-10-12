@@ -1,6 +1,6 @@
 # Independent commercial service verdict
 
-**FAIL for this code candidate.** Three reproduced failures break verified provider cleanup or the atomic budget ledger. Repair the consolidated set below before accepting the service slice. A passing repair review still cannot establish live M2–M5 provider, billing or launch gates.
+**FAIL for this code candidate.** Four reproduced failures break verified provider cleanup, the atomic budget ledger or logout revocation. Repair the consolidated set below before accepting the service slice. A passing repair review still cannot establish live M2–M5 provider, billing or launch gates.
 
 Reviewed candidate: `fb998e846e0a8a2816397b3c49de740d91551956`, branch `codex/rushes-browser-service-review`, independently checked on 2026-10-12 in `/Users/dave/Work/rushes-browser-service-review`. Review type: implementation against the paid plan and immutable browser contract, base `853ff16`. One independent service reviewer; this reviewer wrote no business code. This report owns only this artifact. No provider/account mutation, credentials, deployment, GUI action, recording or shared task-tracker write occurred.
 
@@ -38,6 +38,16 @@ Independent reproduction pauses the October playback database batch, advances tw
 
 Charge, cap-check and release the same immutable month in a single atomic reservation. Ensure that month's ledger exists, add nonnegative ledger constraints, and cover both successful and failed old-month/new-month interleavings. Apply an equivalent correction to schema and forward migrations; already-created databases require an explicit upgrade rather than an `IF NOT EXISTS` trigger silently remaining old.
 
+### F4 · P1 · Successful logout leaves an overlapping rotated session authenticated
+
+Confidence: 100. Relevant source: `browser-worker/src/auth.ts:113–157`, `browser-worker/src/auth.ts:183–189`.
+
+Root requested this additional server probe after the independent UI checker found a late session-response race. Client generation guards alone cannot revoke a cookie already issued by the server. Rotation inserts an unrelated replacement token and revokes the old hash; logout revokes only the hash its request authenticated. If logout authenticates first, then a concurrent aged `/api/session` rotates before logout's UPDATE executes, logout returns 200 while that replacement token remains live. Its late Set-Cookie can restore authenticated authority even when the client discards the response DTO.
+
+Independent reproduction uses the normal seven-hour-old session, pauses logout at its old-token UPDATE **after ordinary authentication and CSRF have passed**, completes the session refresh with two replacement cookies, then resumes logout. Observed: logout **200**, refreshed-cookie `/api/session` returns `account-alpha`, and the protected library returns **200** rather than 401. The old token is revoked but the replacement is live. The control in which logout commits before a new refresh passes: no replacement cookies, `user:null`.
+
+Repair must atomically revoke the applicable session lineage/generation, and prevent an in-flight refresh authenticated against an earlier generation from creating fresh authority after revocation. An account revocation epoch is an alternative only if stale-auth insertion is gated too and an explicit fresh Google login can create a new valid session. Include the proven overlap and the ordering where rotation commits before logout authenticates with the ancestor cookie; the existing router currently rejects that logout while the new session can remain live. Preserve CSRF checking for logout and reject arbitrary revoked tokens on ordinary authenticated routes. Add a real SQLite interleaving regression; client response-discard assertions do not prove this server property.
+
 ## Verification and bounded findings
 
 | Command/probe | Actual result |
@@ -47,9 +57,10 @@ Charge, cap-check and release the same immutable month in a single atomic reserv
 | `python3 -I tools/checks/check_clean.py browser-worker/src browser-worker/schema.sql browser-worker/migrations browser-worker/test/fixtures.mjs browser-worker/test/service.test.mjs docs/design/browser-service-tenancy.md` | Exit 0; first stdout line **0**, inspected. |
 | `cmp browser-worker/schema.sql browser-worker/migrations/0001_browser_service.sql` | Exit 0; equal before repair. |
 | Independent `node --test .../service-review/probe.mjs` | **Exit 1: 1 pass, 3 fail**. The three failures are F1–F3 above; they are not a passing acceptance suite. |
+| Additional directed `node --test .../service-review/logout-race.mjs` | **Exit 1: 1 pass, 1 fail**. F4 restores server authority after successful logout; committed-logout-first control passes. |
 | Additional browser-header control in that independent probe | Valid authenticated GET playback succeeds without an Origin header when `Sec-Fetch-Site: same-origin`; the same request with `cross-site` is rejected 403. No Origin regression found. |
 
-The supplied tests exercise real SQLite transactions/foreign keys/triggers and actual RSA/HMAC checks, while provider/R2/clock behavior remains fixture-controlled. Their passing paths, together with source inspection, support tenant predicates on recording routes, server-built raw prefixes, raw capability/body/digest checks, one-isolate raw PUT admission and durable write leases, OIDC signature/claims/one-use state, session rotation/revocation, invite/account cap, CSRF mutation checks, private initial tus metadata, provider readiness/duration/creator checks, subscription reconciliation instead of redirect/event-order authority, refund/dispute/operator suspension, explicit policy-bound password shares, delivery/concurrency checks, owner individual export grace, bounded pagination and ordinary retention/read-back cleanup. These are code-level propositions with the F1–F3 exceptions above; this report does not claim exhaustive absence of other defects.
+The supplied tests exercise real SQLite transactions/foreign keys/triggers and actual RSA/HMAC checks, while provider/R2/clock behavior remains fixture-controlled. Their passing paths, together with source inspection, support tenant predicates on recording routes, server-built raw prefixes, raw capability/body/digest checks, one-isolate raw PUT admission and durable write leases, OIDC signature/claims/one-use state, ordinary sequential session rotation/revocation, invite/account cap, CSRF mutation checks, private initial tus metadata, provider readiness/duration/creator checks, subscription reconciliation instead of redirect/event-order authority, refund/dispute/operator suspension, explicit policy-bound password shares, delivery/concurrency checks, owner individual export grace, bounded pagination and ordinary retention/read-back cleanup. These are code-level propositions with the F1–F4 exceptions above; this report does not claim exhaustive absence of other defects.
 
 The generic response wrapper strips caching, sets no-referrer, HTTPS/HSTS, nosniff and a CSP allowing same-origin module workers/blob media plus the Stream iframe/upload hosts (`platform.ts:227–241`). Secrets are read from server bindings, absent from static browser contracts, and no request query/body/credential logger is present in these service sources; the one maintenance log emits aggregate counts (`index.ts:258–261`). Fixture success does not establish provider-origin anonymity, actual iframe playback, a working production OAuth app, test-mode Stripe identity, or that Vite assets match the deployed API revision.
 
@@ -61,6 +72,8 @@ Private proof directory: `/Users/dave/.goal-loop/loom-clone/host/2026-10-12-brow
 |---|---|
 | Independent probe | `4ddd4828f0b4c22229457b7eb4bd4c75d3ddc4910b9ba06495cd39e3d3e8340b` |
 | Independent final probe log | `edf78c89ea71792d4173ea1d546f1937016e235695812b1a6c30cd5d5085e317` |
+| Additional logout-race probe | `6b4ff967e1d75ebe2fbcaa2cfe5887173c61617663f0788ccb7c783d0e1e2f80` |
+| Additional logout-race log | `edf0a5e43e07a5443c495fbaa41169e4c7f78e5f3c7bf97a1d85c595d93ff0ea` |
 | Contract | `972f6ff0809592797c5f5d819dbc09c484d2ed74628a5ec8313b76d72424665c` |
 | Schema/forward migration, each | `f2644a43028410e1e053a90d900d35a29f38c5c66fd98163bb62aeff6f0b3038` |
 | `records.ts` | `325155e5081cb2de4db34bf47751fdfdfd30e0bd014288dc21f44498229df507` |
