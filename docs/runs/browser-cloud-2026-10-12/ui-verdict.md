@@ -1,5 +1,9 @@
 # Independent browser UI and uploader verdict
 
+Current slice verdict: **PASS after consolidated repair**, reassessed below. The
+initial FAIL and its exact failure evidence are retained as history. Overall
+browser release and M1–M5 acceptance remain separately pending.
+
 **FAIL for UI/uploader contract acceptance at `c7a73dbe4c88731fd288b5a88a2f8308453d6615`.**
 The declared build and 26 UI tests pass, but four additional probes establish
 consequential permission, privacy and cloud-upload gaps. These need the one
@@ -247,3 +251,89 @@ Working tree was clean at the start and business source remained unchanged.
 | `docs/product/first-use-cloud-2026-10-12/cloud-plan.md` | `d789f4289b68a93e64224ce19691a0f667ac51283d25e827593b52317caa3bae` |
 
 Review complete: findings require attention.
+
+## Fresh reassessment after the single consolidated repair
+
+**PASS for targeted UI/uploader slice completeness after `c762bfd68a2347f9884defda2e3b02ae3b929d20`, with overall browser release CONCERNS/PENDING.**
+No blocking UI repair defect remains in the reviewed scope. The historical U1–U4
+observations and failed logs above remain unchanged. Protected acceptance,
+physical M1 capture reliability and the M2–M5 live provider/paid-release gates
+have not been passed or weakened by this slice result.
+
+Reassessment 2026-10-12, fresh gate/output observation at 17:13:42 UTC. Own
+checkout HEAD `6474865db9c587462a288f94b02ef34a4cc2f9b0` includes read-only,
+root-authorized copies of shared `68c6844` (review copy `9d95114`), UI repair
+`c762bfd` (`467cc32`) and Service repair `5c11c834577d9af4e5b783412f5a829e6874732e`
+(`6474865`). Root integrated equivalents were supplied as `0bb68dd` and
+`5cef240`. UI and Service source are those maker revisions, not reviewer edits.
+The reviewer still owns only this verdict artifact in tracked source.
+
+| Finding | Fresh independent result and applicable repaired source |
+|---|---|
+| U1 | `api.ts:40–50` owns binary PUT and obtains current session CSRF, capability and same-origin cookie behavior; `upload.ts:101` calls that method. Repeating the original actual client→compiled Worker/SQLite/R2-fixture lane produced exactly one raw PUT, HTTP200 with CSRF, one object and literal matching bytes. A second backup skipped acknowledged bytes. A missing-CSRF control still returned403 before any object write. The declared integrated seam test additionally exercised expired grant401 then renewed grant200 and a single verified object. Provider tus tests still require credential omission and absence of session CSRF. |
+| U2 | `Studio.tsx:38–42,75–90` gives camera and microphone owned request revisions, invalidated by off/replacement/lifetime/unmount. Repeating the original delayed real synthetic camera switch→Turn off→resolve ordering produced `cameraOn:0,lateTracksEnded:true`. The full Chromium suite also passed both device siblings and actual React unmount after a delayed acquisition. Source ownership guards prevent an old end/completion callback from replacing current device/busy state. |
+| U3 | `api.ts:17–21,54–55` guards cached CSRF and account reads with auth revision/transition; `main.tsx:25,49–55,79,84–90,131–134` guards parent auth/library/page/post-upload work. The exact original held-session→confirmed logout→release probe produced `signOutVisible:0,privateNameVisible:0`. The suite also passed held private library response, older same-user session and usable-session retention after rejected logout. Additional independent API identity-replacement/pending-logout and actual React logout503 probes passed; the rejected operation retained the signed-in card and showed the error without claiming signed-out success. |
+| U4 | `upload.ts:115–122,138–156,193–199` reads authenticated server state, validates matching local id/schema/mode/chunk sequence/digest/bytes, and reconciles ALREADY_READY through a read-back. The original ready fixture retry now returns its verified ready id without another finalize and without changing local metadata/bytes/cloud association. Independent wrong-owner control returned404; tampered local digest returned CLOUD_RECORDING_MISMATCH. Full actual service tests also passed lost committed process response, failed/deleted resources and a transition to ready during provider403/expiry recovery. An error code or redirect alone is never accepted as ready. |
+
+Payment-mode seam was reviewed as well: `Cloud.tsx` derives test/live/unconfigured
+wording and action availability from authoritative `billingMode`, exposed by the
+Service config route. All three synthetic modes passed without requesting
+Checkout or granting entitlement. This does not activate or verify live charges.
+
+Fresh commands used Node **22.22.0** and macOS **27.0 (26A428)**. Every browser
+invocation explicitly selected installed headless Chrome **155.0.8059.39** with
+`RUSHES_CHROME=/Applications/Google Chrome.app/Contents/MacOS/Google Chrome` or
+the equivalent explicit executablePath in the independent script. Only fake
+browser devices and isolated localhost contexts were used. Root's M1 diagnostic
+hold was respected; media probes began only after root released that hold.
+
+| Actual command/probe | Own process result |
+|---|---|
+| `npm --prefix browser-worker run build` after the Service copy | Exit0; strict compiler and actual Worker bundle succeeded. |
+| `npm --prefix browser run build` after both repairs | Exit0; strict TypeScript and Vite succeeded. |
+| `node --test browser/test/ui*.mjs`, explicit installed Chrome and `RUSHES_UI_PROOF=…/independent/repair/fixture` | Exit0; **36/36 pass**, zero failed/skipped/cancelled; 46.851 seconds. `independent/repair-ui-tests.log`. |
+| Independent original race/layout probes, `node --test …/repair-review-probes.mjs` | Exit0; **3/3** pass; camera-off/logout expectations unchanged. Only output directory and new shared config field differ from the historical fixture. `independent/repair-review-probes.log`. |
+| Independent API identity/transition/origin probes, `node --test …/repair-api-probes.mjs` | Exit0; **3/3** pass. New identity CSRF survives obsolete read; pending logout blocks reads/raw mutations; rejected logout preserves usable state; wrong-origin grant leaks neither capability nor CSRF; false raw acknowledgement is rejected. `independent/repair-api-probes.log`. |
+| Independent actual U1/U4 seams, `node --test …/repair-seam-probes.mjs` | Exit0; **2/2** pass, including missing-CSRF/duplicate-byte/other-owner/tampered-local-digest controls. `independent/repair-seam-probes.log`. |
+| Independent React logout failure, `node --test …/repair-logout-failure.mjs` | Exit0; **1/1** pass; failure visible and no false signed-out claim. `independent/repair-logout-failure.log`. |
+
+All script/log paths are within the private proof root already named above. These
+nine additional independent cases supplement the declared36; the earlier10 API
+subset passed during source review and is included in those36, not a distinct
+additional acceptance total. Service DB/R2/Stream fixtures remain synthetic;
+actual compiled routing, CSRF and state transitions are exercised, but no live
+provider writes or playback are asserted. No media/browser process from this
+review remains active after these checks.
+
+Fresh repair screenshots were captured under `independent/repair` at all four
+widths. The reviewer reopened studio1440, scrolled controls1024/768/390 and
+account390. Together with the initial full-width account/detail visual inspection
+and unchanged stylesheet, no material collision/overflow was found. The full
+suite repeated responsive document bounds at1440/1024/768/390. The earlier
+Chrome screenshot/compositor caveat and absence of mobile capture support remain.
+
+Current revised source/test identities (SHA-256):
+
+| File | SHA-256 |
+|---|---|
+| `browser/src/main.tsx` | `0cb5cd0e1777193a34f51becba714dfed5f26822b1e89a36f42391bca8719a96` |
+| `browser/src/api.ts` | `1abd2c112e1fb5c3471b4c5399f363523d5bcda05e40a071454c6667b9735680` |
+| `browser/src/upload.ts` | `45773efda1756b18084a4fa2d20bbcd17cdc9a98f427ef161cf339afd48d5de2` |
+| `browser/src/components/Studio.tsx` | `eef648d69d9086fcdd3632a12cb8db62c1d7f51356e2fefa45d24818e6e47f50` |
+| `browser/src/components/Cloud.tsx` | `855c4a49a3e121da0a3c82746735c90d9eb3e6dfb4d5f2cc8b6dee4941aa84ac` |
+| `browser/src/contracts.ts` | `a3077bac2f5017c5c35e763ba7f58249596a9fd71e78ad6df3aea3538ed8c2c6` |
+| `browser-worker/src/index.ts` | `d95c52bdcd6e2937d5a699e39edb0a9e81eff68f5064db25923579caf6635b81` |
+| `browser-worker/src/auth.ts` | `66b6d89a5d2e51ba5b886eab88e4f679fba61ec7f4dccb863e6a9cf3c23efddf` |
+| `browser/test/ui-service.test.mjs` | `b4e0c3bee124460afbd20c4750c82729805a2006f754eb3ce16b9580991b33a1` |
+| `browser/test/ui-studio.test.mjs` | `8d951e527e787d0cce57f648f95adf2c341218c3dd8e0700af94eea5f6817118` |
+| `browser/test/ui-upload.test.mjs` | `8bc68e83af3940e7742195af6693e68df65d52e2af85969a6d53f5aff593dc83` |
+
+Original Review/Guide/common/CSS hashes above remain unchanged. Contract and paid
+plan source/acceptance remain unchanged by this repair. No follow-on feature or
+second repair pass was requested. The source-level proof and original failure
+probes now agree, but **the full M1 capture matrix, physical Windows/Mac behavior,
+current hosted assets/CSP, live Google/Stream/Stripe, operational spending and
+M5 paid-pilot approval remain root-owned release conditions.** UI code acceptance
+must not be reported as a working paid public browser service.
+
+Review complete: no material findings remain in the targeted repaired UI slice.
