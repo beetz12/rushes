@@ -391,7 +391,8 @@ struct EngineControllerTests {
     private func startRequest(
         display: String = "display-1",
         duration: Double? = nil,
-        title: String? = "Control test"
+        title: String? = "Control test",
+        camera: String? = nil
     ) -> ControlRequest {
         var args: [String: JSONValue] = [
             "display": .string(display),
@@ -399,6 +400,7 @@ struct EngineControllerTests {
         ]
         if let duration { args["duration"] = .double(duration) }
         if let title { args["title"] = .string(title) }
+        if let camera { args["camera"] = .string(camera) }
         return ControlRequest(id: "start-\(UUID().uuidString.prefix(6))", cmd: "record.start", args: .object(args))
     }
 
@@ -644,13 +646,15 @@ struct EngineControllerTests {
         let factory = PreviewRoutingFactory()
         let controller = try EngineController(config: .init(recordingsRoot: scratch.appendingPathComponent("root"), indexDatabaseURL: scratch.appendingPathComponent("index.sqlite"), catalog: StubCatalog(), makeWriter: h264WriterOpener, captureRigs: factory))
         let exchange = ControlExchange()
-        await controller.handle(startRequest(), context: exchange.context)
+        await controller.handle(startRequest(camera: "dev-facecam"), context: exchange.context)
         await factory.publish(Data([1,2,3]))
         #expect(!exchange.events.contains { $0.event == "camera-preview" })
         await controller.handle(ControlRequest(id: "subscribe", cmd: "camera.preview.subscribe", args: .object(["enabled": .bool(true)])), context: exchange.context)
         #expect(exchange.lastResponse?.ok == true)
+        let token = try #require(exchange.lastResponse?.result?["previewToken"]?.string)
         await factory.publish(Data([1,2,3]))
         #expect(exchange.events.last?.result?["jpeg"]?.string == "AQID")
+        #expect(exchange.events.last?.result?["previewToken"]?.string == token)
         #expect(await factory.closes == 0)
         await controller.handle(ControlRequest(id: "unsubscribe", cmd: "camera.preview.subscribe", args: .object(["enabled": .bool(false)])), context: exchange.context)
         let previews = exchange.events.filter { $0.event == "camera-preview" }.count
@@ -660,6 +664,22 @@ struct EngineControllerTests {
         await controller.handle(ControlRequest(id: "subscribe-again", cmd: "camera.preview.subscribe", args: .object(["enabled": .bool(true)])), context: exchange.context)
         await controller.handle(ControlRequest(id: "stop", cmd: "record.stop"), context: exchange.context)
         #expect(await factory.closes == 1)
+    }
+
+    @Test("A camera-less take cannot publish a preview even when a GUI subscribes")
+    func cameraLessPreviewSubscription() async throws {
+        let scratch = try tempDirectory("camera-less-preview")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let factory = PreviewRoutingFactory()
+        let controller = try EngineController(config: .init(recordingsRoot: scratch.appendingPathComponent("root"), indexDatabaseURL: scratch.appendingPathComponent("index.sqlite"), catalog: StubCatalog(), makeWriter: h264WriterOpener, captureRigs: factory))
+        let exchange = ControlExchange()
+        await controller.handle(startRequest(), context: exchange.context)
+        await controller.handle(ControlRequest(id: "subscribe", cmd: "camera.preview.subscribe", args: .object(["enabled": .bool(true)])), context: exchange.context)
+        #expect(exchange.lastResponse?.ok == true)
+        #expect(exchange.lastResponse?.result?["previewToken"] == .null)
+        await factory.publish(Data([1,2,3]))
+        #expect(!exchange.events.contains { $0.event == "camera-preview" })
+        await controller.handle(ControlRequest(id: "stop", cmd: "record.stop"), context: exchange.context)
     }
 
     @Test("Screen request history is scoped to app identity, separate from bare engine QA")

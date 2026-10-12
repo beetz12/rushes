@@ -26,3 +26,13 @@ start with bubble/control bar remaining, and separate original exports. Retain
 decode/metadata/hash evidence and distinguish physical results from mock/state
 tests. No public source push or provider deployment is authorized by this local
 release evidence.
+
+Unlocked-host full native gate on c8ee107: actual exit1,327 tests/one issue,
+15.661s. The existing "active CLI camera" test did not request a camera: its
+shared start helper supplies only display and microphone, while the mock rig can
+publish arbitrary JPEG callbacks. The new intentional camera-less token guard
+correctly rejects that callback. Root corrects this fixture to request its named
+synthetic camera and asserts acknowledgment/frame token agreement, retaining the
+existing JPEG/subscription/device-lifetime assertions. A separate camera-less
+request must continue to reject the mock's unexpected frame. Production code is
+unchanged; the failed gate remains retained and the repaired full gate is due.
