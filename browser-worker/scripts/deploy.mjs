@@ -71,7 +71,7 @@ if (values.hosting) {
   for (const name of secretNames)
     if (!secrets[name]) throw new Error(`Hosting requires ${name}.`);
   const stripeMode = values['live-payments'] ? 'live' : 'test';
-  if (![ `sk_${stripeMode}_`, `rk_${stripeMode}_` ].some(prefix => secrets.STRIPE_SECRET_KEY.startsWith(prefix))) throw new Error('Stripe credential mode differs from the explicitly selected payment mode.');
+  if (!secrets.STRIPE_SECRET_KEY.startsWith(`sk_${stripeMode}_`)) throw new Error('Stripe credential is unsupported by this service or differs from the selected payment mode.');
   if (secrets.CLOUDFLARE_ACCOUNT_ID !== account) throw new Error('Stream token/account mapping does not match deployment account.');
   const selectedStripeAccount = values['stripe-account-id'];
   if (!selectedStripeAccount || !/^acct_[a-zA-Z0-9]+$/.test(selectedStripeAccount)) throw new Error('Hosting requires the explicitly selected Stripe account id.');
