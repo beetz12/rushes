@@ -1,5 +1,5 @@
 // Synthetic calibration only: no device permission or real screen/camera input.
-export async function fixture(mode = 'screen-camera', audioEnabled = true, calibration = false) {
+export async function fixture(mode = 'screen-camera', audioEnabled = true, calibration = false, cloudRecordingId) {
   const capture = await import('/src/capture/index.ts');
   const storage = await import('/src/capture/storage.ts');
   let clock = performance.now(), calibrationPause = 0;
@@ -39,7 +39,7 @@ export async function fixture(mode = 'screen-camera', audioEnabled = true, calib
   const session = await capture.createCaptureSession({ id, title: 'Synthetic capture calibration', mode,
     screen: mode === 'camera' ? undefined : feeds[0], camera: mode === 'screen' ? undefined : feeds[1],
     microphone: audioEnabled ? oscillators[0].destination.stream : undefined,
-    store, persistent: false, backupFolder: false, bubble: { x: 980, y: 500, size: 180 },
+    store, persistent: false, backupFolder: false, ...(cloudRecordingId ? { cloudRecordingId } : {}), bubble: { x: 980, y: 500, size: 180 },
     onState: value => states.push(value), onWarning: value => warnings.push(value), onCheckpoint: value => checkpoints.push(value),
   });
   const pulseTimer = calibration && audioEnabled ? setInterval(() => {

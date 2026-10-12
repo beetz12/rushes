@@ -97,6 +97,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
     mode: inputs.mode, state, durationMs: 0, epochMs: 0, tracks: [], pauses: [], events: [],
     bubble: initialBubble, lastCheckpointMs: 0,
     persistent: inputs.persistent, backupFolder: inputs.backupFolder,
+    ...(inputs.cloudRecordingId ? { cloudRecordingId: inputs.cloudRecordingId } : {}),
   };
   const elapsed = () => startedAt ? Math.max(0, (pauseAt || stoppedAt || performance.now()) - startedAt - pausedMs) : 0;
   const event = (kind: string, message?: string) => {
@@ -300,7 +301,14 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
               if (saved.createdAt === manifest.createdAt && saved.epochMs === 0) created = true;
             } catch { /* No acknowledged primary draft; reload still retains any late closed writes. */ }
           }
-          fail(messageOf(error)); throw error;
+          if (created && !canceled) {
+            // Source loss may already have reported failed before create resolved.
+            // The owned primary draft still needs a terminal checkpoint and lease
+            // release before this start rejection is handed back to the caller.
+            failure ??= messageOf(error);
+            await finish();
+          } else fail(messageOf(error));
+          throw error;
         }
       },
       async pause() {

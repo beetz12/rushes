@@ -120,3 +120,45 @@ The fresh full suite after this repair exited 0: 11 tests, 11 pass, 0 fail. One
 intermediate run was invalidated when the maker edited storage during the Vite
 fixture, triggering a page navigation; its execution-context failure is retained.
 The exact command was rerun with source unchanged, and all eleven cases passed.
+
+## Consolidated independent repair pass
+
+The independent capture verdict at integration 736d0f0 reproduced C1 (source loss
+while primary creation was committed but its create promise was pending) and C2
+(an initial-write orphan made list() reject, hiding a healthy completed take).
+The root/M1 lane additionally supplied stale interrupted duration and jitter-driven
+cadence loss observations. This single repair consolidates those four findings:
+
+- Startup rejection directly awaits the owned draft's terminal finalization even
+  if source loss already reported failed. The before/after-primary gated regression
+  preserves closed chunk bytes, checks terminal disk state/no live lease, and proves
+  a second tab can recover/remove it without an extra Stop. DRAFT_EXISTS remains
+  protected; unreadable or unrelated metadata is never adopted as this startup.
+- Enumeration isolates unreadable/unfinished metadata into diagnostic interrupted
+  rows while retaining healthy rows. It indexes recognized closed chunks for raw
+  download, reports unknown date/mode/timing/protection, and never rewrites corrupt
+  manifests or deletes unknown bytes. Valid-JSON malformed fields, corrupt JSON,
+  empty initial-write orphans and unrecognized folder names are covered together.
+- Interrupted recovery derives an estimated length at least as large as the last
+  durable checkpoint and validated chunk checkpoints. It remains interrupted and
+  explicitly labels the estimate/unclosed tail. The actual reload regression checks
+  the recovered length against every acknowledged checkpoint; process-kill and
+  decoded maximum-take proof remain in the independent M1 lane.
+- Relative nominal cadence buckets admit at most one actual input frame per 30 fps
+  bucket, preserving timestamps and closing skipped frames. 33,330/33,334 µs jitter
+  now retains 300 frames in the 300-frame fixture; 60 fps input is decimated to the
+  nominal target without fabricated frames or catch-up bursts. This is cadence
+  logic proof; actual long-take frame rate still requires M1's decoded read-back.
+
+Root's authorized shared optional cloudRecordingId seam 053402f was imported
+read-only. Capture copies that reservation into its initial manifest; every
+checkpoint/final save retains it. No capture-core network request was added.
+
+The final unchanged-source command `npm --prefix browser run test:capture` exited 0:
+16 tests, 16 pass, 0 fail, 45.969 seconds on the same isolated Chrome 155 runtime.
+The first target regression included an unused synthetic camera feed when checking
+screen-only cleanup; its assertion was corrected to the actual granted screen and
+composed preview tracks. The original failure log is retained. The clean scanner
+also flagged a generic finite/nonnegative predicate as a source fingerprint; its
+independent control-flow form was rewritten without opening the reference source.
+Final explicit scanner first line 0; acceptance thresholds remain unchanged.

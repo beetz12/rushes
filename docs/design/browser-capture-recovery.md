@@ -48,3 +48,15 @@ while source streams keep flowing. Arbitrary source-content changes while paused
 are a separate residual measurement (see slice evidence), not implied by this
 calibration result. No standard promises exact sample synchronization across
 independent MediaRecorders merely because their start calls were adjacent.
+
+Independent repair refinement: creation may resolve after an earlier source-loss
+callback, so the start rejection itself joins terminal persistence rather than
+relying on the failed-state notification to request another Stop. Enumeration is
+per-entry: damaged metadata produces an in-memory diagnostic view, leaving the
+original bytes untouched. Recognized chunk filenames/digests allow raw recovery
+without asserting a known epoch/date/source mode. Interrupted length is an
+estimated lower bound from durable checkpoints; complete decoded recordings keep
+their terminal duration. Composition uses relative nominal cadence buckets to
+avoid repeatedly rejecting near 30 fps input timestamps with small clock jitter.
+Optional cloud recording identity is initial immutable metadata only; upload
+ownership remains with the separate UI/protocol lane.

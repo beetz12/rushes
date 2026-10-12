@@ -25,13 +25,35 @@ async function write(directory: FileSystemDirectoryHandle, name: string, content
   catch (error) { await writer.abort().catch(() => undefined); throw error; }
 }
 async function textFile(directory: FileSystemDirectoryHandle, name: string) {
-  return (await (await directory.getFileHandle(name)).getFile()).text();
+  const file = await (await directory.getFileHandle(name)).getFile();
+  if (file.size > 16 * 1024 ** 2) throw new Error('Stored metadata exceeds the local read safety limit. Its bytes are retained.');
+  return file.text();
 }
+function nonnegative(value: unknown): value is number {
+  if (typeof value !== 'number') return false;
+  if (!Number.isFinite(value)) return false;
+  return value >= 0;
+}
+const validChunk = (chunk: ChunkDescriptor, kind: TrackKind) => chunk && chunk.track === kind &&
+    Number.isInteger(chunk.sequence) && chunk.sequence >= 0 && chunk.sequence < sequenceLimit &&
+    Number.isInteger(chunk.bytes) && chunk.bytes >= 0 && chunk.bytes <= chunkLimit &&
+    typeof chunk.sha256 === 'string' && /^[a-f0-9]{64}$/.test(chunk.sha256) &&
+    typeof chunk.mimeType === 'string' && nonnegative(chunk.checkpointMs);
 function inspectManifest(value: unknown, id: string): DraftManifest {
   const manifest = value as DraftManifest;
   if (!manifest || manifest.schema !== 'rushes.browser-recording/1' || manifest.id !== id ||
+    typeof manifest.title !== 'string' || typeof manifest.createdAt !== 'string' || !Number.isFinite(Date.parse(manifest.createdAt)) ||
+    !['screen', 'camera', 'screen-camera'].includes(manifest.mode) ||
+    !['ready', 'recording', 'paused', 'stopping', 'complete', 'interrupted', 'failed'].includes(manifest.state) ||
+    !nonnegative(manifest.durationMs) || !nonnegative(manifest.epochMs) || !nonnegative(manifest.lastCheckpointMs) ||
+    !manifest.bubble || ![manifest.bubble.x, manifest.bubble.y, manifest.bubble.size].every(nonnegative) ||
+    typeof manifest.persistent !== 'boolean' || typeof manifest.backupFolder !== 'boolean' ||
+    !Array.isArray(manifest.pauses) || !Array.isArray(manifest.events) ||
     !Array.isArray(manifest.tracks) || manifest.tracks.length > kinds.length ||
-    !manifest.tracks.every(track => kinds.includes(track.kind) && Array.isArray(track.chunks) && track.chunks.length <= sequenceLimit))
+    new Set(manifest.tracks.map(track => track?.kind)).size !== manifest.tracks.length ||
+    !manifest.tracks.every(track => track && kinds.includes(track.kind) && typeof track.mimeType === 'string' &&
+      nonnegative(track.startOffsetMs) && nonnegative(track.bytes) && Array.isArray(track.chunks) &&
+      track.chunks.length <= sequenceLimit && track.chunks.every(chunk => validChunk(chunk, track.kind))))
     throw new Error(`Draft ${id} has an invalid manifest. Its files have been retained.`);
   return manifest;
 }
@@ -43,6 +65,7 @@ export async function createDraftStore(backup?: FileSystemDirectoryHandle): Prom
   const tails = new Map<string, Promise<unknown>>();
   const active = new Set<string>();
   const leases = new Map<string, () => void>();
+  const aliases = new Map<string, string>();
   async function acquireLease(id: string) {
     if (!navigator.locks) { active.add(id); return; }
     let ready: () => void = () => undefined;
@@ -73,7 +96,7 @@ export async function createDraftStore(backup?: FileSystemDirectoryHandle): Prom
     try { return await action; }
     finally { if (tails.get(id) === action) tails.delete(id); }
   }
-  const directory = (id: string, create = false) => root.getDirectoryHandle(identifier(id), { create });
+  const directory = (id: string, create = false) => root.getDirectoryHandle(aliases.get(identifier(id)) ?? id, { create });
   async function stored(id: string) {
     const folder = await directory(id);
     return inspectManifest(JSON.parse(await textFile(folder, 'manifest.json')), id);
@@ -92,9 +115,49 @@ export async function createDraftStore(backup?: FileSystemDirectoryHandle): Prom
     }
     await checkpoint(folder, manifest);
   }
+  async function diagnostic(folder: FileSystemDirectoryHandle | undefined, id: string, error: unknown): Promise<DraftManifest> {
+    const tracks: DraftManifest['tracks'] = [];
+    const notes = ['Recording recovery could not finish. Original metadata and all files are retained.',
+      'Duration, original date, source mode, offsets and protection settings are unknown; mode is inferred from recognized filenames.'];
+    notes.push(error instanceof Error ? error.message : String(error));
+    let modified = 0, unindexed = 0;
+    const iterable = folder as FileSystemDirectoryHandle & { values(): AsyncIterableIterator<FileSystemHandle> };
+    try {
+      if (!folder) throw new Error('This retained folder could not be opened.');
+      for await (const entry of iterable.values()) {
+        if (entry.kind !== 'file') { unindexed++; continue; }
+        const file = await (await folder.getFileHandle(entry.name)).getFile();
+        modified = Math.max(modified, file.lastModified);
+        const match = /^(screen|camera|microphone|tab-audio|composed)-(\d{5})\.bin$/.exec(entry.name);
+        if (!match || Number(match[2]) >= sequenceLimit || file.size > chunkLimit) { unindexed++; continue; }
+        const kind = match[1] as TrackKind, sequence = Number(match[2]);
+        let track = tracks.find(value => value.kind === kind);
+        if (!track) { track = { kind, mimeType: ['microphone', 'tab-audio'].includes(kind) ? 'audio/webm' : 'video/webm', startOffsetMs: 0, chunks: [], bytes: 0 }; tracks.push(track); }
+        try {
+          const descriptor: ChunkDescriptor = { track: kind, sequence, bytes: file.size, sha256: await chunkDigest(file), mimeType: track.mimeType, checkpointMs: 0 };
+          track.chunks.push(descriptor); track.bytes += file.size;
+        } catch (failure) { notes.push(`A retained chunk could not be indexed: ${failure instanceof Error ? failure.message : String(failure)}`); }
+      }
+    } catch (failure) { notes.push(`Some retained files could not be inspected: ${failure instanceof Error ? failure.message : String(failure)}`); }
+    for (const track of tracks) {
+      track.chunks.sort((left, right) => left.sequence - right.sequence);
+      if (track.chunks.some((chunk, position) => chunk.sequence !== position)) notes.push(`The ${track.kind} original has a gap; available bytes remain downloadable.`);
+    }
+    if (unindexed) notes.push(`${unindexed} additional metadata or unrecognized entries remain untouched.`);
+    notes.push(modified ? 'The date shown is the latest retained file modification, not the recording date.' : 'No readable file date is available; the date field is unknown.');
+    const screen = tracks.some(track => track.kind === 'screen'), camera = tracks.some(track => track.kind === 'camera');
+    // This diagnostic is an in-memory recovery view. Never replace an unreadable
+    // manifest with inferred metadata, or delete unknown files while enumerating.
+    return { schema: 'rushes.browser-recording/1', id, title: 'Recording needs recovery', createdAt: new Date(modified).toISOString(),
+      mode: screen && camera ? 'screen-camera' : camera ? 'camera' : 'screen', state: 'interrupted', durationMs: 0, epochMs: 0,
+      tracks, pauses: [], events: [{ timeMs: 0, kind: 'metadata-unreadable' }], bubble: { x: 1040, y: 500, size: 180 },
+      lastCheckpointMs: 0, persistent: false, backupFolder: false, recoveryNote: notes.join(' '), };
+  }
   async function reconcile(id: string, interrupted: boolean) {
     const folder = await directory(id);
-    const manifest = await stored(id);
+    let manifest: DraftManifest;
+    try { manifest = await stored(id); }
+    catch (error) { return diagnostic(folder, id, error); }
     let changed = false;
     const notes: string[] = [];
     const files: string[] = [];
@@ -113,7 +176,7 @@ export async function createDraftStore(backup?: FileSystemDirectoryHandle): Prom
           catch (error) {
             if (!(error instanceof DOMException && error.name === 'NotFoundError')) notes.push(`Unreadable journal entry for ${name}.`);
           }
-          if (!chunk || chunk.track !== track.kind || chunk.sequence !== sequence || chunk.bytes !== data.size || chunk.sha256 !== digest) {
+          if (!chunk || !validChunk(chunk, track.kind) || chunk.sequence !== sequence || chunk.bytes !== data.size || chunk.sha256 !== digest) {
             chunk = { track: track.kind, sequence, bytes: data.size, sha256: digest, mimeType: track.mimeType, checkpointMs: manifest.lastCheckpointMs };
             notes.push(`Recovered uncheckpointed bytes for ${track.kind}.`);
           }
@@ -132,7 +195,18 @@ export async function createDraftStore(backup?: FileSystemDirectoryHandle): Prom
       manifest.state = 'interrupted'; changed = true;
       notes.push('Recording was interrupted. Recovery contains closed chunks through the last checkpoint; encoder tail data may be missing.');
     }
-    if (notes.length) { manifest.recoveryNote = [...new Set(notes)].join(' '); manifest.state = 'interrupted'; changed = true; }
+    if (notes.length) { manifest.state = 'interrupted'; changed = true; }
+    if (manifest.state === 'interrupted') {
+      const durable = Math.max(manifest.lastCheckpointMs, ...manifest.tracks.flatMap(track => track.chunks.map(chunk => chunk.checkpointMs)));
+      if (durable > manifest.lastCheckpointMs) { manifest.lastCheckpointMs = durable; changed = true; }
+      if (durable > manifest.durationMs) { manifest.durationMs = durable; changed = true; }
+      notes.push('Recovered duration is an estimate from durable chunk checkpoints, not a decoded length; unclosed encoder tail may be missing.');
+    }
+    const additions = [...new Set(notes)].filter(note => !manifest.recoveryNote?.includes(note));
+    if (additions.length) {
+      manifest.recoveryNote = [manifest.recoveryNote ?? '', ...additions].filter(Boolean).join(' ');
+      changed = true;
+    }
     if (changed) await checkpoint(folder, manifest);
     return manifest;
   }
@@ -147,24 +221,39 @@ export async function createDraftStore(backup?: FileSystemDirectoryHandle): Prom
       catch (error) { releaseLease(manifest.id); throw error; }
     }),
     save: manifest => serialized(manifest.id, async () => {
-      inspectManifest(manifest, manifest.id);
-      const disk = await stored(manifest.id);
-      const merged = structuredClone(manifest);
-      // Capture's in-memory metadata cannot erase append's newer durable journal.
-      for (const track of merged.tracks) {
-        const saved = disk.tracks.find(value => value.kind === track.kind);
-        if (saved) { track.chunks = saved.chunks; track.bytes = saved.bytes; }
-      }
-      merged.lastCheckpointMs = Math.max(disk.lastCheckpointMs, merged.lastCheckpointMs);
-      try { await checkpoint(await directory(merged.id), merged); }
-      finally { if (!['ready', 'recording', 'paused', 'stopping'].includes(merged.state)) releaseLease(merged.id); }
-      await backupCheckpoint(merged);
+      const terminal = !['ready', 'recording', 'paused', 'stopping'].includes(manifest.state);
+      try {
+        inspectManifest(manifest, manifest.id);
+        const disk = await stored(manifest.id);
+        const merged = structuredClone(manifest);
+        // Capture's in-memory metadata cannot erase append's newer durable journal.
+        for (const track of merged.tracks) {
+          const saved = disk.tracks.find(value => value.kind === track.kind);
+          if (saved) { track.chunks = saved.chunks; track.bytes = saved.bytes; }
+        }
+        merged.lastCheckpointMs = Math.max(disk.lastCheckpointMs, merged.lastCheckpointMs);
+        await checkpoint(await directory(merged.id), merged);
+        await backupCheckpoint(merged);
+      } finally { if (terminal) releaseLease(manifest.id); }
     }),
     load: id => serialized(id, () => reconcile(id, true)),
     list: async () => {
       const manifests: DraftManifest[] = [];
       const iterable = root as FileSystemDirectoryHandle & { values(): AsyncIterableIterator<FileSystemHandle> };
-      for await (const entry of iterable.values()) if (entry.kind === 'directory') manifests.push(await serialized(entry.name, () => reconcile(entry.name, true)));
+      for await (const entry of iterable.values()) if (entry.kind === 'directory') {
+        let id = entry.name;
+        try { identifier(id); }
+        catch {
+          const bytes = new TextEncoder().encode(entry.name);
+          const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), value => value.toString(16).padStart(2, '0')).join('');
+          id = `recovery-${hash}`; aliases.set(id, entry.name);
+        }
+        manifests.push(await serialized(id, async () => {
+          let folder: FileSystemDirectoryHandle | undefined;
+          try { folder = await root.getDirectoryHandle(entry.name); return await reconcile(id, true); }
+          catch (error) { return diagnostic(folder, id, error); }
+        }));
+      }
       return manifests.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     },
     append: (id, track, sequence, blob, checkpointMs) => serialized(id, async () => {
@@ -215,8 +304,8 @@ export async function createDraftStore(backup?: FileSystemDirectoryHandle): Prom
     }),
     remove: id => serialized(id, async () => {
       if (!active.has(id) && await isLive(id)) throw new Error('This draft is recording in another tab. Stop it there before deleting.');
-      try { await root.removeEntry(identifier(id), { recursive: true }); } finally { releaseLease(id); }
-      if (backup) await backup.removeEntry(id, { recursive: true }).catch(error => {
+      try { await root.removeEntry(aliases.get(identifier(id)) ?? id, { recursive: true }); } finally { releaseLease(id); }
+      if (backup && !aliases.has(id)) await backup.removeEntry(id, { recursive: true }).catch(error => {
         if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error;
       });
     }),

@@ -63,16 +63,20 @@ test('screen without audio and camera-only captures produce playable originals; 
     const { fixture, inspectVideo } = await import('/test/capture-fixture.mjs');
     const results = [];
     for (const mode of ['screen', 'camera']) {
-      const value = await fixture(mode, false); await value.session.start();
+      const value = await fixture(mode, false, false, `private-reservation-${mode}`); await value.session.start();
       await new Promise(resolve => setTimeout(resolve, 350));
       const [one, two] = await Promise.all([value.session.stop(), value.session.stop()]);
       const info = await inspectVideo(await value.store.trackBlob(value.id, 'composed'));
-      results.push({ manifest: one, same: JSON.stringify(one) === JSON.stringify(two), info }); await value.cleanup();
+      const saved = await value.store.load(value.id);
+      results.push({ manifest: one, savedCloudId: saved.cloudRecordingId, checkpointCloudIds: value.checkpoints.map(point => point.cloudRecordingId), same: JSON.stringify(one) === JSON.stringify(two), info }); await value.cleanup();
     }
     return results;
   });
   for (const result of results) {
     assert.equal(result.manifest.state, 'complete'); assert.equal(result.same, true);
+    assert.equal(result.manifest.cloudRecordingId, `private-reservation-${result.manifest.mode}`);
+    assert.equal(result.savedCloudId, result.manifest.cloudRecordingId);
+    assert.ok(result.checkpointCloudIds.every(id => id === result.manifest.cloudRecordingId));
     assert.ok(result.info.duration > 0.2 && result.info.duration < 0.7);
     assert.equal(result.manifest.tracks.length, 2); assert.ok(result.manifest.tracks.every(track => track.chunks.length === 1 && track.bytes > 0));
   }
@@ -110,6 +114,10 @@ test('reload preserves acknowledged OPFS chunks and recovers the manifest withou
   }, before.id);
   assert.equal(after.manifest.state, 'interrupted'); assert.ok(after.manifest.recoveryNote.includes('encoder tail'));
   assert.ok(after.manifest.lastCheckpointMs >= before.checkpoint);
+  assert.ok(after.manifest.durationMs >= after.manifest.lastCheckpointMs);
+  assert.ok(after.manifest.durationMs >= Math.max(...after.digests.map(chunk => chunk.checkpointMs)));
+  assert.ok(after.manifest.recoveryNote.includes('estimate'));
+  assert.notEqual(after.manifest.state, 'complete');
   for (const chunk of before.chunks) assert.ok(after.digests.some(saved => saved.track === chunk.track && saved.sequence === chunk.sequence && saved.sha256 === chunk.sha256 && saved.readBytes === chunk.bytes));
 }));
 test('durable backups, ordered/idempotent appends, journal-gap recovery and digest corruption retain bytes', { timeout: 30000 }, async () => pageFixture(async page => {
@@ -258,4 +266,98 @@ test('a post-commit backup failure during startup releases its live draft lease 
   });
   assert.ok(result.error.includes('checkpoint denied')); assert.equal(result.manifest.state, 'interrupted');
   assert.equal(result.saved.state, 'interrupted'); assert.equal(result.lease, false); assert.equal(result.ended, true);
+}));
+
+test('source loss before or after primary creation terminally closes the owned draft before start rejects', { timeout: 30000 }, async () => {
+  const context = await browser.newContext(); const owner = await context.newPage(); const observer = await context.newPage();
+  try {
+    await owner.goto(`${origin}/capture-fixture`); await observer.goto(`${origin}/capture-fixture`);
+    for (const phase of ['before-primary', 'after-primary']) {
+      const result = await owner.evaluate(async phase => {
+        const { fixture } = await import('/test/capture-fixture.mjs');
+        const value = await fixture('screen', false); const create = value.store.create;
+        let entered, open;
+        const signal = new Promise(resolve => { entered = resolve; });
+        const gate = new Promise(resolve => { open = resolve; });
+        const original = new Blob([`closed original bytes ${phase}`], { type: 'video/webm' });
+        value.store.create = async manifest => {
+          if (phase === 'before-primary') { entered(); await gate; }
+          await create(manifest);
+          await value.store.append(value.id, 'screen', 0, original, 0);
+          if (phase === 'after-primary') { entered(); await gate; }
+        };
+        const started = value.session.start().then(() => 'unexpected success', error => error.message);
+        await signal;
+        const track = value.feeds[0].getVideoTracks()[0]; track.stop(); track.dispatchEvent(new Event('ended'));
+        open(); const message = await started;
+        // No Stop call: rejected startup itself must finish persistence/lease cleanup.
+        const saved = await value.store.load(value.id);
+        const held = (await navigator.locks.query()).held.some(lock => lock.name === `rushes-active-${value.id}`);
+        const data = await value.store.readChunk(value.id, saved.tracks.find(track => track.kind === 'screen').chunks[0]);
+        const ended = [...value.feeds[0].getTracks(), ...value.session.preview.getTracks()].every(track => track.readyState === 'ended');
+        await value.cleanup();
+        return { id: value.id, saved, held, ended, message, states: value.states, text: await data.text() };
+      }, phase);
+      assert.ok(result.message.includes('source closed')); assert.equal(result.saved.state, 'interrupted');
+      assert.equal(result.saved.epochMs, 0); assert.equal(result.held, false); assert.equal(result.ended, true);
+      assert.equal(result.text, `closed original bytes ${phase}`); assert.equal(result.states.at(-1), 'interrupted');
+      assert.ok(result.saved.recoveryNote.includes('source ended'));
+      const removed = await observer.evaluate(async id => {
+        const { createDraftStore } = await import('/src/capture/storage.ts'); const store = await createDraftStore();
+        const saved = await store.load(id); await store.remove(id); return saved.state;
+      }, result.id);
+      assert.equal(removed, 'interrupted');
+    }
+  } finally { await context.close(); }
+});
+
+test('an initial orphan and malformed retained metadata do not hide healthy completed recordings', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { fixture } = await import('/test/capture-fixture.mjs');
+    const { createDraftStore } = await import('/src/capture/storage.ts');
+    const healthy = await fixture('screen', false); await healthy.session.start();
+    await new Promise(resolve => setTimeout(resolve, 350)); const completed = await healthy.session.stop();
+    const original = await healthy.store.trackBlob(healthy.id, 'screen'); await healthy.cleanup();
+    const root = await (await navigator.storage.getDirectory()).getDirectoryHandle('rushes-browser-v1');
+    const id = 'initial-write-orphan', handleMethod = FileSystemDirectoryHandle.prototype.getFileHandle;
+    FileSystemDirectoryHandle.prototype.getFileHandle = function(name, options) {
+      if (this.name === id && name === 'manifest.json' && options?.create) throw new DOMException('Synthetic initial manifest quota exhausted', 'QuotaExceededError');
+      return handleMethod.call(this, name, options);
+    };
+    let creationError;
+    try { await healthy.store.create({ ...completed, id, state: 'ready', epochMs: 0, tracks: [] }); }
+    catch (error) { creationError = error.message; }
+    finally { FileSystemDirectoryHandle.prototype.getFileHandle = handleMethod; }
+    async function put(folder, name, data) {
+      const writer = await (await folder.getFileHandle(name, { create: true })).createWritable(); await writer.write(data); await writer.close();
+    }
+    const damaged = await root.getDirectoryHandle('malformed-draft', { create: true });
+    const malformed = '{original metadata never closed';
+    await put(damaged, 'manifest.json', malformed); await put(damaged, 'camera-00000.bin', original);
+    await put(damaged, 'unknown-retained.bin', 'unknown bytes must stay');
+    const shape = await root.getDirectoryHandle('shape-damaged-draft', { create: true });
+    await put(shape, 'manifest.json', JSON.stringify({ schema: 'rushes.browser-recording/1', id: 'shape-damaged-draft', tracks: [] }));
+    await put(shape, 'composed-00000.bin', original);
+    const invalidName = await root.getDirectoryHandle('unknown folder name', { create: true });
+    await put(invalidName, 'screen-00000.bin', original);
+    const recovered = await createDraftStore(); const listed = await recovered.list();
+    const row = listed.find(value => value.id === 'malformed-draft');
+    const bytes = await recovered.readChunk(row.id, row.tracks[0].chunks[0]);
+    const alias = listed.find(value => value.id.startsWith('recovery-'));
+    const aliasData = await recovered.trackBlob(alias.id, 'screen');
+    const orphan = await root.getDirectoryHandle(id), orphanNames = [];
+    for await (const name of orphan.keys()) orphanNames.push(name);
+    return { creationError, listed, healthy: healthy.id, bytes: bytes.size, originalBytes: original.size,
+      malformed: await (await (await damaged.getFileHandle('manifest.json')).getFile()).text(),
+      unknown: await (await (await damaged.getFileHandle('unknown-retained.bin')).getFile()).text(),
+      orphanNames, aliasBytes: aliasData.size };
+  });
+  assert.ok(result.creationError.includes('quota exhausted')); assert.deepEqual(result.orphanNames, []);
+  assert.equal(result.listed.find(row => row.id === result.healthy).state, 'complete');
+  for (const id of ['initial-write-orphan', 'malformed-draft', 'shape-damaged-draft']) {
+    const row = result.listed.find(value => value.id === id); assert.equal(row.state, 'interrupted');
+    assert.ok(row.recoveryNote.includes('retained')); assert.ok(row.recoveryNote.includes('unknown'));
+  }
+  assert.equal(result.bytes, result.originalBytes); assert.equal(result.aliasBytes, result.originalBytes);
+  assert.equal(result.malformed, '{original metadata never closed'); assert.equal(result.unknown, 'unknown bytes must stay');
 }));

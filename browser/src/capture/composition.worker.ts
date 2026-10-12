@@ -1,4 +1,5 @@
 import type { BubblePlacement } from '../contracts';
+import { createFrameCadence } from './cadence';
 
 type Setup = { kind: 'setup'; screen?: ReadableStream<VideoFrame>; camera?: ReadableStream<VideoFrame>;
   output: WritableStream<VideoFrame>; width: number; height: number; fps: number; maxSeconds: number; bubble: BubblePlacement };
@@ -11,7 +12,6 @@ let begun = 0;
 let pausedAt = 0;
 let pausedTime = 0;
 let latestScreen: VideoFrame | undefined;
-let lastOutput = -Infinity;
 const readers: ReadableStreamDefaultReader<VideoFrame>[] = [];
 let writer: WritableStreamDefaultWriter<VideoFrame>;
 let frameCount = 0;
@@ -27,11 +27,11 @@ async function compose(setup: Setup) {
   const context = canvas.getContext('2d', { alpha: false });
   if (!context) throw new Error('The browser could not initialize composition.');
   writer = setup.output.getWriter();
+  const admit = createFrameCadence(setup.fps);
   const render = async (driver: VideoFrame) => {
-    if (driver.timestamp - lastOutput < 1_000_000 / setup.fps - 1) return;
+    if (!admit(driver.timestamp)) return;
     const now = performance.now();
     if (begun && !pausedAt && now - begun - pausedTime >= setup.maxSeconds * 1000) { send('limit'); begun = 0; }
-    lastOutput = driver.timestamp;
     context.fillStyle = '#101820'; context.fillRect(0, 0, setup.width, setup.height);
     if (setup.screen && latestScreen) drawFit(context, latestScreen, 0, 0, setup.width, setup.height);
     else if (!setup.screen) drawFit(context, driver, 0, 0, setup.width, setup.height);
