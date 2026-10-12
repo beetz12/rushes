@@ -131,7 +131,10 @@ export async function prepareMatrix({ backup = true, diagnostic = false } = {}) 
   if (!diagnostic) watch('output-composed', session.preview.getVideoTracks()[0]);
   const visibility = () => metrics.visibility.push({ wallMs: performance.now(), state: document.visibilityState, hasFocus: document.hasFocus() });
   document.addEventListener('visibilitychange', visibility); visibility();
+  const nativeTrackStats = () => Object.fromEntries([['screen', screen], ['camera', camera]]
+    .map(([role, stream]) => [role, inspectNativeTrackStats(stream.getVideoTracks()[0])]));
   const take = { id, session, store, rawStore, metrics, manifest: undefined, startedAt: 0,
+    nativeTrackStats,
     pausedAt: 0, pausedMs: 0, sources: [screen, camera, microphone],
     elapsed() { return this.startedAt ? (this.pausedAt || performance.now()) - this.startedAt - this.pausedMs : 0; },
     async start() { await session.start(); this.manifest = await rawStore.load(id); this.startedAt = this.manifest.epochMs; },
@@ -177,4 +180,18 @@ export async function recoverMatrix(id) {
   return { manifest, chunks, backupChunks, activeLocks: (await navigator.locks.query()).held,
     mediaDevicesWereRequested: (window.recoveryDeviceRequests || 0) > 0,
     recoveryDeviceRequestCount: window.recoveryDeviceRequests || 0 };
+}
+
+export function inspectNativeTrackStats(track) {
+  try {
+    const stats = track.stats;
+    if (!stats) return { availability: 'absent', reason: 'Video track.stats is unavailable', readyState: track.readyState, muted: track.muted };
+    const values = Object.fromEntries(['deliveredFrames', 'discardedFrames', 'totalFrames'].map(name => {
+      const value = stats[name]; return [name, typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null];
+    }));
+    const complete = Object.values(values).every(value => value !== null);
+    return { availability: complete ? 'available' : 'partial', ...values,
+      reportedDroppedFrames: complete ? values.totalFrames - values.deliveredFrames - values.discardedFrames : null,
+      readyState: track.readyState, muted: track.muted };
+  } catch (error) { return { availability: 'error', message: String(error), readyState: track.readyState }; }
 }

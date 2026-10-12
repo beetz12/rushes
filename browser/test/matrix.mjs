@@ -10,11 +10,14 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
 import { matrixMedia } from './matrix-media.mjs';
+import { inspectHistogramPayload } from './matrix-native-observation.mjs';
 
 const run = promisify(execFile), sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const { mkdtemp, writeFile, readFile, mkdir, access } = filesystem;
 const long = process.env.RUSHES_M1_LONG === '1';
-const diagnostic = process.env.RUSHES_M1_DIAGNOSTIC === '1';
+const allocationDiagnostic = process.env.RUSHES_M1_ALLOCATION_DIAGNOSTIC === '1';
+const diagnostic = process.env.RUSHES_M1_DIAGNOSTIC === '1' || allocationDiagnostic;
+const diagnosticDurationMs = allocationDiagnostic ? 180000 : 240000;
 const root = fileURLToPath(new URL('..', import.meta.url));
 const proof = resolve(process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir(), 'rushes-m1-')));
 await mkdir(proof, { recursive: true, mode: 0o700 });
@@ -24,9 +27,9 @@ const evidence = { schema: 'rushes.independent-m1/1', startedAt: new Date().toIS
   normalBackgroundFlags: true, source: 'native Chrome fake Y4M with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; headless virtual pages only',
-  diagnostic, samples: [], actions: [], checks: [], failures: [], browserStderr: [], lifecycle: [] };
+  diagnostic, allocationDiagnostic, samples: [], actions: [], checks: [], failures: [], browserStderr: [], lifecycle: [], hostTimeline: [], nativeAllocationSamples: [] };
 evidence.fileHashes = {};
-for (const filename of ['test/matrix.mjs', 'test/matrix-fixture.mjs', 'test/matrix-media.mjs', 'test/matrix-source.worker.mjs',
+for (const filename of ['test/matrix.mjs', 'test/matrix-fixture.mjs', 'test/matrix-media.mjs', 'test/matrix-source.worker.mjs', 'test/matrix-native-observation.mjs',
   'src/capture/index.ts', 'src/capture/composition.worker.ts', 'src/capture/storage.ts'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 evidence.fileHashes['src/capture/cadence.ts'] = createHash('sha256').update(await readFile(join(root, 'src/capture/cadence.ts'))).digest('hex');
@@ -39,6 +42,46 @@ const check = (name, operation) => {
 const save = () => writeFile(join(proof, 'metrics.json'), JSON.stringify(evidence, null, 2));
 let processHandle, browser, server, origin, page;
 let stderrWrites = Promise.resolve();
+let histogramSession;
+const histogramName = 'Media.VideoCapture.Track.FrameDrop.DeviceCapture';
+
+async function macHostState() {
+  const sample = { startedAt: new Date().toISOString(), platform: process.platform };
+  if (process.platform !== 'darwin') return { ...sample, availability: 'unsupported', reason: 'Mac host evidence only' };
+  const commands = [ ['console', 'ioreg', ['-n', 'Root', '-d1']], ['idle', 'ioreg', ['-c', 'IOHIDSystem']],
+    ['display', 'ioreg', ['-r', '-n', 'IODisplayWrangler', '-d1']], ['assertions', 'pmset', ['-g', 'assertions']],
+    ['framebuffer', 'pmset', ['-g', 'powerstate', 'IOMobileFramebufferShim']] ];
+  const results = await Promise.all(commands.map(async ([name, command, args]) => {
+    try { return { name, output: (await run(command, args, { timeout: 3000, maxBuffer: 1024 * 1024 })).stdout }; }
+    catch (error) { return { name, error: String(error) }; }
+  }));
+  const named = Object.fromEntries(results.map(result => [result.name, result]));
+  const lock = named.console.output?.match(/"IOConsoleLocked"\s*=\s*(Yes|No)/)?.[1];
+  sample.IOConsoleLocked = lock === 'Yes' ? true : lock === 'No' ? false : null;
+  sample.hidIdleSeconds = named.idle.output?.match(/"HIDIdleTime"\s*=\s*(\d+)/)?.[1];
+  sample.hidIdleSeconds = sample.hidIdleSeconds === undefined ? null : Number(sample.hidIdleSeconds) / 1e9;
+  const power = named.display.output?.match(/"CurrentPowerState"\s*=\s*(\d+)/)?.[1];
+  sample.displayCurrentPowerState = power === undefined ? null : Number(power);
+  sample.framebufferPowerStates = named.framebuffer.output?.split('\n').flatMap(line => {
+    const match = line.trim().match(/^(IOMobileFramebufferShim)\s+(\d+)\s+(\d+)\s+(.+)$/);
+    return match ? [{ driver: match[1], current: Number(match[2]), max: Number(match[3]), description: match[4] }] : [];
+  }) ?? null;
+  sample.powerAssertions = Object.fromEntries(['UserIsActive', 'PreventUserIdleDisplaySleep', 'InternalPreventDisplaySleep']
+    .map(name => [name, named.assertions.output?.match(new RegExp(`^\\s*${name}\\s+(\\d+)`, 'm'))?.[1] ?? null]));
+  sample.errors = results.filter(result => result.error).map(({ name, error }) => ({ name, error }));
+  sample.availability = lock ? 'available' : 'partial'; sample.endedAt = new Date().toISOString();
+  return sample;
+}
+async function nativeAllocationProbe() {
+  const result = { startedAt: new Date().toISOString() };
+  try { result.tracks = await page.evaluate(() => window.matrixTake.nativeTrackStats()); }
+  catch (error) { result.tracks = { availability: 'error', message: String(error) }; }
+  try {
+    const { histogram } = await histogramSession.send('Browser.getHistogram', { name: histogramName, delta: true });
+    result.histogram = inspectHistogramPayload(histogram, histogramName);
+  } catch (error) { result.histogram = { availability: 'absent-or-error', name: histogramName, delta: true, message: String(error) }; }
+  result.endedAt = new Date().toISOString(); evidence.nativeAllocationSamples.push(result); return result;
+}
 
 async function chromeExecutable() {
   if (process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE) return process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE;
@@ -107,7 +150,10 @@ async function rss() {
   return rows.filter(([child]) => ids.has(child)).reduce((total, row) => total + row[2] * 1024, 0);
 }
 async function sample(stage) {
-  const [snapshot, processRss] = await Promise.all([page.evaluate(() => window.matrixTake?.snapshot()), rss()]);
+  const [snapshot, processRss, host, nativeProbe] = await Promise.all([page.evaluate(() => window.matrixTake?.snapshot()), rss(),
+    allocationDiagnostic ? macHostState() : Promise.resolve(null),
+    allocationDiagnostic ? nativeAllocationProbe() : Promise.resolve(null)]);
+  if (host) evidence.hostTimeline.push(host);
   evidence.samples.push({ stage, at: new Date().toISOString(), rssBytes: processRss,
     elapsedMs: snapshot?.elapsedMs, heap: snapshot?.heap, inputFrames: snapshot?.metrics.frames['input-camera']?.count,
     outputFrames: snapshot?.metrics.frames['output-composed']?.count, pendingBytes: snapshot?.metrics.pendingBytes,
@@ -115,7 +161,7 @@ async function sample(stage) {
     captureState: snapshot?.metrics.states.at(-1)?.state,
     inputStaleMs: snapshot?.metrics.frames['input-camera'] ? snapshot.wallMs - snapshot.metrics.frames['input-camera'].lastWallMs : null,
     outputStaleMs: snapshot?.metrics.frames['output-composed'] ? snapshot.wallMs - snapshot.metrics.frames['output-composed'].lastWallMs : null,
-    visibility: snapshot?.visibilityState, focus: snapshot?.focused });
+    visibility: snapshot?.visibilityState, focus: snapshot?.focused, host, nativeProbe });
   return snapshot;
 }
 async function downloadTracks(manifest, directory) {
@@ -204,16 +250,27 @@ async function decodedSync(videoFile, audioFile, videoOffsetMs = 0, audioOffsetM
 }
 
 async function runDiagnostic() {
-  evidence.scope = 'One bounded240s foreground diagnostic; zero extra processor readers; constant tone; no M1/sync/background verdict';
+  evidence.scope = `One bounded${diagnosticDurationMs / 1000}s foreground diagnostic; zero extra processor readers; constant tone; no M1/sync/background verdict`;
   evidence.source = 'Native fake MJPEG and constant-tone AudioWorklet; no extra processor consumers';
-  await page.evaluate(async () => {
+  if (allocationDiagnostic) {
+    const host = await macHostState(); evidence.hostTimeline.push(host);
+    if (host.IOConsoleLocked !== false) throw new Error('Unlocked Mac host prerequisite is unverified; no recording started.');
+    histogramSession = await browser.newBrowserCDPSession();
+    try { evidence.histogramBaseline = inspectHistogramPayload((await histogramSession.send('Browser.getHistogram', { name: histogramName, delta: true })).histogram, histogramName); }
+    catch (error) { evidence.histogramBaseline = { availability: 'absent-or-error', message: String(error) }; }
+  }
+  await page.evaluate(async duration => {
     const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
     window.matrixTake = await prepareMatrix({ diagnostic: true }); await window.matrixTake.start();
-    setTimeout(() => { void window.matrixTake.session.stop(); }, 240000 - window.matrixTake.elapsed());
-  });
-  console.log(`Diagnostic ACTIVE240s: ${evidence.chrome}; zero extra frame consumers, constant tone, real five recorders/OPFS/backup/preview.`);
+    setTimeout(() => { void window.matrixTake.session.stop(); }, duration - window.matrixTake.elapsed());
+  }, diagnosticDurationMs);
+  console.log(`Diagnostic ACTIVE${diagnosticDurationMs / 1000}s: ${evidence.chrome}; zero extra frame consumers, constant tone, real five recorders/OPFS/backup/preview.`);
   for (;;) {
     const snapshot = await sample('diagnostic-recording');
+    if (allocationDiagnostic && evidence.samples.at(-1).host.IOConsoleLocked !== false) {
+      evidence.hostPrerequisiteLost = evidence.samples.at(-1).host;
+      await page.evaluate(() => window.matrixTake.session.stop()); break;
+    }
     if (snapshot.metrics.states.at(-1).state !== 'recording') break;
     if (evidence.samples.length % 15 === 0) {
       await save(); console.log(`Diagnostic ${(snapshot.elapsedMs / 1000).toFixed(1)}s; existingworker frames ${evidence.samples.at(-1).workerFrameCount}; chunks ${snapshot.metrics.chunks.length}.`);
@@ -228,7 +285,7 @@ async function runDiagnostic() {
   const manifest = evidence.recording.manifest;
   check('diagnostic has zero extra processor readers', () => assert.equal(evidence.recording.metrics.extraProcessorReaders, 0));
   check('diagnostic finishes complete', () => assert.equal(manifest.state, 'complete'));
-  check('diagnostic effective duration within250ms of240s', () => assert.ok(Math.abs(manifest.durationMs - 240000) <= 250));
+  check('diagnostic effective duration within250ms of bounded target', () => assert.ok(Math.abs(manifest.durationMs - diagnosticDurationMs) <= 250));
   check('diagnostic observer errors are reported', () => assert.deepEqual(evidence.recording.metrics.observerErrors, []));
   const files = await downloadTracks(manifest, join(proof, 'normal-stop'));
   evidence.decoded = {}; evidence.audio = {};
@@ -254,9 +311,27 @@ async function runDiagnostic() {
     peakPendingBytes: evidence.recording.metrics.peakPendingBytes,
     totalRecordedBytes: manifest.tracks.reduce((sum, track) => sum + track.bytes, 0) };
   evidence.backgroundCoverage = 'Not tested: no virtual tab activation; headless foreground diagnostic only';
+  if (allocationDiagnostic) {
+    await nativeAllocationProbe();
+    const trackAvailability = evidence.nativeAllocationSamples.map(sample => Object.values(sample.tracks).map(track => track.availability));
+    const histogramAvailable = evidence.nativeAllocationSamples.some(sample => sample.histogram.availability === 'available');
+    const allTracksAvailable = trackAvailability.every(values => values.length === 2 && values.every(value => value === 'available'));
+    const hostUnlocked = evidence.hostTimeline.every(sample => sample.IOConsoleLocked === false);
+    evidence.nativeAllocationInterpretation = { trackCountersAvailable: allTracksAvailable, histogramAvailable, hostUnlocked,
+      classification: allTracksAvailable && histogramAvailable && hostUnlocked && evidence.chrome === '155.0.8059.39' ? 'Counters observed; attribution still requires root review'
+        : 'INCONCLUSIVE: missing counters/reporting or unsupported host state',
+      reasonValues: { 15: 'buffer pool maximum count exceeded', 16: 'buffer pool allocation failed' },
+      mappingVersionMatches: evidence.chrome === '155.0.8059.39',
+      limitation: 'UMA events can be duplicated across tracks and delayed; counts are not a causal application diagnosis' };
+    evidence.hostObservationCoverage = 'About2s lock/display/idle samples; unobserved intervals are not proven unlocked';
+  }
 }
 
 try {
+  if (allocationDiagnostic) {
+    const host = await macHostState(); evidence.hostTimeline.push(host);
+    if (host.IOConsoleLocked !== false) throw new Error('Unlocked Mac host prerequisite is unverified; browser/recording not launched.');
+  }
   const media = process.env.RUSHES_M1_SOURCE_FILE ? { video: process.env.RUSHES_M1_SOURCE_FILE,
     audio: join(dirname(process.env.RUSHES_M1_SOURCE_FILE), 'calibration.wav') } : await matrixMedia(proof);
   server = await createServer({ root, server: { host: '127.0.0.1', port: 0 }, logLevel: 'error' });
