@@ -6,6 +6,7 @@ export const BROWSER_LIMITS = {
 } as const;
 export type CaptureMode = 'screen' | 'camera' | 'screen-camera';
 export type TrackKind = 'screen' | 'camera' | 'microphone' | 'tab-audio' | 'composed';
+// Composed 1280x720 pixels: top-left x/y and bubble diameter; clamp inside the frame.
 export type BubblePlacement = { x: number; y: number; size: number };
 export type CaptureState = 'ready' | 'recording' | 'paused' | 'stopping' | 'complete' | 'interrupted' | 'failed';
 export type ChunkDescriptor = {

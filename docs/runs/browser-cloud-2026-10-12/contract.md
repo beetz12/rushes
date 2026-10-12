@@ -32,9 +32,9 @@ licenses/ and .github/workflows/ci.yml need new-surface coverage or a browser CI
 | Slice | Owned files | Read-only inputs |
 |---|---|---|
 | Root/shared/integration | browser/src/contracts.ts, browser/package*.json, browser/.nvmrc, browser/tsconfig.json, browser/vite.config.ts, browser/index.html, browser/test/contracts.test.mjs; browser-worker/package*.json, browser-worker/.nvmrc, browser-worker/tsconfig.json, browser-worker/build.mjs, browser-worker/test/contracts.test.mjs, browser-worker/scripts/**, browser-worker/wrangler.jsonc; scripts/**, tools/checks/**, THIRD_PARTY_NOTICES.md, licenses/**, .gitignore, .github/**, docs/runs/browser-cloud-2026-10-12/**, browser/README.md | Existing native/personal packages |
-| Capture | browser/src/capture/**, browser/test/capture*.mjs; docs/runs/browser-cloud-2026-10-12/slices/capture.md | Shared contracts, package/config, paid plan |
-| Service | browser-worker/src/**, browser-worker/schema.sql, browser-worker/migrations/**, browser-worker/test/** except contracts.test.mjs, browser-worker/README.md, browser-worker/.env.example; docs/runs/browser-cloud-2026-10-12/slices/service.md | Shared browser contracts, package/config, personal Worker exemplars |
-| UI | browser/src/main.tsx, browser/src/components/**, browser/src/api.ts, browser/src/upload.ts, browser/src/style.css, browser/test/ui*.mjs; docs/runs/browser-cloud-2026-10-12/slices/ui.md | Shared contracts and capture APIs |
+| Capture | browser/src/capture/**, browser/test/capture*.mjs; docs/runs/browser-cloud-2026-10-12/slices/capture.md, docs/design/browser-capture-recovery.md | Shared contracts, package/config, paid plan |
+| Service | browser-worker/src/**, browser-worker/schema.sql, browser-worker/migrations/**, browser-worker/test/** except contracts.test.mjs, browser-worker/README.md, browser-worker/.env.example; docs/runs/browser-cloud-2026-10-12/slices/service.md, docs/design/browser-service-tenancy.md | Shared browser contracts, package/config, personal Worker exemplars |
+| UI | browser/src/main.tsx, browser/src/components/**, browser/src/api.ts, browser/src/upload.ts, browser/src/style.css, browser/test/ui*.mjs; docs/runs/browser-cloud-2026-10-12/slices/ui.md, docs/design/browser-upload-client.md | Shared contracts and capture APIs |
 
 Every added helper stays under its slice prefix. Contract or ownership changes
 require root coordination. Writers use separate worktrees from the exact wave-zero
@@ -156,7 +156,8 @@ two identical failing approaches trigger research, not weakened tests.
 Root prepares a separate rushes-browser Worker, rushes-browser-data D1 and
 rushes-browser-raw private R2 using David's verified Cloudflare account. Reverify
 Wrangler email/account before mutations. No change to rushes-share resources.
-Google OAuth/Stripe account choices are pending user input; local capture and
+David selected the NexAI Advisors Stripe account in test mode and a dedicated
+Rushes Google OAuth app in the existing NexAI project. Local capture and
 test-mode integration proceed independently. Secrets stay in private local files
 or provider secret bindings. Exact Stream/Workers paid activation and live Stripe
 mode are final M5 approval artifacts, including spend, audience and residual risk.

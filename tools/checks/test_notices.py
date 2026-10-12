@@ -60,5 +60,15 @@ class NoticesTests(unittest.TestCase):
         metadata.write_text(json.dumps({"version": "1.0.0", "license": "AGPL-3.0-only"}))
         self.assertIn("dependency license needs review", self.result().stderr)
 
+    def test_browser_packages_cannot_ship_without_pinned_notices(self):
+        for surface in ("browser", "browser-worker"):
+            folder = self.root / surface / "node_modules/example"
+            folder.mkdir(parents=True)
+            (self.root / surface / "package.json").write_text(json.dumps({"dependencies": {"example": "1.0.0"}}))
+            (folder / "package.json").write_text(json.dumps({"version": "1.0.0", "license": "MIT"}))
+        error = self.result().stderr
+        self.assertIn("missing pinned dependency notice: browser/example@1.0.0", error)
+        self.assertIn("missing pinned dependency notice: browser-worker/example@1.0.0", error)
+
 if __name__ == "__main__":
     unittest.main()
