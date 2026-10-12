@@ -1,9 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-const compiled = await build({entryPoints: [new URL('../src/upload.ts',import.meta.url).pathname],bundle:true,format:'esm',platform:'node',write:false});
+import { fileURLToPath } from 'node:url';
+const compiled = await build({entryPoints: [fileURLToPath(new URL('../src/upload.ts',import.meta.url))],bundle:true,format:'esm',platform:'node',write:false});
 const { uploadDraft, blobDigest, createLiveBackup } = await import(`data:text/javascript;base64,${Buffer.from(compiled.outputFiles[0].contents).toString('base64')}`);
-const apiBundle = await build({entryPoints: [new URL('../src/api.ts',import.meta.url).pathname],bundle:true,format:'esm',platform:'node',write:false});
+const apiBundle = await build({entryPoints: [fileURLToPath(new URL('../src/api.ts',import.meta.url))],bundle:true,format:'esm',platform:'node',write:false});
 const { RushesAPI } = await import(`data:text/javascript;base64,${Buffer.from(apiBundle.outputFiles[0].contents).toString('base64')}`);
 globalThis.location = {origin:'http://127.0.0.1:4317'};
 const json = (value,status=200) => new Response(JSON.stringify(value),{status,headers:{'Content-Type':'application/json'}});

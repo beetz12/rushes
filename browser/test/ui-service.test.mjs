@@ -1,8 +1,9 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {build} from 'esbuild';
+import {fileURLToPath} from 'node:url';
 import {fixture,bytes,sha,ready,uploaded} from '../../browser-worker/test/fixtures.mjs';
-const compile=async name=>{const output=await build({entryPoints:[new URL(`../src/${name}`,import.meta.url).pathname],bundle:true,platform:'node',format:'esm',write:false});return import(`data:text/javascript;base64,${Buffer.from(output.outputFiles[0].contents).toString('base64')}`);};
+const compile=async name=>{const output=await build({entryPoints:[fileURLToPath(new URL(`../src/${name}`,import.meta.url))],bundle:true,platform:'node',format:'esm',write:false});return import(`data:text/javascript;base64,${Buffer.from(output.outputFiles[0].contents).toString('base64')}`);};
 const {RushesAPI}=await compile('api.ts');const {backupDraft,uploadDraft}=await compile('upload.ts');
 function connection(f,user='alpha',options={}) {
   globalThis.location={origin:f.env.PUBLIC_BASE_URL};const requests=[];

@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { chromium } from 'playwright';
+import { fileURLToPath } from 'node:url';
 let server, browser, origin;
 const proof = process.env.RUSHES_UI_PROOF ?? await mkdtemp(`${tmpdir()}/rushes-ui-`);
 const config = {revision:'fixture',billingMode:'test',googleConfigured:true,billingConfigured:true,streamConfigured:true,captureEnabled:true,hostingEnabled:true,signupEnabled:true,priceUSD:15,limits:{maxTakeSeconds:600,width:1280,height:720,fps:30,monthlyUploadSeconds:6000,retainedSeconds:18000,deliverySeconds:60000,activeRawBytes:2147483648,rawRetentionDays:7,monthlyPriceUSD:15}};
@@ -15,7 +16,7 @@ const recording = {id:'fixture-video',title:'Walkthrough for the team',createdAt
 before(async()=>{
   await mkdir(proof,{recursive:true});
   const socket=createServer(); await new Promise(resolve=>socket.listen(0,'127.0.0.1',resolve)); const port=socket.address().port; await new Promise(resolve=>socket.close(resolve)); origin=`http://127.0.0.1:${port}`;
-  server=spawn(process.execPath,[new URL('../node_modules/vite/bin/vite.js',import.meta.url).pathname,'--host','127.0.0.1','--port',String(port),'--strictPort'],{cwd:new URL('..',import.meta.url).pathname,stdio:['ignore','pipe','pipe']});
+  server=spawn(process.execPath,[fileURLToPath(new URL('../node_modules/vite/bin/vite.js',import.meta.url)),'--host','127.0.0.1','--port',String(port),'--strictPort'],{cwd:fileURLToPath(new URL('..',import.meta.url)),stdio:['ignore','pipe','pipe']});
   let output='';server.stdout.on('data',data=>{output+=data;});server.stderr.on('data',data=>{output+=data;});
   for(let attempt=0;attempt<100;attempt++){try{const result=await fetch(origin);if(result.ok)break;}catch{}if(server.exitCode!==null)throw new Error(output);await new Promise(resolve=>setTimeout(resolve,50));if(attempt===99)throw new Error(`Vite unavailable: ${output}`);}
   browser=await chromium.launch({headless:true,...(process.env.RUSHES_CHROME ? {executablePath:process.env.RUSHES_CHROME} : {channel:'chromium'}),args:['--use-fake-device-for-media-stream']});console.log(`Isolated Chromium ${browser.version()} on ${process.platform}`);
