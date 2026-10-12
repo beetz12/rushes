@@ -115,6 +115,7 @@ export const recordingOptionsSchema = z.object({
   mic: z.string().max(300),
   systemAudio: z.boolean(),
   autoShare: z.boolean().default(false),
+  editorCommandTemplate: z.string().max(10000).default(''),
   countdownSeconds: countdownSecondsSchema,
   bubbleSize: z.union([z.literal(160), z.literal(200), z.literal(280)]),
   cursor: z.enum(['baked', 'data']).optional(),
@@ -137,6 +138,7 @@ export const defaultOptions: RecordingOptions = {
   mic: 'none',
   systemAudio: false,
   autoShare: false,
+  editorCommandTemplate: '',
   countdownSeconds: 3,
   bubbleSize: 200,
 };
@@ -227,6 +229,9 @@ export interface RushesAPI {
   onEvent(listener: (event: EngineEvent) => void): () => void;
   window(action: string, value?: number, x?: number, y?: number): Promise<any>;
   exportFile(id: string, preset: string, atMs?: number): Promise<any>;
+  openEditor(
+    id: string,
+  ): Promise<{ canceled?: boolean; revealed?: boolean; started?: boolean; path?: string }>;
   previewFile(id: string): Promise<{ url: string; path: string; durationMs: number }>;
   media(path: string): Promise<string>;
   selectArea(area: { x: number; y: number; width: number; height: number }): Promise<void>;

@@ -179,8 +179,16 @@ function App() {
   }, [options.camera, view]);
   const updateOptions = (change: Partial<RecordingOptions>) => {
     const next = { ...options, ...change };
-    setOptions(next);
-    void api.saveOptions(next).catch((e) => setError(String(e)));
+    return api.saveOptions(next).then(
+      () => {
+        setOptions(next);
+        return true;
+      },
+      (error) => {
+        setError(String(error));
+        return false;
+      },
+    );
   };
   const start = () =>
     run(async () => {
@@ -1908,6 +1916,22 @@ function Review({ id, back, run, setNote, trashed }: any) {
             {exportBusy ? 'Exporting…' : 'Export recording'}
           </button>
           <button
+            className="secondary full-width"
+            onClick={() =>
+              run(async () => {
+                const result = await api.openEditor(id);
+                if (!result.canceled)
+                  setNote(
+                    result.revealed
+                      ? 'Raw originals exported and revealed in Finder.'
+                      : 'Editor command started with raw originals.',
+                  );
+              })
+            }
+          >
+            Open in editor
+          </button>
+          <button
             className="primary full-width"
             disabled={shareBusy}
             onClick={() =>
@@ -1982,7 +2006,13 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
   const [cloud, setCloud] = useState<any>({ provider: 'none', configured: false }),
     [provider, setProvider] = useState('none'),
     [fields, setFields] = useState<Record<string, string>>({ region: 'auto' }),
-    [test, setTest] = useState('');
+    [test, setTest] = useState(''),
+    [editorTemplate, setEditorTemplate] = useState(options.editorCommandTemplate ?? ''),
+    [editorStatus, setEditorStatus] = useState('');
+  useEffect(
+    () => setEditorTemplate(options.editorCommandTemplate ?? ''),
+    [options.editorCommandTemplate],
+  );
   useEffect(() => {
     const reload = () =>
       api.cloudSettings().then((v) => {
@@ -2064,6 +2094,44 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
           <button className="text-button" onClick={() => api.window('acknowledgements')}>
             About Rushes · Acknowledgements
           </button>
+          <hr />
+          <h3>Open in editor</h3>
+          <label className="field">
+            Editor command (optional)
+            <input
+              value={editorTemplate}
+              maxLength={10000}
+              autoComplete="off"
+              placeholder={
+                'myeditor --screen {screen} --camera {camera} --offset-ms {cameraOffsetMs}'
+              }
+              onChange={(event) => {
+                setEditorTemplate(event.target.value);
+                setEditorStatus('');
+              }}
+            />
+          </label>
+          <p className="fine-print">
+            Leave empty to export raw originals and reveal them in Finder. Supported placeholders:{' '}
+            {'{screen}, {camera}, {mic}, {system}, {package}, {cameraOffsetMs}'}. Quote paths or
+            arguments containing spaces.
+          </p>
+          <button
+            className="secondary"
+            onClick={() =>
+              run(async () => {
+                if (await updateOptions({ editorCommandTemplate: editorTemplate }))
+                  setEditorStatus('Editor command saved.');
+              })
+            }
+          >
+            Save editor command
+          </button>
+          {editorStatus && (
+            <p className="fine-print" role="status">
+              {editorStatus}
+            </p>
+          )}
         </section>
         <section className="settings-card">
           <div className="settings-card-header">

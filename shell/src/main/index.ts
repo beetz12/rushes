@@ -27,6 +27,7 @@ import { EngineSupervisor } from './engine';
 import { SharingService } from './sharing';
 import { createShareDispatcher } from './share-dispatch';
 import { AutoShare, ViewNotifications } from './share-lifecycle';
+import { openInEditor, editorArguments } from './editor-handoff';
 import { atomicJSON, atomicBytes } from './atomic';
 import { startShellServer } from './shell-server';
 import { MediaRegistry, parseRange, mimeType } from './media';
@@ -652,7 +653,9 @@ async function ready() {
     return presets;
   });
   handle('rushes:save-options', async (value) => {
-    options = recordingOptionsSchema.parse(value);
+    const next = recordingOptionsSchema.parse(value);
+    if (next.editorCommandTemplate.trim()) editorArguments(next.editorCommandTemplate);
+    options = next;
     await writeOptions();
   });
   handle('rushes:select-area', async (value) => {
@@ -786,7 +789,7 @@ async function ready() {
     const url = await media.allowFile(path);
     return { ...result, url, path };
   });
-  handle('rushes:export-file', async (value) => {
+  const exportFile = async (value: unknown) => {
     const v = z
       .object({
         id: z.string().min(1).max(200),
@@ -866,7 +869,40 @@ async function ready() {
       );
     exportedFiles.add(path);
     return { ...result, path };
-  });
+  };
+  handle('rushes:export-file', exportFile);
+  handle('rushes:open-editor', (value) =>
+    openInEditor(z.string().min(1).max(200).parse(value), options.editorCommandTemplate, {
+      show: (id) => supervisor.client.request('show', { id }),
+      storageRoot: recordingsRoot,
+      exportTracks: (id) => exportFile({ id, preset: 'editor-tracks' }),
+      reveal: (path) => shell.showItemInFolder(path),
+      launch: (executable, args) =>
+        new Promise<void>((resolve, reject) => {
+          const child = spawn(executable, args, { shell: false, detached: true, stdio: 'ignore' });
+          child.once('error', () =>
+            reject(
+              Object.assign(
+                new Error('The editor command could not start. Check its executable in Settings.'),
+                { code: 'editor-launch-failed' },
+              ),
+            ),
+          );
+          child.once('spawn', () => {
+            child.unref();
+            resolve();
+          });
+          child.once('exit', (code) => {
+            if (code !== null && code !== 0)
+              broadcast({
+                event: 'warning',
+                code: 'editor-command-failed',
+                message: `The editor command exited with code ${code}. Check its arguments in Settings.`,
+              });
+          });
+        }),
+    }),
+  );
   handle('rushes:cloud-settings', () => ({
     provider: cloudSettings.provider,
     configured: cloudSettings.provider !== 'none',
