@@ -39,3 +39,20 @@ Commit only owned paths in this isolated branch. Fresh read-only independent
 review follows before root packages and updates the app. User account/keychain
 input is human-only if prompted. GitHub repo is public: no push/PR/publication
 without root's concrete review and David approval. No shared Beads write by agents.
+
+Preview-tail amendment approved by root after the writer inspected both queues:
+source JPEG work and SocketLineIO's pending preview mailbox can outlive a warm
+acknowledgment. One writer additionally owns EngineController.swift, a narrowly
+scoped PreviewPublication helper under Sources/RushCore/Control if needed,
+CameraSource.swift only if needed for stop ownership, and targeted native tests.
+Keep all other Swift business files read-only; report any further prerequisite.
+The exact additional seam is an opaque previewToken in camera.preview.start and
+camera.preview.subscribe results and every camera-preview result. Controller
+captures a token per idle warm/recording rig; publication drops superseded tokens.
+Shell's shared contracts own the declaration, install the acknowledged token for
+idle or recording preview, and discard mismatched JPEGs even if socket ordering
+delivers an old frame after a new acknowledgment. This is lifecycle correlation,
+not a secret or authority token. Preserve original image/device/recording behavior
+and handle missing/obsolete acknowledgments without showing a stale preview.
+Document the original design before coding, test old/new callback and transport
+orders without hardware, and do not claim a source-queue drain alone fixes it.
