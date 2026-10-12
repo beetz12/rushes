@@ -34,6 +34,7 @@ import { videoExportRequest } from '../shared/review-draft';
 import { atomicJSON, atomicBytes } from './atomic';
 import { OnboardingStore } from './onboarding-store';
 import { CameraOverlayLifecycle, recoveredBubbleHidden } from './camera-overlay';
+import { openAreaPicker } from './area-picker';
 import { startShellServer } from './shell-server';
 import { MediaRegistry, parseRange, mimeType } from './media';
 import {
@@ -838,11 +839,23 @@ async function ready() {
       case 'hide-bubble':
         return hideCameraBubble();
       case 'area': {
+        if (captureBusy()) throw new Error('Stop the recording before selecting an area.');
+        const existing = windows.get('area');
+        if (existing && !existing.isDestroyed()) {
+          existing.show();
+          existing.focus();
+          return;
+        }
         const selected =
           screen.getAllDisplays().find((d) => `display-${d.id}` === options.source) ??
           screen.getPrimaryDisplay();
-        const b = selected.bounds;
-        windowFor('area', { ...b, fullscreen: true, backgroundColor: '#00000000' });
+        const recorder = windows.get('recorder');
+        openAreaPicker(
+          selected.bounds,
+          (config) => windowFor('area', config),
+          recorder,
+          () => !quitting && !captureBusy() && windows.get('recorder') === recorder,
+        );
         return;
       }
       case 'cancel-area':
