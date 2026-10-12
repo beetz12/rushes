@@ -39,6 +39,7 @@ export type DraftStore = {
 export type CaptureInputs = {
   id: string; title: string; mode: CaptureMode; screen?: MediaStream; camera?: MediaStream;
   microphone?: MediaStream; store: DraftStore; persistent: boolean; backupFolder: boolean;
+  cloudRecordingId?: string;
   bubble?: BubblePlacement; onState?: (state: CaptureState) => void;
   onWarning?: (message: string) => void; onCheckpoint?: (manifest: DraftManifest) => void;
 };
