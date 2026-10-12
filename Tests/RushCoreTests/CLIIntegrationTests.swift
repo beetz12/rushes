@@ -288,12 +288,17 @@ final class EngineHarness: @unchecked Sendable {
     let cliURL: URL
     let socketPath: URL
     let recordingsRoot: URL
+    private let engineURL: URL
     private let indexPath: URL
-    private let process: Process
+    private var process: Process?
     private let outputLock = NSLock()
     private var outputText = ""
+    private var bootID = 0
+    private var stdoutHandle: FileHandle?
+    private var stderrHandle: FileHandle?
 
     init(engineURL: URL, cliURL: URL) {
+        self.engineURL = engineURL
         self.cliURL = cliURL
         let scratch = FileManager.default.temporaryDirectory
             .appendingPathComponent("cli-\(UUID().uuidString.prefix(8))", isDirectory: true)
@@ -303,8 +308,29 @@ final class EngineHarness: @unchecked Sendable {
         self.socketPath = URL(fileURLWithPath: "/tmp/rctl-cli-\(tag)/control.sock")
         self.recordingsRoot = scratch.appendingPathComponent("root", isDirectory: true)
         self.indexPath = scratch.appendingPathComponent("index.sqlite")
-        self.process = Process()
+        Self.installCleanupOnce()
+        boot()
+    }
 
+    /// The stub engine can exit after a take on the hosted runner (the
+    /// process is gone and the socket no longer answers). Later CLI calls
+    /// use the same recordings root and index, so boot another one instead
+    /// of failing the suite with `engine-unreachable`.
+    private func ensureRunning() {
+        if process?.isRunning == true { return }
+        boot()
+    }
+
+    private func boot() {
+        stdoutHandle?.readabilityHandler = nil
+        stderrHandle?.readabilityHandler = nil
+        outputLock.lock()
+        bootID += 1
+        let bootID = bootID
+        outputText = ""
+        outputLock.unlock()
+
+        let process = Process()
         process.executableURL = engineURL
         process.arguments = [
             "--socket-path", socketPath.path,
@@ -313,16 +339,21 @@ final class EngineHarness: @unchecked Sendable {
             "--capture-stub",
         ]
         let out = Pipe()
+        let err = Pipe()
         process.standardOutput = out
-        process.standardError = Pipe()
-        out.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        process.standardError = err
+        let capture: (FileHandle) -> Void = { [weak self] handle in
             let chunk = String(data: handle.availableData, encoding: .utf8) ?? ""
             guard !chunk.isEmpty, let self else { return }
             self.outputLock.lock()
-            self.outputText += chunk
+            if self.bootID == bootID { self.outputText += chunk }
             self.outputLock.unlock()
         }
-        Self.installCleanupOnce()
+        out.fileHandleForReading.readabilityHandler = capture
+        err.fileHandleForReading.readabilityHandler = capture
+        stdoutHandle = out.fileHandleForReading
+        stderrHandle = err.fileHandleForReading
+        self.process = process
         do {
             try process.run()
             engineHarnessProcesses.append(process)
@@ -347,7 +378,7 @@ final class EngineHarness: @unchecked Sendable {
     }
 
     deinit {
-        if process.isRunning {
+        if let process, process.isRunning {
             process.terminate()
         }
     }
@@ -355,13 +386,15 @@ final class EngineHarness: @unchecked Sendable {
     func runCLI(
         _ arguments: [String], timeout: TimeInterval
     ) throws -> (status: Int32, stdout: String, stderr: String) {
+        ensureRunning()
         let result = try runCLIOnce(arguments, timeout: timeout)
         // Under the full suite's parallel load a connect can be refused
         // transiently (exit 4) while the engine is mid-catalog-query; one
         // bounded retry keeps the integration test about the CLI, not about
-        // machine load.
+        // machine load. A dead engine is booted again first.
         if result.status == 4 {
             Thread.sleep(forTimeInterval: 2)
+            ensureRunning()
             return try runCLIOnce(arguments, timeout: timeout)
         }
         return result
