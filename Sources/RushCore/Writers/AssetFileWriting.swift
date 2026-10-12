@@ -100,6 +100,7 @@ internal final class AVAssetFileWriter: TrackFileWriting, @unchecked Sendable {
     private let writer: AVAssetWriter
     private let input: AVAssetWriterInput
     private let adaptor: AVAssetWriterInputPixelBufferAdaptor?
+    private var firstVideoInput: String?
 
     init(configuration: TrackWriterConfiguration, codec: VideoCodec) throws {
         outputURL = configuration.outputURL
@@ -155,7 +156,32 @@ internal final class AVAssetFileWriter: TrackFileWriting, @unchecked Sendable {
     }
 
     var failureDescription: String? {
-        writer.error?.localizedDescription
+        writer.error.map { Self.describeFailure($0 as NSError, videoInput: firstVideoInput) }
+    }
+
+    /// Diagnostics deliberately omit arbitrary user-info values and imagery.
+    /// Native domains/codes survive localization and distinguish encoder errors.
+    static func describeFailure(_ error: NSError, videoInput: String? = nil) -> String {
+        var codes: [String] = []
+        var current: NSError? = error
+        var visited = Set<ObjectIdentifier>()
+        while let native = current, codes.count < 4,
+              visited.insert(ObjectIdentifier(native)).inserted {
+            codes.append("\(native.domain)(\(native.code))")
+            current = native.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        let input = videoInput.map { "; first video input \($0)" } ?? ""
+        return "\(error.localizedDescription) [\(codes.joined(separator: " <- "))]\(input)"
+    }
+
+    static func videoInputDescription(_ pixelBuffer: CVPixelBuffer) -> String {
+        let format = CVPixelBufferGetPixelFormatType(pixelBuffer)
+        let bytes = stride(from: 24, through: 0, by: -8).map { shift -> UInt8 in
+            let byte = UInt8(truncatingIfNeeded: format >> shift)
+            return (32...126).contains(byte) ? byte : 46
+        }
+        let fourCC = String(bytes: bytes, encoding: .ascii) ?? "????"
+        return "\(fourCC)/\(format) \(CVPixelBufferGetWidth(pixelBuffer))x\(CVPixelBufferGetHeight(pixelBuffer))"
     }
 
     var isReadyForMoreMediaData: Bool {
@@ -174,6 +200,7 @@ internal final class AVAssetFileWriter: TrackFileWriting, @unchecked Sendable {
     @discardableResult
     func appendVideoFrame(_ pixelBuffer: CVPixelBuffer, mediaTimeNs: Int64) -> Bool {
         guard let adaptor else { return false }
+        if firstVideoInput == nil { firstVideoInput = Self.videoInputDescription(pixelBuffer) }
         // The adaptor throws an ObjC exception (not a false return) when a
         // pixel buffer is appended while the input is not ready, so gate on
         // readiness here and report "not now" as false.

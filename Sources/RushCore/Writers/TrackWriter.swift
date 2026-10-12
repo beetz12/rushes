@@ -503,7 +503,8 @@ public final class TrackWriter: @unchecked Sendable {
     /// A consistent snapshot of the writer's health and progress.
     public func status() -> TrackWriterStatus {
         queue.sync {
-            TrackWriterStatus(
+            if finalizeState == .idle, let backend { noteBackendFailure(backend) }
+            return TrackWriterStatus(
                 kind: configuration.kind,
                 framesWritten: framesWritten,
                 silenceFramesWritten: silenceFramesWritten,
@@ -582,6 +583,10 @@ public final class TrackWriter: @unchecked Sendable {
             framesDropped += Int64(pendingVideo.count)
             pendingVideo.removeAll()
 
+            // Preserve the native encoder failure before cancellation can
+            // replace it, including failures before any frame was accepted.
+            noteBackendFailure(backend)
+
             guard sessionBegun, wroteAnySample else {
                 // QuickTime has no representation for an empty track: remove
                 // the file and report failure (the session layer treats this
@@ -589,7 +594,6 @@ public final class TrackWriter: @unchecked Sendable {
                 backend.cancelWriting()
                 try? FileManager.default.removeItem(at: configuration.outputURL)
                 finalizeState = .failed
-                failureText = failureText ?? "no samples were written"
                 return
             }
             guard backend.currentState == .writing else {

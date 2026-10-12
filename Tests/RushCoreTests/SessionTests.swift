@@ -663,7 +663,7 @@ struct RecordingSessionTests {
         #expect(await session.snapshot().packagePath == nil)
     }
 
-    @Test("stopEarly finalizes footage with an ended-early warning")
+    @Test("Fatal stopEarly fails the take while retaining playable footage")
     func stopEarlyKeepsFootage() async throws {
         let root = try tempRoot()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -687,17 +687,159 @@ struct RecordingSessionTests {
 
         let outcome = try await session.stopEarly(
             code: "stream-error", message: "the display went away")
-        #expect(outcome.status == .complete)
+        #expect(outcome.status == .failed)
         #expect(outcome.durationNs == second)
 
         let manifest = try package.readManifest()
-        #expect(manifest.status == .complete)
+        #expect(manifest.status == .failed)
         let codes = manifest.warnings.map(\.code)
         #expect(codes.contains("ended-early"))
         #expect(outcome.warnings.contains {
             $0.code == "ended-early" && $0.message?.contains("stream-error") == true
         })
         #expect(manifest.tracks.allSatisfy { $0.present })
+        #expect(outcome.tracks.allSatisfy { $0.finalizeState == .finalized })
+        #expect(await session.state == .failed)
+        let report = await PackageVerifier().verify(package)
+        #expect(!report.ok)
+    }
+
+    @Test("A failed camera writer fails the take and preserves other tracks", arguments: [0, 2])
+    func failedCameraKeepsOtherTracks(acceptedCameraFrames: Int) async throws {
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let hostClock = FakeHostClock(12_000_000_000_000)
+        let session = makeSession(root: root, clock: hostClock, opener: { configuration, clock in
+            if configuration.kind == .camera {
+                return try TrackWriter(configuration: configuration, clock: clock,
+                    factory: FailingCameraFactory(acceptedFrames: acceptedCameraFrames))
+            }
+            return try h264WriterOpener(configuration, clock)
+        })
+        let package = try await session.start(fourTrackRequest())
+        let epoch = try await session.openGate()
+        for index in 0..<3 {
+            let timestamp = epoch + Int64(index) * 33_333_333
+            session.appendVideo(makeVideoBuffer(hostNs: timestamp), for: .screen)
+            session.appendVideo(makeVideoBuffer(hostNs: timestamp), for: .camera)
+            session.appendAudio(makeAudioBuffer(hostNs: timestamp), for: .microphone)
+            session.appendAudio(makeAudioBuffer(hostNs: timestamp), for: .systemAudio)
+        }
+        hostClock.set(epoch + 100_000_000)
+        let outcome = try await session.stop()
+        #expect(outcome.status == .failed)
+        #expect(await session.state == .failed)
+        #expect(outcome.durationNs == 100_000_000)
+        #expect(outcome.tracks.count == 4)
+        #expect(outcome.tracks.filter { $0.kind != .camera }.allSatisfy {
+            $0.finalizeState == .finalized && $0.framesWritten > 0
+        })
+        let manifest = try package.readManifest()
+        #expect(manifest.status == .failed)
+        #expect(manifest.tracks.filter { $0.kind != .camera }.allSatisfy { $0.present })
+        #expect(manifest.warnings.contains {
+            $0.code == "track-failed" && $0.message?.contains("camera encoder fixture failure") == true
+        })
+        let camera = try #require(manifest.tracks.first { $0.kind == .camera })
+        #expect(camera.present == (acceptedCameraFrames > 0))
+        if acceptedCameraFrames > 0 {
+            #expect(try Data(contentsOf: package.trackURL(for: .camera)) == FailingCameraFileWriter.partialBytes)
+        }
+        let report = await PackageVerifier().verify(package)
+        #expect(!report.ok)
+    }
+
+    @Test("Four healthy requested tracks complete and decode successfully")
+    func fourTracksComplete() async throws {
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let hostClock = FakeHostClock(12_500_000_000_000)
+        let session = makeSession(root: root, clock: hostClock)
+        let package = try await session.start(fourTrackRequest())
+        let epoch = try await session.openGate()
+        for index in 0..<5 {
+            let timestamp = epoch + Int64(index) * 33_333_333
+            for kind: TrackKind in [.screen, .camera] {
+                session.appendVideo(makeVideoBuffer(hostNs: timestamp), for: kind)
+            }
+            for kind: TrackKind in [.microphone, .systemAudio] {
+                session.appendAudio(makeAudioBuffer(hostNs: timestamp), for: kind)
+            }
+            try await Task.sleep(for: .milliseconds(34))
+        }
+        hostClock.set(epoch + 200_000_000)
+        let outcome = try await session.stop()
+        #expect(outcome.status == .complete)
+        #expect(outcome.tracks.count == 4)
+        #expect(outcome.tracks.allSatisfy { $0.finalizeState == .finalized && $0.errorDescription == nil })
+        let manifest = try package.readManifest()
+        #expect(manifest.tracks.count == 4)
+        #expect(manifest.tracks.allSatisfy { $0.present })
+        let report = await PackageVerifier().verify(package)
+        #expect(report.ok)
+        #expect(report.trackChecks.count == 4)
+        #expect(report.trackChecks.allSatisfy { $0.ok && !$0.skipped })
+    }
+
+    @Test("Stopping before health polling cannot hide a camera input failure")
+    func failedCameraInputBeforePolling() async throws {
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let hostClock = FakeHostClock(12_600_000_000_000)
+        let session = makeSession(root: root, clock: hostClock)
+        let package = try await session.start(fourTrackRequest())
+        let epoch = try await session.openGate()
+        // A malformed camera callback carries a sample without an image.
+        // Later valid frames can still finalize, but cannot erase the failure.
+        session.appendVideo(makeAudioBuffer(hostNs: epoch), for: .camera)
+        for kind: TrackKind in [.screen, .camera] {
+            session.appendVideo(makeVideoBuffer(hostNs: epoch), for: kind)
+        }
+        for kind: TrackKind in [.microphone, .systemAudio] {
+            session.appendAudio(makeAudioBuffer(hostNs: epoch), for: kind)
+        }
+        hostClock.set(epoch + 100_000_000)
+        let outcome = try await session.stop()
+        #expect(outcome.status == .failed)
+        #expect(outcome.tracks.allSatisfy { $0.finalizeState == .finalized })
+        let manifest = try package.readManifest()
+        #expect(manifest.tracks.allSatisfy { $0.present })
+        #expect(manifest.warnings.contains {
+            $0.code == "track-failed" && $0.message?.contains("no image buffer") == true
+        })
+        #expect(await PackageVerifier().verify(package).ok == false)
+    }
+
+    @Test("Camera loss before the first camera frame remains a warning")
+    func cameraLossCanLeaveEmptyTrack() async throws {
+        let root = try tempRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let hostClock = FakeHostClock(12_750_000_000_000)
+        let session = makeSession(root: root, clock: hostClock)
+        let package = try await session.start(fourTrackRequest())
+        let epoch = try await session.openGate()
+        session.appendVideo(makeVideoBuffer(hostNs: epoch), for: .screen)
+        for kind: TrackKind in [.microphone, .systemAudio] {
+            session.appendAudio(makeAudioBuffer(hostNs: epoch), for: kind)
+        }
+        hostClock.set(epoch + 100_000_000)
+        await session.recordWarning(code: "camera-lost", message: "fixture camera disconnected")
+        await session.endCameraAtLoss()
+        hostClock.set(epoch + 200_000_000)
+        let outcome = try await session.stop()
+        #expect(outcome.status == .complete)
+        let manifest = try package.readManifest()
+        #expect(manifest.tracks.first { $0.kind == .camera }?.present == false)
+        #expect(manifest.warnings.contains { $0.code == "camera-lost" })
+        let report = await PackageVerifier().verify(package)
+        #expect(report.ok)
+    }
+
+    private func fourTrackRequest() -> SessionRequest {
+        SessionRequest(screen: .display(id: "display-1"),
+            screenDimensions: .init(width: 320, height: 240),
+            cameraId: "dev-facecam", cameraDimensions: .init(width: 320, height: 240),
+            microphoneId: "dev-mic", systemAudio: true, countdownSeconds: 0)
     }
 
     @Test("recordWarning lands in the manifest and the log")
@@ -822,4 +964,37 @@ struct RecordingSessionTests {
         var isDirectory: ObjCBool = false
         #expect(FileManager.default.fileExists(atPath: package.folderURL.path, isDirectory: &isDirectory))
     }
+}
+
+private struct FailingCameraFactory: TrackFileWritingFactory {
+    let acceptedFrames: Int
+    func makeWriter(configuration: TrackWriterConfiguration, codec: VideoCodec) throws -> any TrackFileWriting {
+        FailingCameraFileWriter(outputURL: configuration.outputURL, acceptedFrames: acceptedFrames)
+    }
+}
+
+private final class FailingCameraFileWriter: TrackFileWriting {
+    static let partialBytes = Data("preserved partial camera fixture".utf8)
+    let outputURL: URL
+    private let acceptedFrames: Int
+    private var appends = 0
+    private(set) var currentState: FileWritingState = .idle
+    var failureDescription: String? { currentState == .failed ? "camera encoder fixture failure" : nil }
+    var isReadyForMoreMediaData: Bool { currentState == .writing }
+    init(outputURL: URL, acceptedFrames: Int) {
+        self.outputURL = outputURL
+        self.acceptedFrames = acceptedFrames
+    }
+    func startWriting() -> Bool { currentState = .writing; return true }
+    func startSession() {}
+    func appendVideoFrame(_ pixelBuffer: CVPixelBuffer, mediaTimeNs: Int64) -> Bool {
+        guard appends < acceptedFrames else { currentState = .failed; return false }
+        appends += 1
+        try? Self.partialBytes.write(to: outputURL)
+        return true
+    }
+    func appendAudioSamples(_ sampleBuffer: CMSampleBuffer) -> Bool { false }
+    func markInputFinished() {}
+    func finishWriting(completion: @escaping @Sendable () -> Void) { completion() }
+    func cancelWriting() { currentState = .failed }
 }

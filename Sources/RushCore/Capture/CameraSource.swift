@@ -44,6 +44,19 @@ public enum CameraFormatChoice {
     }
 }
 
+/// Keep device-native formats out of the eight-bit movie encoder input.
+/// Availability depends on the attached device's current active format.
+internal enum CameraPixelFormatChoice {
+    static func choose(from available: [OSType]) -> OSType? {
+        let preferences: [OSType] = [
+            kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange,
+            kCVPixelFormatType_420YpCbCr8BiPlanarFullRange,
+            kCVPixelFormatType_32BGRA,
+        ]
+        return preferences.first { available.contains($0) }
+    }
+}
+
 /// A camera's stable identity, for reconnection matching (docs/PLAN.md,
 /// capture-camera: "a reconnected camera is found again by its unique id or
 /// model id").
@@ -321,7 +334,6 @@ public final class CameraSource: @unchecked Sendable {
         previewEncoder: any PreviewFrameEncoding,
         makeVideoOutput: @escaping @Sendable () -> AVCaptureVideoDataOutput = {
             let output = AVCaptureVideoDataOutput()
-            output.videoSettings = [:]
             // The writer queue is the pacing authority; late preview frames
             // are the cheapest to drop.
             output.alwaysDiscardsLateVideoFrames = true
@@ -424,10 +436,21 @@ public final class CameraSource: @unchecked Sendable {
             return (nil, "camera input could not be configured")
         }
         let output = makeVideoOutput()
-        if session.canAddOutput(output) {
-            session.addOutput(output)
+        guard session.canAddOutput(output) else {
+            session.commitConfiguration()
+            return (nil, "camera video output could not be configured")
         }
+        session.addOutput(output)
         session.commitConfiguration()
+        // Empty videoSettings asks for the device's native format, which can
+        // differ from the eight-bit pixel formats accepted by our movie path.
+        // Query after attaching the output because availability follows the
+        // connected device's active format (AVCaptureVideoDataOutput.h).
+        guard let pixelFormat = CameraPixelFormatChoice.choose(
+            from: output.availableVideoPixelFormatTypes) else {
+            return (nil, "camera offers no supported eight-bit video output")
+        }
+        output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: pixelFormat]
         Self.pinFrameDuration(to: device)
         let forwarder = CameraFrameForwarder(owner: self, converter: nil)
         output.setSampleBufferDelegate(forwarder, queue: frameQueue)

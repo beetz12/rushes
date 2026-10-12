@@ -73,7 +73,8 @@ public enum SessionError: Error, Equatable, Sendable, CustomStringConvertible {
 public struct SessionOutcome: Equatable, Sendable {
 
     /// The package's life-cycle status after the writers finished:
-    /// `complete` when any track holds footage, else `failed`.
+    /// `complete` when requested tracks finished without a fatal failure.
+    /// A failed take may still contain usable or partial footage.
     public let status: RecordingManifest.Status
     public let recordingID: String
     public let packageURL: URL
@@ -420,7 +421,7 @@ public actor RecordingSession {
 
     /// Stops the take: every track is finalized to one common media end
     /// time, each bounded by five seconds, and the manifest is written with
-    /// status `complete` (or `failed` when no track holds footage).
+    /// status `complete` when requested tracks finished, otherwise `failed`.
     ///
     /// Stopping from `armed` (the countdown was cancelled) simply finds no
     /// samples: the writers report empty tracks and the take ends `failed`
@@ -441,10 +442,10 @@ public actor RecordingSession {
         var text = code
         if let message { text += ": \(message)" }
         recordWarning(code: "ended-early", message: text)
-        return try await finishInternal()
+        return try await finishInternal(failedEarly: true)
     }
 
-    private func finishInternal() async throws -> SessionOutcome {
+    private func finishInternal(failedEarly: Bool = false) async throws -> SessionOutcome {
         guard [.armed, .recording, .paused].contains(state) else {
             throw SessionError.wrongState(event: "stop", state: state)
         }
@@ -477,11 +478,17 @@ public actor RecordingSession {
         }
 
         var anyFootage = false
+        var failedTrack = false
         if var workingManifest = manifest {
             for index in workingManifest.tracks.indices {
                 let kind = workingManifest.tracks[index].kind
                 guard let status = statuses[kind] else { continue }
                 var track = workingManifest.tracks[index]
+                if let reason = status.errorDescription {
+                    failedTrack = true
+                    appendWarning(RecordingManifest.ManifestWarning(
+                        code: "track-failed", message: "\(track.file): \(reason)"))
+                }
                 switch status.finalizeState {
                 case .finalized, .degraded:
                     track.present = true
@@ -494,11 +501,18 @@ public actor RecordingSession {
                                 + "the fragmented file keeps every complete fragment"))
                     }
                 case .failed, .cancelled, .idle, .finalizing:
-                    // No usable file: the input never started. `present` is
-                    // cleared so verify skips the track instead of failing it.
-                    track.present = false
-                    appendWarning(RecordingManifest.ManifestWarning(
-                        code: "track-empty", message: "\(track.file) holds no samples"))
+                    // An encoder can fail after flushing playable fragments.
+                    // Keep that file visible for recovery/verification, while
+                    // reporting the take's failure independently of retention.
+                    track.present = status.framesWritten > 0
+                    anyFootage = anyFootage || track.present
+                    let emptyLostCamera = kind == .camera && cameraEndedNs != nil
+                        && status.framesWritten == 0 && status.errorDescription == nil
+                    if !emptyLostCamera { failedTrack = true }
+                    if status.errorDescription == nil {
+                        appendWarning(RecordingManifest.ManifestWarning(
+                            code: "track-empty", message: "\(track.file) holds no samples"))
+                    }
                 }
                 track.droppedFrames = status.framesDropped
                 track.firstSampleNs = status.firstMediaTimeNs
@@ -510,7 +524,8 @@ public actor RecordingSession {
             manifest = workingManifest
         }
 
-        let finalStatus: RecordingManifest.Status = anyFootage ? .complete : .failed
+        let finalStatus: RecordingManifest.Status = anyFootage && !failedEarly && !failedTrack
+            ? .complete : .failed
         manifest?.status = finalStatus
         manifest?.endedHostNs = nowNs()
         if let clock {
