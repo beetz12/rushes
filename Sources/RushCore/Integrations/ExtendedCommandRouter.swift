@@ -35,7 +35,8 @@ public actor ExtendedCommandRouter {
             }
             if name == "export" {
                 params += [.init(name: "preset", flag: "--preset", type: "share|full|youtube|audio|editor-tracks", description: "Export format/purpose."),
-                           .init(name: "path", flag: "-o", type: "absolute local path", description: "Destination outside masters or within renders.")]
+                           .init(name: "path", flag: "-o", type: "absolute local path", description: "Destination outside masters or within renders."),
+                           .init(name: "sourceSize", flag: "--source-size", type: "boolean", description: "YouTube output keeps source/current canvas resolution instead of forcing 1920x1080.")]
             }
             if name == "captions.export" || name == "transcribe" {
                 params.append(.init(name: "format", flag: "--format", type: "json|srt|vtt|txt", description: "Subtitle/transcript output type."))

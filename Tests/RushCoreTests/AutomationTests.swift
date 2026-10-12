@@ -30,8 +30,22 @@ struct AutomationTests {
     func validURLs() throws {
         let route = try RushURLRoute.parse(#require(URL(string: "rushes://record?mode=screen&camera=none&systemAudio=true&countdown=3")))
         #expect(route.command == "record.start"); #expect(route.arguments["systemAudio"] == .bool(true))
-        #expect(route.arguments["countdown"] == .int(3))
+        #expect(route.arguments["countdownSeconds"] == .int(3))
+        #expect(route.arguments["display"] == .string("main"))
+        #expect(route.arguments["mode"] == nil && route.arguments["target"] == nil)
         #expect(try RushURLRoute.parse(#require(URL(string: "rushes://pause"))).command == "record.pause")
+    }
+    @Test("URL selections use the engine's actual parameter contract")
+    func selectedURLTargets() throws {
+        func args(_ text: String) throws -> [String: JSONValue] { try RushURLRoute.parse(#require(URL(string: text))).arguments }
+        #expect(try args("rushes://record?mode=screen&target=display-42")["display"] == .string("display-42"))
+        #expect(try args("rushes://record?mode=window&target=window-12")["window"] == .string("window-12"))
+        #expect(try args("rushes://record?mode=region&target=10,20,800,450")["area"]?["width"] == .double(800))
+        #expect(try args("rushes://record?mode=camera&target=external")["camera"] == .string("external"))
+        #expect(try args("rushes://record?mode=audio&target=usb-mic")["mic"] == .string("usb-mic"))
+        for text in ["rushes://record?mode=window", "rushes://record?mode=region&target=1,2,nan,4", "rushes://record?mode=camera&camera=none", "rushes://record?mode=audio&systemAudio=true"] {
+            #expect(throws: ControlFailure.self) { try args(text) }
+        }
     }
     @Test("Bearer, loopback Host and Origin checks reject unsafe clients")
     func authGuards() async throws {

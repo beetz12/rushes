@@ -502,6 +502,30 @@ struct EngineControllerTests {
         #expect(exchange.lastResponse?.result?["enabled"]?.bool == false)
         _ = await controller.shutdown()
     }
+    @Test("Valid recording URLs reach capture and retain recording identity")
+    func routedRecordingURLs() async throws {
+        let scratch = try tempDirectory("recording-url")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let controller = try makeController(root: scratch.appendingPathComponent("root"), indexURL: scratch.appendingPathComponent("index.sqlite"))
+        let exchange = ControlExchange()
+        await controller.handle(.init(id: "url-start", cmd: "url.open", args: .object(["url": .string("rushes://record?mode=screen&target=main&camera=none&mic=none&systemAudio=true&countdown=0")])), context: exchange.context)
+        let started = try #require(exchange.lastResponse)
+        #expect(started.ok)
+        let id = try #require(started.result?["id"]?.string)
+        let wrong = RecordingId.generate()
+        await controller.handle(.init(id: "wrong", cmd: "url.open", args: .object(["url": .string("rushes://pause?id=\(wrong)")])), context: exchange.context)
+        #expect(exchange.lastResponse?.error?.code == "not-found")
+        for route in ["pause", "resume"] {
+            await controller.handle(.init(id: route, cmd: "url.open", args: .object(["url": .string("rushes://\(route)?id=\(id)")])), context: exchange.context)
+            #expect(exchange.lastResponse?.ok == true)
+        }
+        try await Task.sleep(for: .milliseconds(150))
+        await controller.handle(.init(id: "stop", cmd: "url.open", args: .object(["url": .string("rushes://stop?id=\(id)")])), context: exchange.context)
+        #expect(exchange.lastResponse?.ok == true)
+        #expect(exchange.lastResponse?.result?["id"]?.string == id)
+        #expect(exchange.lastResponse?.result?["status"]?.string == "complete")
+        _ = await controller.shutdown()
+    }
     @Test("Ping, version, status idle and targets answer")
     func readOnlyCommands() async throws {
         let scratch = try tempDirectory("readonly")

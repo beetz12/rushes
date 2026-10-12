@@ -6,6 +6,8 @@ public final class LoopbackMCPServer: @unchecked Sendable {
     private let listener: NWListener
     private let dispatcher: AutomationDispatcher
     private let queue = DispatchQueue(label: "rushes.mcp.http")
+    private var stopWaiters: [CheckedContinuation<Void, Never>] = []
+    private var waitingForStop = false
     public init(port: UInt16 = 0, dispatcher: AutomationDispatcher) throws {
         self.dispatcher = dispatcher
         let parameters = NWParameters.tcp
@@ -38,6 +40,26 @@ public final class LoopbackMCPServer: @unchecked Sendable {
         }
     }
     public func stop() { listener.cancel() }
+    /// Preserve the pairing port only after the old listener has released it.
+    /// All waiters and listener callbacks are owned by its serial queue.
+    public func stopAndWait() async {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                if case .cancelled = listener.state { continuation.resume(); return }
+                stopWaiters.append(continuation)
+                guard !waitingForStop else { return }
+                waitingForStop = true
+                listener.stateUpdateHandler = { [self] state in
+                    if case .cancelled = state {
+                        let waiters = stopWaiters; stopWaiters.removeAll()
+                        listener.stateUpdateHandler = nil
+                        for waiter in waiters { waiter.resume() }
+                    }
+                }
+                listener.cancel()
+            }
+        }
+    }
 }
 
 private final class MCPHTTPConnection: @unchecked Sendable {

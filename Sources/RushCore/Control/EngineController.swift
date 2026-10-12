@@ -287,6 +287,9 @@ public actor EngineController: ControlHandling {
                 throw ControlFailure(code: "invalid-url", message: "url.open requires a rushes:// URL")
             }
             let routed = try RushURLRoute.parse(url).request
+            if let wanted = routed.param("id")?.string, ["record.pause", "record.resume"].contains(routed.cmd) {
+                guard try requireActive().recordingID == wanted else { throw ControlFailure(code: "not-found", message: "The URL recording id is not the active take.") }
+            }
             return try await dispatch(.init(id: request.id, cmd: routed.cmd, args: routed.args), context: context)
         case "ping":
             return .success(

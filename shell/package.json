@@ -50,6 +50,10 @@
     ],
     "extraResources": [
       {
+        "from": "../docs/agent",
+        "to": "skills/rushes"
+      },
+      {
         "from": "../.build/release/rushcore-engine",
         "to": "bin/rushcore-engine"
       },

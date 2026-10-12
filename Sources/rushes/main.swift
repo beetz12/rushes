@@ -657,7 +657,7 @@ default:
             }
         }
         for (flag, key) in ["--wait": "wait", "--allow-asset-download": "allowAssetDownload", "--remove-fillers": "removeFillers",
-                            "--remove-silence": "removeSilence", "--level-silence": "levelSilence"] {
+                            "--remove-silence": "removeSilence", "--level-silence": "levelSilence", "--source-size": "sourceSize"] {
             if invocation.switches.contains(flag) { args[key] = .bool(true) }
         }
         if let words = invocation.flags["--word-ids"] { args["wordIds"] = .array(words.split(separator: ",").map { .string(String($0)) }) }

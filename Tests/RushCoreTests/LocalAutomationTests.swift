@@ -1,4 +1,5 @@
 import Foundation
+import Network
 import Testing
 @testable import RushCore
 
@@ -38,11 +39,41 @@ struct LocalAutomationTests {
         await service.shutdown()
         let restored = LocalAutomationService(directory: folder)
         try await restored.restore(tools: tools, handler: handler)
-        #expect(try await restored.handle(.init(id: "status", cmd: "mcp.status"), tools: tools, handler: handler)["enabled"]?.bool == true)
+        let afterRestart = try await restored.handle(.init(id: "status", cmd: "mcp.status"), tools: tools, handler: handler)
+        #expect(afterRestart["enabled"]?.bool == true)
+        #expect(afterRestart["url"]?.string == urlText)
+        #expect(try await invoke("status", token: token).1?["result"]?["isError"]?.bool == false)
+        let changed = try await restored.handle(.init(id: "mutate", cmd: "mcp.enable", args: .object(["allowMutations": .bool(true)])), tools: tools, handler: handler)
+        #expect(changed["url"]?.string == urlText && changed["token"]?.string == token)
+        #expect(try await invoke("record.start", token: token).1?["result"]?["isError"]?.bool == false)
         _ = try await restored.handle(.init(id: "disable", cmd: "mcp.disable"), tools: tools, handler: handler)
         let disabled = LocalAutomationService(directory: folder)
         try await disabled.restore(tools: tools, handler: handler)
         #expect(try await disabled.handle(.init(id: "status", cmd: "mcp.status"), tools: tools, handler: handler)["enabled"]?.bool == false)
+    }
+    @Test func occupiedPairingPortDoesNotSilentlyMoveOrChangeSavedSettings() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("mcp-port-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let service = LocalAutomationService(directory: folder)
+        let tools = [MCPTool(command: "status", description: "Status", readOnly: true)]
+        let handler: AutomationDispatcher.CommandHandler = { _ in .object(["ready": .bool(true)]) }
+        let started = try await service.handle(.init(id: "start", cmd: "mcp.enable"), tools: tools, handler: handler)
+        let settings = folder.appendingPathComponent("settings.json")
+        let before = try Data(contentsOf: settings)
+        let duplicate = LocalAutomationService(directory: folder)
+        do {
+            try await duplicate.restore(tools: tools, handler: handler)
+            Issue.record("An occupied pairing port must fail instead of changing the endpoint")
+        } catch let error as NWError {
+            if case .posix(.EADDRINUSE) = error { }
+            else { Issue.record("Expected address-in-use refusal, received \(error)") }
+        } catch { Issue.record("Expected occupied-port network refusal, received \(error)") }
+        #expect(try Data(contentsOf: settings) == before)
+        #expect(try await duplicate.handle(.init(id: "status", cmd: "mcp.status"), tools: tools, handler: handler)["enabled"]?.bool == false)
+        await service.shutdown()
+        try await duplicate.restore(tools: tools, handler: handler)
+        #expect(try await duplicate.handle(.init(id: "status", cmd: "mcp.status"), tools: tools, handler: handler)["url"] == started["url"])
+        await duplicate.shutdown()
     }
     @Test func refusesPublicCredentialAndIncorrectParameterTypes() async throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("unsafe-mcp-\(UUID().uuidString)")
