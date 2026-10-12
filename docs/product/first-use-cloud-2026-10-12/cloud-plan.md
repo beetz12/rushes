@@ -4,7 +4,7 @@ skill: graph-design
 graph: rushes-first-use-cloud
 run: 2026-10-12
 inputs: [graph.md, facts.md, sources.md, research-onboarding.md, docs/PLAN.md, README.md, cloud/README.md, worker/README.md, cloud/src/types.ts, cloud/src/worker-provider.ts, worker/src/bindings.ts, worker/src/index.ts, viewer/src/viewer.ts, primary sources S-N4-7 through S-N4-37, root live health observation]
-status: draft
+status: passed
 ---
 
 # Paid Rushes in the browser: proposed launch contract
