@@ -50,6 +50,7 @@ export type CaptureSession = {
 };
 export type BrowserConfig = {
   revision: string; googleConfigured: boolean; billingConfigured: boolean; streamConfigured: boolean;
+  billingMode: 'test' | 'live' | 'unconfigured';
   captureEnabled: boolean; hostingEnabled: boolean; signupEnabled: boolean;
   priceUSD: number; limits: typeof BROWSER_LIMITS;
 };

@@ -10,7 +10,7 @@ echo "== swift test =="
 swift test
 
 clean_paths=(Sources Tests)
-for surface in shell cloud viewer worker browser browser-worker; do
+for surface in shell cloud viewer worker browser-worker browser; do
   if [ -f "$surface/package.json" ]; then
     if [ ! -f "$surface/.nvmrc" ]; then
       echo "Missing pinned Node runtime: $surface/.nvmrc" >&2
