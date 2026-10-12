@@ -3,7 +3,7 @@ import Foundation
 /// Local postproduction services are addressed by the same engine table as
 /// recording. Sharing delegates only the credential-bearing work to the shell.
 public actor ExtendedCommandRouter {
-    public static let cloudCommands: Set<String> = ["share", "share.setup", "share.status", "share.enrich", "unshare"]
+    public static let cloudCommands: Set<String> = ["share", "share.setup", "share.status", "share.enrich", "share.policy.get", "share.policy.set", "share.feedback", "unshare"]
     public static var commands: Set<String> {
         PostproductionService.commands.union(TranscriptCommands.commands)
             .union(MetadataCommands.commands).union(cloudCommands).union(PostStopJobService.commands).union(["diagnostics"])
@@ -19,6 +19,10 @@ public actor ExtendedCommandRouter {
             "meta.set": "Set user metadata; update canonical recording title and searchable index.",
             "share": "Reserve a real processing URL; wait=true waits for video readiness. Requires configured Rushes desktop service.",
             "share.setup": "Probe configured sharing provider; never treats an unconfigured provider as success.",
+            "share.status": "Read local sharing state without changing or deleting the share.",
+            "share.policy.get": "Read this stable Worker's password-protection and expiry state; never returns a password.",
+            "share.policy.set": "Change Worker password protection or expiry at the existing link; null removes a setting.",
+            "share.feedback": "Read this Worker's playback count, comments and reactions.",
             "unshare": "Remove this recording's published share; local footage stays unchanged.",
             "diagnostics": "Export redacted textual diagnostics ZIP; excludes media/transcripts.",
             "recover": "Recover interrupted packages while idle, preserving all original footage.",
@@ -40,6 +44,10 @@ public actor ExtendedCommandRouter {
             if ["jobs.retry", "jobs.cancel"].contains(name) { params.append(.init(name: "jobId", type: "string", required: true, description: "Job UUID from jobs list.")) }
             if name == "jobs.retry" { params += [.init(name: "allowAssetDownload", type: "boolean", description: "Explicitly allow first-use Apple model setup."), .init(name: "metadataMode", type: "string", description: "apple or explicitly chosen extractive.")] }
             if name == "share" { params.append(.init(name: "wait", flag: "--wait", type: "boolean", description: "Wait for real upload/publish completion.")) }
+            if name == "share" || name == "share.policy.set" {
+                params += [.init(name: "password", flag: "--password-file", type: "string|null", description: "Worker password from a UTF-8 file; --remove-password sends null."),
+                           .init(name: "expiresAt", flag: "--expires-at", type: "string|null", description: "Future ISO date; --clear-expiry sends null.")]
+            }
             return .init(name: name, cli: [name.replacingOccurrences(of: ".", with: " ")],
                 summary: descriptions[name] ?? "\(name): validated local recording service.",
                 usage: "rushes \(name.replacingOccurrences(of: ".", with: " ")) [ID] [options]",

@@ -22,6 +22,11 @@ struct ShellBridgeTests {
         #expect(response.ok)
         #expect(response.id == "bridge")
         #expect(response.result?["cmd"]?.string == "share.setup")
+        for command in ["share.status", "share.policy.get", "share.policy.set", "share.feedback"] {
+            let forwarded = try await ShellServiceBridge(socketPath: path).forward(
+                ControlRequest(id: command, cmd: command, args: .object(["id": .string("fixture")])))
+            #expect(forwarded.ok && forwarded.result?["cmd"]?.string == command)
+        }
         #expect(chmod(path.path, 0o666) == 0)
         do {
             _ = try await ShellServiceBridge(socketPath: path).forward(ControlRequest(id: "bad", cmd: "share"))

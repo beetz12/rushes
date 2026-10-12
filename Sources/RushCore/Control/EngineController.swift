@@ -579,14 +579,15 @@ public actor EngineController: ControlHandling {
 
     private func automationTools() -> [MCPTool] {
         let reads: Set<String> = ["ping", "version", "guide", "status", "targets", "permissions.check",
-            "permissions.settings", "list", "show", "verify", "edit.get", "transcript.get", "meta.get", "share.status", "jobs.list", "teleprompter.get", "camera.blur.get", "record.geometry", "drawing.status"]
+            "permissions.settings", "list", "show", "verify", "edit.get", "transcript.get", "meta.get", "share.status", "share.policy.get", "share.feedback", "jobs.list", "teleprompter.get", "camera.blur.get", "record.geometry", "drawing.status"]
         let excluded = LocalAutomationService.commands.union(["permissions.request", "camera.preview.start", "camera.preview.stop", "camera.preview.subscribe", "url.open"])
         return ControlGuide.make(version: config.version, socketPath: config.socketPath).commands
             .filter { !excluded.contains($0.name) }.map { doc in
                 var properties: [String: JSONValue] = [:]
                 for param in doc.params {
                     let type = param.type.contains("boolean") ? "boolean" : (param.type.contains("integer") || param.type.contains("number") ? "number" : "string")
-                    properties[param.name] = .object(["type": .string(type), "description": .string(param.description)])
+                    let schemaType: JSONValue = param.type.contains("|null") ? .array([.string(type), .string("null")]) : .string(type)
+                    properties[param.name] = .object(["type": schemaType, "description": .string(param.description)])
                 }
                 let schema: JSONValue = .object(["type": .string("object"), "properties": .object(properties),
                     "required": .array(doc.params.filter(\.required).map { .string($0.name) })])

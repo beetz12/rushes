@@ -138,7 +138,10 @@ func parseCLI(_ arguments: [String]) -> CLIInvocation {
     } else if command == "analyze", !rest.isEmpty {
         invocation.command = "analyze \(rest[0])"
         parseArguments(Array(rest.dropFirst()), into: &invocation)
-    } else if command == "share", let subcommand = rest.first, ["setup", "status", "enrich"].contains(subcommand) {
+    } else if command == "share", rest.count >= 2, rest[0] == "policy", ["get", "set"].contains(rest[1]) {
+        invocation.command = "share policy \(rest[1])"
+        parseArguments(Array(rest.dropFirst(2)), into: &invocation)
+    } else if command == "share", let subcommand = rest.first, ["setup", "status", "enrich", "feedback"].contains(subcommand) {
         invocation.command = "share \(subcommand)"
         parseArguments(Array(rest.dropFirst()), into: &invocation)
     } else {
@@ -157,7 +160,7 @@ func parseArguments(_ words: [String], into invocation: inout CLIInvocation) {
         "--seconds", "--pause-at", "--area", "--cursor", "--permission", "--track", "--muted",
         "--preset", "--output", "--format", "--locale", "--summary", "--chapters", "--args", "--edit",
         "--word-ids", "--word-id", "--text", "--start-ms", "--end-ms", "--at-ms", "--speed", "--clip-id", "--layout",
-        "--width", "--height", "--fps", "--codec", "--container",
+        "--width", "--height", "--fps", "--codec", "--container", "--password-file", "--expires-at",
     ]
     var index = 0
     while index < words.count {
@@ -632,6 +635,20 @@ default:
                        "--title": "title", "--word-id": "wordId", "--text": "text", "--clip-id": "clipId",
                        "--layout": "layout", "--codec": "codec", "--container": "container"]
         for (flag, key) in strings { if let value = invocation.flags[flag] { args[key] = .string(value) } }
+        if serviceCommand == "share" || serviceCommand == "share.policy.set" {
+            if let path = invocation.flags["--password-file"] {
+                guard !invocation.switches.contains("--remove-password") else { fail("usage", "Choose a password file or password removal") }
+                do {
+                    args["password"] = .string(try String(contentsOfFile: path, encoding: .utf8).trimmingCharacters(in: .newlines))
+                } catch { fail("usage", "--password-file must name a readable UTF-8 file") }
+            }
+            if let expiry = invocation.flags["--expires-at"] {
+                guard !invocation.switches.contains("--clear-expiry") else { fail("usage", "Choose an expiry or expiry removal") }
+                args["expiresAt"] = .string(expiry)
+            }
+            if invocation.switches.contains("--remove-password") { args["password"] = .null }
+            if invocation.switches.contains("--clear-expiry") { args["expiresAt"] = .null }
+        }
         for (flag, key) in ["--start-ms": "startMs", "--end-ms": "endMs", "--at-ms": "atMs", "--speed": "speed",
                             "--width": "width", "--height": "height", "--fps": "fps"] {
             if let raw = invocation.flags[flag] {

@@ -74,6 +74,7 @@ struct ControlCLIIntegrationTests {
             "ping", "version", "guide", "status", "targets",
             "record.start", "record.stop", "record.pause", "record.resume",
             "list", "show", "verify", "selftest.sync", "analyze.clap",
+            "share.status", "share.policy.get", "share.policy.set", "share.feedback",
         ] {
             #expect(names.contains(expected), "guide is missing \(expected)")
         }
