@@ -166,11 +166,7 @@ final class NativeRenderer: @unchecked Sendable {
             let bitrate=options.preset == .youtube ? Double(dimensions.0*dimensions.1)*16_000_000/(1920*1080) : Double(dimensions.0*dimensions.1*options.fps)*0.15
             var compression:[String:Any]=[AVVideoAverageBitRateKey:Int(bitrate),AVVideoExpectedSourceFrameRateKey:options.fps,AVVideoMaxKeyFrameIntervalKey:options.fps*2]
             if options.codec == "h264" { compression[AVVideoProfileLevelKey]=AVVideoProfileLevelH264HighAutoLevel }
-            var videoSettings:[String:Any]=[AVVideoCodecKey:options.codec == "hevc" ? AVVideoCodecType.hevc : .h264,AVVideoWidthKey:dimensions.0,AVVideoHeightKey:dimensions.1,AVVideoCompressionPropertiesKey:compression]
-            if ProcessInfo.processInfo.environment["CI"] == "true" {
-                videoSettings[AVVideoEncoderSpecificationKey]=["EnableHardwareAcceleratedVideoEncoder":false]
-            }
-            let input=AVAssetWriterInput(mediaType:.video,outputSettings:videoSettings)
+            let input=AVAssetWriterInput(mediaType:.video,outputSettings:[AVVideoCodecKey:options.codec == "hevc" ? AVVideoCodecType.hevc : .h264,AVVideoWidthKey:dimensions.0,AVVideoHeightKey:dimensions.1,AVVideoCompressionPropertiesKey:compression])
             guard writer.canAdd(input) else { throw renderFailure("Cannot encode video") }
             writer.add(input); videoInput=input
             adaptor=AVAssetWriterInputPixelBufferAdaptor(assetWriterInput:input,sourcePixelBufferAttributes:[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_32BGRA,kCVPixelBufferWidthKey as String:dimensions.0,kCVPixelBufferHeightKey as String:dimensions.1,kCVPixelBufferIOSurfacePropertiesKey as String:[:]])

@@ -25,8 +25,5 @@ func fixtureH264Settings(width: Int, height: Int) -> [String: Any] {
         AVVideoCodecKey: AVVideoCodecType.h264,
         AVVideoWidthKey: width,
         AVVideoHeightKey: height,
-        AVVideoEncoderSpecificationKey: [
-            "EnableHardwareAcceleratedVideoEncoder": false,
-        ],
     ]
 }

@@ -115,11 +115,7 @@ private final class CameraBlurEncoding:@unchecked Sendable {
         output.alwaysCopiesSampleData=false
         guard reader.canAdd(output) else { throw renderFailure("Cannot decode camera for requested blur") }; reader.add(output)
         writer=try AVAssetWriter(outputURL:target,fileType:.mov)
-        var videoSettings:[String:Any]=[AVVideoCodecKey:AVVideoCodecType.h264,AVVideoWidthKey:width,AVVideoHeightKey:height,AVVideoCompressionPropertiesKey:[AVVideoAverageBitRateKey:max(1_000_000,width*height*8),AVVideoExpectedSourceFrameRateKey:min(120,max(1,fps))]]
-        if ProcessInfo.processInfo.environment["CI"] == "true" {
-            videoSettings[AVVideoEncoderSpecificationKey]=["EnableHardwareAcceleratedVideoEncoder":false]
-        }
-        input=AVAssetWriterInput(mediaType:.video,outputSettings:videoSettings)
+        input=AVAssetWriterInput(mediaType:.video,outputSettings:[AVVideoCodecKey:AVVideoCodecType.h264,AVVideoWidthKey:width,AVVideoHeightKey:height,AVVideoCompressionPropertiesKey:[AVVideoAverageBitRateKey:max(1_000_000,width*height*8),AVVideoExpectedSourceFrameRateKey:min(120,max(1,fps))]])
         guard writer.canAdd(input) else { throw renderFailure("Cannot encode processed camera") }; writer.add(input)
         adaptor=AVAssetWriterInputPixelBufferAdaptor(assetWriterInput:input,sourcePixelBufferAttributes:[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_32BGRA,kCVPixelBufferWidthKey as String:width,kCVPixelBufferHeightKey as String:height,kCVPixelBufferIOSurfacePropertiesKey as String:[:]])
     }

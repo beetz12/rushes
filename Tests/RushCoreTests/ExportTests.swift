@@ -31,7 +31,9 @@ struct SyntheticExportFixture {
         let input=AVAssetWriterInput(mediaType:.video,outputSettings:fixtureH264Settings(width:width,height:height))
         let adaptor=AVAssetWriterInputPixelBufferAdaptor(assetWriterInput:input,sourcePixelBufferAttributes:[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_32BGRA,kCVPixelBufferWidthKey as String:width,kCVPixelBufferHeightKey as String:height])
         writer.add(input); guard writer.startWriting() else { throw renderFailure("Fixture writer failed") }; writer.startSession(atSourceTime:.zero)
+        print("fixture-video begin \(frameCount)"); fflush(stdout)
         for frame in 0..<frameCount {
+            if frame == 0 || frame == frameCount - 1 { print("fixture-video frame \(frame)"); fflush(stdout) }
             try await waitUntilReadyForMedia(input, writer: writer)
             var pixel:CVPixelBuffer?
             // Fixtures need valid source pixels, independent of the encoder's
@@ -55,7 +57,9 @@ struct SyntheticExportFixture {
             guard adaptor.append(pixel,withPresentationTime:CMTime(value:Int64(frame),timescale:30)) else { throw renderFailure("Fixture append") }
         }
         input.markAsFinished(); writer.endSession(atSourceTime:CMTime(value:Int64(frameCount),timescale:30))
+        print("fixture-video finishing"); fflush(stdout)
         try await finishWriting(writer, within: 90)
+        print("fixture-video done"); fflush(stdout)
     }
     static func audio(to url:URL,frequency:Float,onsetMs:Double = 0) async throws {
         let writer=try AVAssetWriter(outputURL:url,fileType:.mov)
