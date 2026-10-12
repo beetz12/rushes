@@ -56,7 +56,7 @@ struct SyntheticExportFixture {
             guard adaptor.append(pixel,withPresentationTime:CMTime(value:Int64(frame),timescale:30)) else { throw renderFailure("Fixture append") }
         }
         input.markAsFinished(); writer.endSession(atSourceTime:CMTime(value:Int64(frameCount),timescale:30))
-        try await finishWriting(writer, within: 20)
+        try await finishWriting(writer, within: 90)
     }
     static func audio(to url:URL,frequency:Float,onsetMs:Double = 0) async throws {
         let writer=try AVAssetWriter(outputURL:url,fileType:.mov)
@@ -70,7 +70,7 @@ struct SyntheticExportFixture {
             guard input.append(sample) else { throw renderFailure(writer.error?.localizedDescription ?? "Audio fixture append") }
         }
         input.markAsFinished(); writer.endSession(atSourceTime:CMTime(seconds:2,preferredTimescale:600))
-        try await finishWriting(writer, within: 20)
+        try await finishWriting(writer, within: 90)
     }
     static func audioSample(frame:Int,count:Int,frequency:Float,onsetFrame:Int = 0) throws -> CMSampleBuffer {
         var asbd=AudioStreamBasicDescription(mSampleRate:48_000,mFormatID:kAudioFormatLinearPCM,mFormatFlags:kAudioFormatFlagIsFloat|kAudioFormatFlagIsPacked,mBytesPerPacket:4,mFramesPerPacket:1,mBytesPerFrame:4,mChannelsPerFrame:1,mBitsPerChannel:32,mReserved:0)

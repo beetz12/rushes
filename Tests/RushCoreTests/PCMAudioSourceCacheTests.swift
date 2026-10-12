@@ -71,7 +71,7 @@ private struct PCMSourceFixture {
             tailInput.markAsFinished()
         }
         writer.endSession(atSourceTime: CMTime(seconds: duration, preferredTimescale: 48_000))
-        try await finishWriting(writer, within: 20)
+        try await finishWriting(writer, within: 90)
         if let windows {
             let asset = AVURLAsset(url: encodedURL), composition = AVMutableComposition()
             let original = try await asset.loadTracks(withMediaType: .audio)[0]

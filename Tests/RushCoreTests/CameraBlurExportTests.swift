@@ -42,7 +42,7 @@ struct CameraBlurExportTests {
             guard adaptor.append(buffer,withPresentationTime:CMTime(value:Int64(frame),timescale:30)) else { throw renderFailure("Pattern fixture append") }
         }
         input.markAsFinished(); writer.endSession(atSourceTime:CMTime(seconds:2,preferredTimescale:600))
-        try await finishWriting(writer, within: 20)
+        try await finishWriting(writer, within: 90)
     }
     private func detail(_ pixels:(Int,Int,[UInt8])) -> Double {
         let (width,height,bytes)=pixels

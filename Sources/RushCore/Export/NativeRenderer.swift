@@ -306,18 +306,34 @@ func renderFailure(_ message: String) -> ControlFailure { ControlFailure(code:"r
 /// Give up and leave the caller to cancel, instead of pinning the process.
 func finishWriting(_ writer: AVAssetWriter, within seconds: Double) async throws {
     let gate = OnceGate()
-    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+    let finished: Bool = await withCheckedContinuation { continuation in
         writer.finishWriting {
-            if gate.claim() { continuation.resume() }
+            if gate.claim() { continuation.resume(returning: true) }
         }
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds) {
-            if gate.claim() { continuation.resume() }
+            if gate.claim() { continuation.resume(returning: false) }
         }
     }
-    guard writer.status == .completed else {
-        throw ControlFailure(
-            code: "encoder-stalled",
-            message: writer.error?.localizedDescription ?? "Writer did not finish within \(Int(seconds)) seconds")
+    if finished {
+        guard writer.status == .completed else {
+            throw renderFailure(writer.error?.localizedDescription ?? "Writer failed during finalize")
+        }
+        return
+    }
+    // Dropping the writer while VideoToolbox is still inside finishWriting
+    // segfaults. Keep it alive for the rest of the process.
+    StalledWriters.shared.keep(writer)
+    throw ControlFailure(code: "encoder-stalled", message: "Writer did not finish within \(Int(seconds)) seconds")
+}
+
+private final class StalledWriters: @unchecked Sendable {
+    static let shared = StalledWriters()
+    private let lock = NSLock()
+    private var held: [AVAssetWriter] = []
+    func keep(_ writer: AVAssetWriter) {
+        lock.lock()
+        held.append(writer)
+        lock.unlock()
     }
 }
 
