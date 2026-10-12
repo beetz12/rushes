@@ -21,9 +21,6 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
         chrome: [current, previous]
-    env:
-      RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-proof
-      RUSHES_UI_PROOF: ${{ runner.temp }}/rushes-browser-ui
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -46,8 +43,13 @@ jobs:
       - name: Build browser
         run: npm --prefix browser run build
       - name: Capture, UI and actual service seam checks
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-proof
+          RUSHES_UI_PROOF: ${{ runner.temp }}/rushes-browser-ui
         run: npm --prefix browser test
       - name: Independent short recording matrix
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-proof
         run: node browser/test/matrix.mjs
       - name: Protected maximum take
         if: github.event_name == 'workflow_dispatch' && inputs.maximum_take
