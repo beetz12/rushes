@@ -8,7 +8,7 @@ before(async () => {
   server = await createServer({ root: fileURLToPath(new URL('..', import.meta.url)), server: { host: '127.0.0.1', port: 0 }, logLevel: 'error' });
   server.middlewares.use('/capture-fixture', (_request, response) => { response.setHeader('Content-Type', 'text/html'); response.end('<!doctype html><title>Rushes synthetic capture test</title>'); });
   await server.listen(); origin = `http://127.0.0.1:${server.httpServer.address().port}`;
-  browser = await chromium.launch({ channel: process.env.RUSHES_CAPTURE_BROWSER || 'chrome', headless: true });
+  browser = await chromium.launch({ ...(process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE ? { executablePath: process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE } : { channel: process.env.RUSHES_CAPTURE_BROWSER || 'chrome' }), headless: true });
   console.log(`Capture runtime ${browser.version()}; isolated synthetic media only.`);
 });
 after(async () => { await browser?.close(); await server?.close(); });
