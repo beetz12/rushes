@@ -4,9 +4,11 @@
 
 Integrated: recovered selftest checkpoint, strengthened source/licence gates, package path/empty/decode checks, rapid-take full-ULID naming with legacy lookup, desktop shell first checkpoint, export/edit module and independent process/export probes. Transcription design/services are being integrated from their verified lane.
 
-Verified in component lanes: see goal result JSON and docs/design files. This status does not assert the assembled app works. Real capture currently under repair in the capture lane; root waits for its stable checkpoint before installed-app QA. Cloud account selected by David; Cloudflare R2 activation required (API10042), no external resources created.
+Current integration at 2026-10-12 00:40 UTC: assembled gate passes 306 Swift tests in 51 suites plus desktop/cloud/viewer/Worker tests, clean source count0 and license checks. Full independent process checks pass all ten contracts; export checks fully decode share/full/YouTube/audio/trim outputs and preserve master hashes and saved edits. Background services and ready-gated startup are wired. Ten-minute generated speech transcribes in5.536 seconds and on-device chapter generation passes. The package minimum OS is26.4, matching native requirements.
 
-Unverified: assembled command routing/jobs, native packaged recording/playback, independent final export/process probes, multi-width UI, full60minute soak, real cloud deployment. First unfinished step: merge native transcript/capture final commits and wire one engine command table.
+David activated R2 and authorized provisioning in his selected Cloudflare account. rushes-media, rushes-share D1 and the HTTPS Worker service are deployed; health and owner binding probes pass. Encrypted app credential import and actual published-video QA still remain.
+
+Remaining integration work: final signed app/helper packaging and installation, installed screen-only recording/playback, encrypted sharing import and live generated-video publication, final multi-width visual checks and full physical battery. The prior one-hour screen-only soak meets memory/drop/decode bounds but retains its historical Stop timeout. Camera and microphone capture tests remain paused by David; no physical all-track one-hour or clap/unplug/onboarding result is claimed.
 
 ## Capture lane checkpoint history
 Historical checkpoint below is superseded by later capture evidence; camera testing remains paused.
