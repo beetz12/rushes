@@ -90,6 +90,9 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
   let pendingBytes = 0;
   let ending: Promise<DraftManifest> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
+  let takeDeadline: ReturnType<typeof setTimeout> | undefined;
+  const takeCeilingMs = BROWSER_LIMITS.maxTakeSeconds * 1000;
+  const takeStopAtMs = takeCeilingMs - Math.min(200, takeCeilingMs / 5);
   let abortInitialization: ((error: Error) => void) | undefined;
   let lastProgress = performance.now();
   const slots: RecorderSlot[] = [];
@@ -109,6 +112,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
   function release() {
     if (released) return; released = true;
     if (timer) clearInterval(timer);
+    if (takeDeadline) clearTimeout(takeDeadline);
     for (const { track, handler, name } of listeners) track.removeEventListener(name, handler);
     releaseSources(); clones.forEach(track => track.stop()); preview.getTracks().forEach(track => track.stop());
     audioNodes.forEach(node => node.disconnect()); void audio?.close().catch(() => undefined);
@@ -119,6 +123,20 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
     failure ??= message; warn(message); event('failure', message);
     if (state === 'ready' && !created) { abortInitialization?.(new Error(message)); notify('failed'); release(); }
     else void finish().catch(error => { warn(messageOf(error)); release(); });
+  }
+  function stopAtLimit() {
+    if (state === 'recording' && !ending) { event('take-limit'); void finish(); }
+  }
+  function armTakeDeadline() {
+    if (takeDeadline) clearTimeout(takeDeadline);
+    if (state !== 'recording' || released) return;
+    const remaining = takeStopAtMs - elapsed();
+    if (remaining <= 0) { stopAtLimit(); return; }
+    takeDeadline = setTimeout(() => {
+      if (state !== 'recording') return;
+      if (elapsed() >= takeStopAtMs) stopAtLimit();
+      else armTakeDeadline();
+    }, remaining);
   }
   const listeners: { track: MediaStreamTrack; handler: EventListener; name: string }[] = [];
   for (const track of sources) {
@@ -168,6 +186,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
     ending = (async () => {
       if (!created) { release(); throw new Error('Start a recording before stopping it.'); }
       const duration = elapsed();
+      if (duration > takeCeilingMs) failure ??= 'Automatic stop was delayed beyond the take limit. Saved originals remain available; this take is interrupted.';
       if (pauseAt) {
         const now = performance.now();
         manifest.pauses.push({ startMs: pauseAt - startedAt, endMs: now - startedAt });
@@ -263,7 +282,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
     worker.postMessage({ kind: 'setup', screen: screen ? streams[0] : undefined,
       camera: camera ? streams[screen ? 1 : 0] : undefined, output: generator.writable,
       width: BROWSER_LIMITS.width, height: BROWSER_LIMITS.height, fps: BROWSER_LIMITS.fps,
-      maxSeconds: BROWSER_LIMITS.maxTakeSeconds, bubble: manifest.bubble,
+      maxSeconds: takeStopAtMs / 1000, bubble: manifest.bubble,
     }, [...streams, generator.writable]);
     await ready;
     abortInitialization = undefined;
@@ -294,8 +313,9 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
             try { slot.recorder.start(2000); } catch (error) { clearTimeout(startedTimer); reject(error); }
           }));
           worker.postMessage({ kind: 'start' }); await Promise.all(starts); await save();
-          timer = setInterval(() => {
-            if (state === 'recording' && elapsed() >= BROWSER_LIMITS.maxTakeSeconds * 1000) { event('take-limit'); void finish(); }
+          armTakeDeadline();
+          if (state === 'recording' && !released) timer = setInterval(() => {
+            if (state === 'recording' && elapsed() >= takeStopAtMs) stopAtLimit();
             else if (camera && state === 'recording' && performance.now() - lastProgress > 15_000)
               fail('Video frames stopped arriving. The saved portion is being finalized.');
           }, 1000);
@@ -321,6 +341,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
       },
       async pause() {
         if (state !== 'recording') throw new Error('Only an active take can be paused.');
+        if (takeDeadline) clearTimeout(takeDeadline);
         pauseAt = performance.now(); slots.forEach(slot => { if (slot.recorder.state === 'recording') slot.recorder.pause(); });
         worker.postMessage({ kind: 'pause' }); notify('paused'); event('pause');
         try { await save(); } catch (error) { fail(messageOf(error)); throw error; }
@@ -331,6 +352,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
         pausedMs += now - pauseAt; pauseAt = 0; lastProgress = now;
         slots.forEach(slot => { if (slot.recorder.state === 'paused') slot.recorder.resume(); });
         worker.postMessage({ kind: 'resume' }); notify('recording'); event('resume');
+        armTakeDeadline();
         try { await save(); } catch (error) { fail(messageOf(error)); throw error; }
       },
       stop: finish,

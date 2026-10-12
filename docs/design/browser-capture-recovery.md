@@ -72,3 +72,14 @@ recorder start offsets remain measured; this barrier does not guarantee encoder
 warm-up or resolve the sustained native-input stall. A delayed-camera fixture and
 both protected Chrome versions must validate its effect without relaxing drift
 or duration assertions. No additional long-lived frame observer is introduced.
+
+Original maximum-boundary refinement: the ten-minute ceiling stays strict in
+manifest validation, upload reservations and provider-measured duration. Automatic
+stop is scheduled 200ms before that ceiling, within the protected 250ms target
+tolerance, to leave bounded scheduling/codec headroom. A dedicated active-time
+deadline is rearmed across Pause/Resume and cleared on release; worker-frame and
+periodic checks remain redundant safeguards. Actual elapsed metadata is never
+clamped. If a delayed/frozen event loop still exceeds the hard ceiling, the saved
+take is interrupted with an explicit timing warning rather than cloud-eligible
+complete. This does not guarantee a deadline on a frozen page or substitute for
+the full ten-minute/background proof. Short test ceilings scale this headroom.

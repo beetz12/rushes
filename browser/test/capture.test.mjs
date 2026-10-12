@@ -102,6 +102,51 @@ test('source loss before first composition output rejects preflight and releases
   assert.ok(result.preparationMs < 1500, `Source loss waited for the initialization deadline: ${result.preparationMs}ms`);
   assert.equal(result.released, true); assert.deepEqual(result.drafts, []);
 }));
+test('active-time deadline stays under the hard ceiling across pause; delayed controls preserve an interrupted take', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { fixture, inspectVideo } = await import('/test/capture-fixture.mjs');
+    const { BROWSER_LIMITS } = await import('/src/contracts.ts');
+    const originalLimit = BROWSER_LIMITS.maxTakeSeconds, rows = [];
+    BROWSER_LIMITS.maxTakeSeconds = 1;
+    try {
+      for (const behavior of ['normal', 'paused', 'delayed']) {
+        const value = await fixture(); const wallStart = performance.now();
+        try {
+          await value.session.start();
+          if (behavior === 'paused') {
+            await new Promise(resolve => setTimeout(resolve, 250)); await value.session.pause();
+            await new Promise(resolve => setTimeout(resolve, 400)); await value.session.resume();
+          } else if (behavior === 'delayed') {
+            await new Promise(resolve => setTimeout(resolve, 650));
+            const blockedUntil = performance.now() + 450;
+            while (performance.now() < blockedUntil) { /* Intentional main-loop scheduling fault. */ }
+          }
+          for (let attempts = 0; attempts < 100 && !value.states.some(state => ['complete', 'interrupted'].includes(state)); attempts++)
+            await new Promise(resolve => setTimeout(resolve, 25));
+          const automatic = value.states.includes('stopping');
+          const manifest = await value.session.stop();
+          const decoded = behavior === 'delayed' ? undefined : await inspectVideo(await value.store.trackBlob(value.id, 'composed'));
+          rows.push({ behavior, manifest, decoded, automatic, wallMs: performance.now() - wallStart,
+            released: value.feeds.flatMap(feed => feed.getTracks()).every(track => track.readyState === 'ended') });
+        } finally { await value.session.cancel(); await value.cleanup(); }
+      }
+    } finally { BROWSER_LIMITS.maxTakeSeconds = originalLimit; }
+    return rows;
+  });
+  for (const row of result) {
+    assert.equal(row.automatic, true); assert.equal(row.released, true);
+    assert.ok(row.manifest.tracks.every(track => track.bytes > 0));
+    if (row.behavior === 'delayed') {
+      assert.equal(row.manifest.state, 'interrupted'); assert.ok(row.manifest.durationMs > 1000);
+      assert.match(row.manifest.recoveryNote, /delayed beyond the take limit/);
+    } else {
+      assert.equal(row.manifest.state, 'complete');
+      assert.ok(row.manifest.durationMs >= 750 && row.manifest.durationMs <= 1000, String(row.manifest.durationMs));
+      assert.ok(Math.abs(row.decoded.duration * 1000 - row.manifest.durationMs) <= 250);
+      if (row.behavior === 'paused') { assert.equal(row.manifest.pauses.length, 1); assert.ok(row.wallMs > 1150); }
+    }
+  }
+}));
 test('screen without audio and camera-only captures produce playable originals; rapid Stop waits for final data', { timeout: 30000 }, async () => pageFixture(async page => {
   const results = await page.evaluate(async () => {
     const { fixture, inspectVideo } = await import('/test/capture-fixture.mjs');
