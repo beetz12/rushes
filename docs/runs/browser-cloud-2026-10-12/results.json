@@ -1,0 +1,222 @@
+{
+  "schema": "rushes.independent-browser-candidate/1",
+  "reviewer": "browser_candidate_checker",
+  "recordedAt": "2026-10-12T17:40:10.326270+00:00",
+  "base": "853ff16",
+  "sourceRootEquivalent": "bb1d818",
+  "sourceReviewedLocal": "58c2c43b6d7b2146f5db96c261206f97c53c2524",
+  "c3Verdict": "PASS",
+  "overallVerdict": "FAIL",
+  "launchReady": false,
+  "gateResults": [
+    {
+      "name": "worker-check",
+      "exit": 0,
+      "passed": 67,
+      "failed": 0,
+      "log": "service-verified.log"
+    },
+    {
+      "name": "browser-build",
+      "exit": 0,
+      "log": "browser-build.log"
+    },
+    {
+      "name": "capture-current",
+      "browser": "155.0.8059.39",
+      "exit": 0,
+      "passed": 18,
+      "failed": 0,
+      "log": "capture-155.log"
+    },
+    {
+      "name": "capture-previous",
+      "browser": "154.0.8037.92",
+      "exit": 0,
+      "passed": 18,
+      "failed": 0,
+      "log": "capture-154.log"
+    },
+    {
+      "name": "ui-after-path-repair",
+      "browser": "155.0.8059.39",
+      "exit": 0,
+      "passed": 36,
+      "failed": 0,
+      "log": "ui.log"
+    },
+    {
+      "name": "clean",
+      "exit": 0,
+      "firstLine": "0",
+      "log": "clean.log"
+    },
+    {
+      "name": "notice-negative-controls",
+      "exit": 0,
+      "passed": 5
+    },
+    {
+      "name": "notices",
+      "exit": 0,
+      "directDependencies": 36,
+      "derivedFiles": 2,
+      "log": "notices.log"
+    },
+    {
+      "name": "clean-negative-controls",
+      "exit": 0,
+      "passed": 3
+    },
+    {
+      "name": "Windows-CI-single-native-step-source-shape",
+      "exit": 0,
+      "scope": "Source shape only; no Windows execution",
+      "proof": "ci-step-recheck.json"
+    }
+  ],
+  "findings": [
+    {
+      "id": "R1",
+      "priority": 2,
+      "state": "repaired",
+      "repairRoot": "95aa8f7",
+      "probe": "path-probe.json"
+    },
+    {
+      "id": "R2",
+      "priority": 2,
+      "state": "repaired",
+      "file": ".github/workflows/browser.yml",
+      "line": 44,
+      "repairRoot": "bb1d818",
+      "recheck": "ci-step-recheck.json"
+    },
+    {
+      "id": "R3",
+      "priority": 2,
+      "state": "open",
+      "file": "browser/src/capture/index.ts",
+      "line": 170,
+      "probe": "limit-probe.json"
+    }
+  ],
+  "m1": {
+    "status": "FAIL/unmet",
+    "newLongRun": false,
+    "retainedFailedMetrics": [
+      "m1/long-565fdf4/metrics.json",
+      "m1/long-preview-565fdf4/metrics.json",
+      "m1/diagnostic240-2-d023ba4/metrics.json"
+    ],
+    "currentCandidateTenMinuteVerified": false,
+    "physicalBackgroundMinimizedVerified": false,
+    "physicalWindowsMacPickerVerified": false,
+    "externalFolderKillVerified": false
+  },
+  "prohibitedActionsPerformed": {
+    "realDeviceCapture": false,
+    "sharedGUI": false,
+    "providerMutation": false,
+    "sharedBeadsWrite": false,
+    "publicPushOrPR": false
+  },
+  "proofRoot": "/Users/dave/.goal-loop/loom-clone/host/2026-10-12-browser/candidate-review",
+  "probeDetails": {
+    "lateReady": {
+      "runtime": "v22.22.0",
+      "browser": "155.0.8059.39",
+      "error": "video source ended. The saved portion is being finalized.",
+      "states": [
+        "failed"
+      ],
+      "readyArrived": 1,
+      "lateDelivered": 1,
+      "terminated": 1,
+      "escapedSession": false,
+      "durationMs": 150.29999999701977,
+      "allSourcesEnded": true,
+      "drafts": []
+    },
+    "limitAnalog": {
+      "runtime": "v22.22.0",
+      "browser": "155.0.8059.39",
+      "scope": "Short real-time analog using an isolated 1-second declared limit; not a ten-minute test",
+      "capture": {
+        "declaredLimitMs": 1000,
+        "state": "complete",
+        "durationMs": 1016.9000000059605,
+        "overrunMs": 16.900000005960464,
+        "decodedDurationMs": 969,
+        "events": [
+          {
+            "timeMs": 27.200000002980232,
+            "kind": "start-screen"
+          },
+          {
+            "timeMs": 27.299999997019768,
+            "kind": "start-camera"
+          },
+          {
+            "timeMs": 58,
+            "kind": "start-tab-audio"
+          },
+          {
+            "timeMs": 58,
+            "kind": "start-microphone"
+          },
+          {
+            "timeMs": 58.20000000298023,
+            "kind": "start-composed"
+          },
+          {
+            "timeMs": 1016.6000000089407,
+            "kind": "take-limit"
+          },
+          {
+            "timeMs": 1016.9000000059605,
+            "kind": "stop-request"
+          },
+          {
+            "timeMs": 1039,
+            "kind": "recorders-stopped"
+          }
+        ],
+        "states": [
+          "recording",
+          "stopping",
+          "complete",
+          "failed"
+        ]
+      },
+      "service": {
+        "durationMs": 600016.900000006,
+        "status": 400,
+        "payload": {
+          "error": {
+            "code": "INVALID_REQUEST",
+            "message": "The request is invalid."
+          }
+        }
+      }
+    }
+  },
+  "proofSha256": {
+    "ui.log": "7df0e9cdfc8d1071f998961d1604bb7e79eccffb1a789147b312f635fefab49b",
+    "limit-probe.log": "596e070ed2f203ab7e97b75ac958ad7aaa15902d9223fdcfd8dfdf6969a3aaf3",
+    "late-ready-exploratory-149.json": "c6b28a9b1103b463b24289cee9dcf67718078d4cbcfb28770e22cce8a3d70b12",
+    "browser-bundle-scan.json": "24af5576fe44cb0309e510f5336d34b991adcc72fe2a440d64735c41f0efa88c",
+    "limit-probe.mjs": "51054193abfbfa97a1e95e66648557525ce45b074be9d8d67e1ae481c5661c1f",
+    "clean.log": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "late-ready-probe.mjs": "f58ea3591c1063ccf4729e939a631b1e7a977f3a2744b9c6b62e2d03800a11ea",
+    "capture-155.log": "426c3dd05f23c26856d874e5c87dc8c3eec8d766b7f0203dd17cee3a64ebd3fe",
+    "service.log": "4e0109b3d0827a3c74301d3c7e7ee0921438a327dc2d6298b59a16e0fd6b8d6b",
+    "notices.log": "8c2f2544456cbb17b37a54d6db1ee1aef0ab11e2b596c02e2cdef883e87948db",
+    "service-verified.log": "2e48076b146456356aa06a067b4adbb3e97032d2aa61031394d5c325f1be6076",
+    "capture-154.log": "cca104778e1e0a270bcf98623c84611068477c21056515bdd3d0413cf127f676",
+    "limit-probe.json": "42a2788a48fca541ebc7f25d2b174b5f71b3a03b07f4dce5d8f21b0cf415d1f7",
+    "browser-build.log": "6c93a64e6246bedd66abacce89874a13d099ec35c7762b11c3e7a3764581f193",
+    "late-ready.json": "6140b808f7e47b6c6f32a0828313f8635e87b94bbd8a7d2dcef4afb23022edb3",
+    "path-probe.json": "cc1707ea4732b4b325f06de3f6dbff3e06e0a4fd979be0dfb9c29027c2b3fa3b"
+  }
+}
