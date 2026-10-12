@@ -247,12 +247,17 @@ function App() {
   const active = ['recording', 'paused', 'preparing'].includes(status.state);
   if (view === 'bubble')
     return (
-      <div className="live-bubble" style={{ WebkitAppRegion: 'drag' } as any}>
+      <div
+        className="live-bubble"
+        title="Drag to move your camera"
+        style={{ WebkitAppRegion: 'drag' } as any}
+      >
         {preview ? (
-          <img src={preview} alt="Live camera preview" />
+          <img src={preview} alt="Live camera preview" draggable={false} />
         ) : (
           <div className="bubble-wait">Warming camera…</div>
         )}
+        <span className="bubble-move-hint">Drag to move</span>
       </div>
     );
   if (view === 'area') return <AreaSelector />;
@@ -1276,12 +1281,12 @@ function Review({ id, back, run, setNote, trashed }: any) {
       setEdit(await autosave.run(() => api.request('edit.cut', { id, cuts })));
       setNote(`${cuts.length} suggested cuts applied.`);
     });
-  const doExport = () =>
+  const doExport = (exportPreset: string) =>
     run(async () => {
       setExportBusy(true);
       try {
         await autosave.run(() => api.request('edit.save', { id }));
-        const r = await api.exportFile(id, preset, Math.round(currentTime * 1000));
+        const r = await api.exportFile(id, exportPreset, Math.round(currentTime * 1000));
         if (!r.canceled) {
           setNote(`Export saved: ${r.path}`);
           await api.reveal(r.path);
@@ -1306,6 +1311,15 @@ function Review({ id, back, run, setNote, trashed }: any) {
           ← All recordings
         </button>
         <div className="review-actions">
+          <button
+            className="secondary"
+            disabled={exportBusy}
+            title="Save separate screen, camera and audio originals to a folder"
+            onClick={() => doExport('editor-tracks')}
+          >
+            <Icon name="download" />
+            {exportBusy ? 'Exporting…' : 'Export separate tracks'}
+          </button>
           <button
             className="secondary"
             title="Move recording to macOS Trash"
@@ -1992,7 +2006,11 @@ function Review({ id, back, run, setNote, trashed }: any) {
               Raw originals for editing. Original camera backgrounds and source audio remain intact.
             </p>
           )}
-          <button className="secondary full-width" disabled={exportBusy} onClick={doExport}>
+          <button
+            className="secondary full-width"
+            disabled={exportBusy}
+            onClick={() => doExport(preset)}
+          >
             <Icon name="download" />
             {exportBusy ? 'Exporting…' : 'Export recording'}
           </button>

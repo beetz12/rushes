@@ -506,6 +506,7 @@ h3 {
   padding: 12px 20px;
 }
 .live-bubble {
+  position: relative;
   width: 100vw;
   height: 100vh;
   border-radius: 50%;
@@ -523,6 +524,19 @@ h3 {
 }
 .bubble-wait {
   font-size: 11px;
+}
+.bubble-move-hint {
+  position: absolute;
+  bottom: 14%;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: #16212bd9;
+  color: #fff;
+  font-size: 11px;
+  white-space: nowrap;
+  pointer-events: none;
 }
 .floating-bar {
   background: #1f282e;
@@ -698,6 +712,7 @@ h3 {
 }
 .review-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 15px;
@@ -710,6 +725,7 @@ h3 {
 }
 .review-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 .review-actions .secondary {
