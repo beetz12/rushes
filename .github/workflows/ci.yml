@@ -22,17 +22,33 @@ jobs:
           sudo xcode-select -s "$XL"
           xcodebuild -version
           swift --version
-      - name: Install the pinned Node runtimes into the nvm layout
+      - name: Install the pinned Node runtimes
         run: |
-          mkdir -p "$HOME/.nvm/versions/node"
+          # macos-latest does not ship nvm. check.sh reads each .nvmrc and
+          # requires that exact build at ~/.nvm/versions/node/v<pin>/bin.
+          # nvm v0.40.8, pinned to the commit rather than the movable tag.
+          export NVM_DIR="$HOME/.nvm"
+          nvm_sha=a885b885fef16fac4bc544188fb25e9e37ae83e8
+          if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+            mkdir -p "$NVM_DIR"
+            git -C "$NVM_DIR" init -q
+            git -C "$NVM_DIR" remote add origin https://github.com/nvm-sh/nvm.git
+            git -C "$NVM_DIR" fetch --depth 1 origin "$nvm_sha"
+            git -C "$NVM_DIR" checkout --detach FETCH_HEAD
+          fi
+          test "$(git -C "$NVM_DIR" rev-parse HEAD)" = "$nvm_sha"
+          # nvm.sh returns non-zero while it is being sourced under `set -e`.
+          set +e
+          # shellcheck disable=SC1091
+          . "$NVM_DIR/nvm.sh"
+          set -e
+          command -v nvm >/dev/null
           for pin in $(cat */.nvmrc 2>/dev/null | sort -u); do
-            pin="${pin#v}"
-            dest="$HOME/.nvm/versions/node/v$pin"
-            if [ -x "$dest/bin/node" ]; then continue; fi
-            tmp=$(mktemp -d)
-            curl -fsSL "https://nodejs.org/dist/v$pin/node-v$pin-darwin-arm64.tar.gz" | tar -xz -C "$tmp"
-            mv "$tmp/node-v$pin-darwin-arm64" "$dest"
-            "$dest/bin/node" --version
+            echo "nvm install $pin"
+            nvm install "$pin"
+            bare="${pin#v}"
+            test -x "$NVM_DIR/versions/node/v$bare/bin/node"
+            "$NVM_DIR/versions/node/v$bare/bin/node" --version
           done
       - name: Gate
         run: bash scripts/check.sh
