@@ -1,5 +1,30 @@
 # Browser build evidence log
 
+Research reassessment after the bounded180s diagnostic: the same retained native
+MJPEG file and unchanged565fdf4 production source completed19 protected diagnostic
+checks with zero extra readers. Three video decodes were179.964s with gaps<=95ms;
+all102 sampled host reads were unlocked. The native counters were available,
+but the drop histogram was unavailable throughout; allocation attribution stays
+inconclusive. The observed28 display-link stderr errors also occurred in this
+successful run, so that message alone cannot establish recording failure. This
+does not resolve earlier stalls or establish an unobserved lock timeline.
+
+Root authorizes preparation of one next full600s acceptance experiment at the
+current reviewed capture source5f76b32, with original ordinal-sync observers,
+five pauses, five-minute offline interval, exact source media/default Chrome flags
+and unchanged100ms/250ms limits. The new controlled prerequisite is a Mac lock
+read immediately before launch/start and about every2s through the run: missing
+or locked reads stop/fail the experiment instead of being inferred after capture.
+Only the existing matrix fixture and evidence may change; production stays
+read-only. The isolated probe checkout must snapshot the root integration trees
+exactly before instrumentation. Root holds actual capture until desktop packaging,
+installed read-back/preview release and all native media/compile jobs are quiet.
+This is not a blind repeat of either confounded earlier attempt: the research
+pass establishes sustained input beyond the prior boundary under observed
+unlocked conditions, and the next experiment tests the complete reviewed product
+requirements without attributing the old failures to lock or changing assertions.
+No physical background, Windows, provider or release pass follows automatically.
+
 Current provider update (2026-10-12, supersedes older pending-branding/client
 statements below): David approved the Google policy and branding action, then the
 specific client origin/callback and his sole test access. Rushes branding is
