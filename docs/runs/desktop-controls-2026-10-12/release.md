@@ -90,3 +90,41 @@ The desktop issue remains in progress for that repair/install and the pending
 physical feedback. The commercial browser long-capture/provider/Windows gates
 remain separate. No public code push, commercial deployment or live charge is
 claimed by these local results.
+
+## Completed repaired installation
+
+The preceding repair/install hold is superseded. The independent source
+reassessment at71535da passed; its artifact9ef1ee8 was integrated as9584ed7.
+Root fast-forwarded the candidate onto clean local default main and ran the
+declared `/bin/bash scripts/check.sh` at787d8eb: actual exit0,5 Intents tests,
+330 native tests in55 suites,128 shell tests in18 files,16 cloud,4 viewer and18
+worker tests, plus clean/notices. Native tests completed in14.654s. The retained
+transport-release-gate.log includes the substantive counts and final success.
+Subsequent9584ed7 changes only the independent evidence artifact.
+
+Fresh production `swift build -c release` exited0 in29.52s. Electron packaging,
+automation helper embedding/metadata/signature, and the containing app's strict
+deep signature all passed using the same existing development identity. Five
+packaged shell files match the verified source dist hashes; both signed native
+products have matching Mach-O UUIDs. The source package is at
+`/Users/dave/Work/loom-clone/shell/release/mac-arm64/Rushes.app` and carries
+build-provenance.json identifying business71535da and the actual release gate.
+
+Root read native state idle/no warnings, quit the installed app using its normal
+Quit Rushes control, verified its processes exited, then installed the signed
+candidate. The preceding app is preserved at
+`/Applications/Rushes-before-transport.previous`; the earlier backups also remain.
+The reopened installed app has mainPID38833 and nativePID38862 at this read-back.
+Its app.asar, engine, CLI and provenance hashes all equal the staged candidate;
+native status is idle/no warnings with screen, camera and microphone granted.
+The selected camera preview reappeared automatically without any toggle or new
+recording. Root then opened My recordings, observed both completed test takes
+and the preserved library, and left that view open to release the idle preview.
+The inspected repaired-installed-library.png records the connected library.
+
+No third real recording was made after the transport-only repair. The writer,
+capture clock and media implementation stayed unchanged; the two real takes,
+all-five decode and export hashes remain the media evidence. The new native
+socketpair, client recovery and actual-renderer synthetic probes verify the
+changed transport/error seams. Audible countdown and floating-bubble physical
+feedback from David remains pending, and no public source push is authorized.
