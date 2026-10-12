@@ -18,6 +18,47 @@ async function pageFixture(callback) {
   try { await page.goto(`${origin}/capture-fixture`); await callback(page); assert.deepEqual(errors, []); }
   finally { await context.close(); }
 }
+test('pause during the startup checkpoint retains the health watcher across resume and releases it on cancel', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { fixture } = await import('/test/capture-fixture.mjs');
+    const value = await fixture();
+    const save = value.store.save, interval = window.setInterval, clear = window.clearInterval;
+    let entered, releaseSave, held = false;
+    const ready = new Promise(resolve => { entered = resolve; });
+    const gate = new Promise(resolve => { releaseSave = resolve; });
+    const watchers = new Set(), releasedWatchers = [], installed = [];
+    value.store.save = async manifest => {
+      if (!held && manifest.state === 'recording') { held = true; entered(); await gate; }
+      return save(manifest);
+    };
+    window.setInterval = function(callback, milliseconds, ...args) {
+      const id = interval.call(this, callback, milliseconds, ...args);
+      if (milliseconds === 1000) { watchers.add(id); installed.push(id); }
+      return id;
+    };
+    window.clearInterval = function(id) {
+      if (watchers.delete(id)) releasedWatchers.push(id);
+      return clear.call(this, id);
+    };
+    try {
+      const starting = value.session.start(); await ready;
+      await value.session.pause(); releaseSave(); await starting;
+      const paused = { installs: installed.length, active: watchers.size, state: value.states.at(-1) };
+      await value.session.resume();
+      const resumed = { installs: installed.length, active: watchers.size, state: value.states.at(-1) };
+      await value.session.cancel();
+      return { paused, resumed, released: releasedWatchers.length, activeAfterCancel: watchers.size,
+        states: value.states, retainedDrafts: (await value.store.list()).length };
+    } finally {
+      releaseSave(); await value.session.cancel(); await value.cleanup();
+      window.setInterval = interval; window.clearInterval = clear;
+    }
+  });
+  assert.deepEqual(result.paused, { installs: 1, active: 1, state: 'paused' });
+  assert.deepEqual(result.resumed, { installs: 1, active: 1, state: 'recording' });
+  assert.equal(result.released, 1); assert.equal(result.activeAfterCancel, 0); assert.equal(result.retainedDrafts, 0);
+  assert.deepEqual(result.states, ['recording', 'paused', 'recording', 'failed']);
+}));
 test('screen/camera composition, separate originals, mixed audio, pause timeline, moved bubble, and final chunks decode', { timeout: 45000 }, async () => pageFixture(async page => {
   const result = await page.evaluate(async () => {
     const { fixture, inspectVideo, inspectAudio } = await import('/test/capture-fixture.mjs');

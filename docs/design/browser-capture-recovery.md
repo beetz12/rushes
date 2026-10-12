@@ -83,3 +83,12 @@ clamped. If a delayed/frozen event loop still exceeds the hard ceiling, the save
 take is interrupted with an explicit timing warning rather than cloud-eligible
 complete. This does not guarantee a deadline on a frozen page or substitute for
 the full ten-minute/background proof. Short test ceilings scale this headroom.
+
+Startup/Pause ownership refinement: a take may be paused while the initial
+recording checkpoint is still saving. The periodic source-health watcher belongs
+to the live take, including that paused state; its callback only acts while
+recording. Install it after the checkpoint if the take has neither released nor
+begun ending. Pause suspends active-time deadlines and Resume rearms them, without
+losing or duplicating the watcher. Release always clears it. A regression holds
+the real initial save, pauses before start resolves, then checks resume and
+terminal cleanup at the timer boundary.

@@ -315,7 +315,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
           }));
           worker.postMessage({ kind: 'start' }); await Promise.all(starts); await save();
           armTakeDeadline();
-          if (activelyRecording()) timer = setInterval(() => {
+          if (!released && !ending) timer = setInterval(() => {
             if (state === 'recording' && elapsed() >= takeStopAtMs) stopAtLimit();
             else if (camera && state === 'recording' && performance.now() - lastProgress > 15_000)
               fail('Video frames stopped arriving. The saved portion is being finalized.');
