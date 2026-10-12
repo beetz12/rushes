@@ -1,5 +1,85 @@
 # Independent browser capture verdict
 
+## Reassessment after the single consolidated repair
+
+**PASS for targeted capture-slice code completeness after repair `54153e7badb4602fcfd78efcafed426c51a75b7c`, with full M1 still CONCERNS/PENDING.**
+The original C1/C2 findings and failure evidence below remain historical records.
+Their exact independent probes now pass; recovered-duration handling also passes.
+The cadence correction passes its logic fixtures, but short encoded composition
+still measures below the nominal 30 fps target, so the fresh maximum/background
+matrix must resolve actual performance before any supported-matrix or paid-launch
+claim. No physical or full M1 condition has been waived by this slice pass.
+
+Reassessment date: 2026-10-12T16:30:02Z. Review checkout:
+`b0869b2` (artifact history plus authorized read-only cherry-picks of shared seam
+`053402f1ebf4777e023ba2c117470281b132cf79` and maker repair `54153e7`). The reviewed
+capture source is identical to that maker revision; root integration was supplied
+as `70ec921`. No implementation or contract was edited by this reviewer.
+
+| Finding | Independent reassessment |
+|---|---|
+| C1, source ended while primary create was committed but pending | `index.ts:304–310` awaits owned terminal finalization even after `failed` was reported. Repeating the original gated create/source-ended probe yielded `states:["failed","stopping","interrupted"]`, disk `interrupted`, epoch 0, lease false and all granted source/preview tracks ended. A separate tab removed the draft without an extra Stop. The expanded suite also tests source loss before primary commit and retained closed bytes. |
+| C2, initial-write orphan hid healthy drafts | `storage.ts:115–157` supplies an in-memory diagnostic without replacing corrupt metadata; `241–255` isolates enumeration failures. Repeating the initial quota injection yielded the healthy completed draft in list(), plus an interrupted orphan diagnostic. A second malformed-JSON entry preserved its literal metadata, its readable recognized chunk and its unknown file. The suite separately covers malformed shape and unrecognized folder names. |
+| Recovered duration stale compared with acknowledged bytes | `storage.ts:194–207` retains interrupted state, derives at least the durable checkpoint length and labels it estimated. Actual isolated reload probe: pre-reload duration 25.9 ms, last acknowledged checkpoint 4057.2 ms, four chunks; after reload duration 4057.2 ms, interrupted state and an explicit estimate/unclosed-tail note. All four previously acknowledged chunks were read back with matching size/digest. This is a reload probe, not root's process-kill matrix. |
+| Strict-interval cadence dropped near-target frames | `cadence.ts:4–14` uses relative nominal buckets and `composition.worker.ts:30–32` consumes that decision. Jitter timestamps 33,330/33,334 µs retain 300/300; 60 fps is decimated to one real timestamp per nominal bucket; a long gap creates no catch-up frames. Actual encoded performance is separately retained below. |
+
+Fresh commands in this unchanged reviewer checkout, Node 22.22.0, macOS 27.0
+(26A428), headless isolated Chrome 155.0.8059.39:
+
+- `npm --prefix browser run build`: exit 0 (TypeScript/Vite).
+- `npm --prefix browser run test:capture`: exit 0, **16/16 pass**, 44.178 seconds.
+  Composed decoded edge drift +14.062/+14.062/+2.813 ms; original absolute sample
+  drift at most 36.563 ms. Original thresholds remain unchanged.
+- Inline Vite/Playwright/Node independent repair probes: exit 0; exact original
+  C1/C2 scenarios asserted the repaired outcomes, plus actual reload/read-back
+  and a short encoded worker output probed through ffprobe's stdin. All isolated
+  contexts, browser and server were closed. No output media file was persisted.
+- A second inline ffprobe probe compared original and composed packet timestamps
+  in one take: exit 0. No frame rate assertion or acceptance threshold was added
+  by this comparison; its purpose was to measure the residual accurately.
+
+### Actual cadence remains an M1 performance concern
+
+The first repaired short screen-camera take was complete, 1280×720, 172 encoded
+video packets across 6.1 seconds: **28.033 fps**, maximum timestamp gap 69 ms.
+The second take compared all three encoded video timelines:
+
+| Track | Frames | Encoded span | Measured fps `(frames−1)/span` | Maximum gap |
+|---|---:|---:|---:|---:|
+| Screen original | 184 | 6.139 s | 29.809 | 70 ms |
+| Camera original | 183 | 6.139 s | 29.647 | 70 ms |
+| Composed | 171 | 6.131 s | **27.728** | 72 ms |
+
+Thus the previous root-reported 19–20 fps issue improved, but this run still loses
+about 6.5% of encoded frames relative to the camera original. The measurements do
+not identify whether remaining loss comes from cadence bucket boundary effects,
+processor/worker backpressure, canvas encoding or host scheduling. They also do
+not prove a 30 fps release guarantee. Root's new 600-second and background matrix
+must measure the actual integrated result and assess the existing target without
+changing protected gates. No unexplained gap over 250 ms appeared in these short
+probes; that statement is limited to these packet timestamp samples.
+
+No further blocking code defect was reproduced in the targeted consolidated
+repair review. All earlier retained M1 conditions below still apply, including
+maximum memory/finalization, Windows/prior Chrome, physical picker/permissions,
+offline/background/minimized/freeze/discard and external-folder process-kill
+durability. Production UI/asset integration is also outside this slice checkout.
+
+Reassessed SHA-256 values (contract and paid-plan hashes below remain unchanged):
+
+| Input | SHA-256 |
+|---|---|
+| `browser/src/contracts.ts` | `5817e23538dad1a2a18c878781ac7bc34db64b124f0cbc79ba1894b0dd727269` |
+| `browser/src/capture/index.ts` | `4daf88424af54db2767278d25e6a327047c0f1aeccef7cc5a9709aa5bccd83cc` |
+| `browser/src/capture/storage.ts` | `a7787c68bfd03b90da22b963946e532c67ac022565103e4fe6fdba78ef2e6a64` |
+| `browser/src/capture/composition.worker.ts` | `1d89f4407fb654d3e0722ee6b6be92e09e82005a1042c6574fc29b5fc1f077fa` |
+| `browser/src/capture/cadence.ts` | `f3e2a966215c3623b7794fa863b0f9e310ecbc97a09a4d521275b98c7bd48914` |
+| `browser/test/capture-fixture.mjs` | `3db7b58e927b40311b6693534717c17a968b33bfdbb47d9433fac87982e3818a` |
+| `browser/test/capture.test.mjs` | `5c2940f9a3b130af21c16ff9ac32e5d9eca7640c2e9b483b4b398d797bf57d78` |
+| `browser/test/capture-cadence.test.mjs` | `0efe8025526f513a1d77d734b190bd373673ba840053791ed3d5bdf8a03cee6a` |
+
+## Historical initial verdict and retained failure evidence
+
 **FAIL for capture-slice contract completeness at `736d0f0ad841371429ef0c340c369b3b599c1e45`.**
 Two reproduced startup/storage failure cases need a targeted repair before this
 slice is accepted. The declared build and eleven foreground capture tests pass.
