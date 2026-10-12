@@ -31,13 +31,11 @@ private struct PCMSourceFixture {
             settings[AVLinearPCMIsBigEndianKey] = false; settings[AVLinearPCMIsNonInterleaved] = false
         }
         let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
-        input.expectsMediaDataInRealTime = true
         writer.add(input)
         var tailInput: AVAssetWriterInput?
         var adaptor: AVAssetWriterInputPixelBufferAdaptor?
         if videoTail {
             let video = AVAssetWriterInput(mediaType: .video, outputSettings: fixtureH264Settings(width: 16, height: 16))
-            video.expectsMediaDataInRealTime = true
             writer.add(video); tailInput = video
             adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: video, sourcePixelBufferAttributes: [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,

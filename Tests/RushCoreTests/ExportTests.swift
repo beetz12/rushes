@@ -29,7 +29,6 @@ struct SyntheticExportFixture {
         let width=camera ? 160 : 320,height=camera ? 160 : 180
         let writer=try AVAssetWriter(outputURL:url,fileType:.mov)
         let input=AVAssetWriterInput(mediaType:.video,outputSettings:fixtureH264Settings(width:width,height:height))
-        input.expectsMediaDataInRealTime = true
         let adaptor=AVAssetWriterInputPixelBufferAdaptor(assetWriterInput:input,sourcePixelBufferAttributes:[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_32BGRA,kCVPixelBufferWidthKey as String:width,kCVPixelBufferHeightKey as String:height])
         writer.add(input); guard writer.startWriting() else { throw renderFailure("Fixture writer failed") }; writer.startSession(atSourceTime:.zero)
         for frame in 0..<frameCount {
@@ -61,7 +60,6 @@ struct SyntheticExportFixture {
     static func audio(to url:URL,frequency:Float,onsetMs:Double = 0) async throws {
         let writer=try AVAssetWriter(outputURL:url,fileType:.mov)
         let input=AVAssetWriterInput(mediaType:.audio,outputSettings:[AVFormatIDKey:kAudioFormatMPEG4AAC,AVSampleRateKey:48_000,AVNumberOfChannelsKey:1,AVEncoderBitRateKey:128_000])
-        input.expectsMediaDataInRealTime = true
         writer.add(input); guard writer.startWriting() else { throw renderFailure("Audio fixture writer") }; writer.startSession(atSourceTime:.zero)
         for frame in stride(from:0,to:96_000,by:1024) {
             try await waitUntilReadyForMedia(input, writer: writer)

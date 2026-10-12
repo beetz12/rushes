@@ -19,7 +19,6 @@ struct CameraBlurExportTests {
         let width=160,height=rotate ? 120 : 160
         let writer=try AVAssetWriter(outputURL:target,fileType:.mov)
         let input=AVAssetWriterInput(mediaType:.video,outputSettings:fixtureH264Settings(width:width,height:height))
-        input.expectsMediaDataInRealTime = true
         if rotate { input.transform=CGAffineTransform(a:0,b:1,c:-1,d:0,tx:CGFloat(height),ty:0) }
         writer.add(input)
         let adaptor=AVAssetWriterInputPixelBufferAdaptor(assetWriterInput:input,sourcePixelBufferAttributes:nil)
