@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
+import * as nativeFiles from 'node:fs';
 import * as filesystem from 'node:fs/promises';
 // Isolated fixture IO is independent of the production capture bundle.
 import { tmpdir } from 'node:os';
@@ -11,6 +12,7 @@ import { createServer } from 'vite';
 import { chromium } from 'playwright';
 import { matrixMedia } from './matrix-media.mjs';
 import { inspectHistogramPayload } from './matrix-native-observation.mjs';
+import { macHostState, isVerifiedUnlockedMac, assertUnlockedMac, monitorMacLock } from './matrix-host-state.mjs';
 
 const run = promisify(execFile), sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const { mkdtemp, writeFile, readFile, mkdir, access } = filesystem;
@@ -18,18 +20,19 @@ const long = process.env.RUSHES_M1_LONG === '1';
 const allocationDiagnostic = process.env.RUSHES_M1_ALLOCATION_DIAGNOSTIC === '1';
 const diagnostic = process.env.RUSHES_M1_DIAGNOSTIC === '1' || allocationDiagnostic;
 const diagnosticDurationMs = allocationDiagnostic ? 180000 : 240000;
+const macLockRequired = allocationDiagnostic || (long && process.platform === 'darwin');
 const root = fileURLToPath(new URL('..', import.meta.url));
 const proof = resolve(process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir(), 'rushes-m1-')));
 await mkdir(proof, { recursive: true, mode: 0o700 });
 const profile = join(proof, 'isolated-chrome-profile');
 const evidence = { schema: 'rushes.independent-m1/1', startedAt: new Date().toISOString(),
   node: process.version, platform: process.platform, long, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
-  normalBackgroundFlags: true, source: 'native Chrome fake Y4M with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
+  normalBackgroundFlags: true, source: 'native Chrome fake MJPEG with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; headless virtual pages only',
   diagnostic, allocationDiagnostic, samples: [], actions: [], checks: [], failures: [], browserStderr: [], lifecycle: [], hostTimeline: [], nativeAllocationSamples: [] };
 evidence.fileHashes = {};
-for (const filename of ['test/matrix.mjs', 'test/matrix-fixture.mjs', 'test/matrix-media.mjs', 'test/matrix-source.worker.mjs', 'test/matrix-native-observation.mjs',
+for (const filename of ['test/matrix.mjs', 'test/matrix-fixture.mjs', 'test/matrix-media.mjs', 'test/matrix-source.worker.mjs', 'test/matrix-native-observation.mjs', 'test/matrix-host-state.mjs',
   'src/capture/index.ts', 'src/capture/composition.worker.ts', 'src/capture/storage.ts'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 evidence.fileHashes['src/capture/cadence.ts'] = createHash('sha256').update(await readFile(join(root, 'src/capture/cadence.ts'))).digest('hex');
@@ -42,35 +45,48 @@ const check = (name, operation) => {
 const save = () => writeFile(join(proof, 'metrics.json'), JSON.stringify(evidence, null, 2));
 let processHandle, browser, server, origin, page;
 let stderrWrites = Promise.resolve();
-let histogramSession;
+let histogramSession, hostMonitor, latestHostSample;
+evidence.macHostPrerequisite = { required: macLockRequired, continuousLongMonitor: long && !diagnostic && process.platform === 'darwin',
+  scope: process.platform === 'darwin' ? 'Mac lock prerequisite only; no physical background or display-on claim' : 'Mac lock evidence is not applicable on this platform' };
 const histogramName = 'Media.VideoCapture.Track.FrameDrop.DeviceCapture';
 
-async function macHostState() {
-  const sample = { startedAt: new Date().toISOString(), platform: process.platform };
-  if (process.platform !== 'darwin') return { ...sample, availability: 'unsupported', reason: 'Mac host evidence only' };
-  const commands = [ ['console', 'ioreg', ['-n', 'Root', '-d1']], ['idle', 'ioreg', ['-c', 'IOHIDSystem']],
-    ['display', 'ioreg', ['-r', '-n', 'IODisplayWrangler', '-d1']], ['assertions', 'pmset', ['-g', 'assertions']],
-    ['framebuffer', 'pmset', ['-g', 'powerstate', 'IOMobileFramebufferShim']] ];
-  const results = await Promise.all(commands.map(async ([name, command, args]) => {
-    try { return { name, output: (await run(command, args, { timeout: 3000, maxBuffer: 1024 * 1024 })).stdout }; }
-    catch (error) { return { name, error: String(error) }; }
-  }));
-  const named = Object.fromEntries(results.map(result => [result.name, result]));
-  const lock = named.console.output?.match(/"IOConsoleLocked"\s*=\s*(Yes|No)/)?.[1];
-  sample.IOConsoleLocked = lock === 'Yes' ? true : lock === 'No' ? false : null;
-  sample.hidIdleSeconds = named.idle.output?.match(/"HIDIdleTime"\s*=\s*(\d+)/)?.[1];
-  sample.hidIdleSeconds = sample.hidIdleSeconds === undefined ? null : Number(sample.hidIdleSeconds) / 1e9;
-  const power = named.display.output?.match(/"CurrentPowerState"\s*=\s*(\d+)/)?.[1];
-  sample.displayCurrentPowerState = power === undefined ? null : Number(power);
-  sample.framebufferPowerStates = named.framebuffer.output?.split('\n').flatMap(line => {
-    const match = line.trim().match(/^(IOMobileFramebufferShim)\s+(\d+)\s+(\d+)\s+(.+)$/);
-    return match ? [{ driver: match[1], current: Number(match[2]), max: Number(match[3]), description: match[4] }] : [];
-  }) ?? null;
-  sample.powerAssertions = Object.fromEntries(['UserIsActive', 'PreventUserIdleDisplaySleep', 'InternalPreventDisplaySleep']
-    .map(name => [name, named.assertions.output?.match(new RegExp(`^\\s*${name}\\s+(\\d+)`, 'm'))?.[1] ?? null]));
-  sample.errors = results.filter(result => result.error).map(({ name, error }) => ({ name, error }));
-  sample.availability = lock ? 'available' : 'partial'; sample.endedAt = new Date().toISOString();
-  return sample;
+async function mediaFileEvidence(path) {
+  const digest = createHash('sha256');
+  for await (const bytes of nativeFiles.createReadStream(path)) digest.update(bytes);
+  return { path, bytes: (await filesystem.stat(path)).size, sha256: digest.digest('hex') };
+}
+async function recordHostLoss(host) {
+  if (evidence.hostPrerequisiteLost) return;
+  evidence.hostPrerequisiteLost = host;
+  evidence.failures.push(`Mac unlocked prerequisite lost or unverified: ${JSON.stringify(host)}`);
+  await save();
+  if (page && browser?.isConnected()) {
+    try { evidence.hostLossBeforeStop = await page.evaluate(() => window.matrixTake?.snapshot()); }
+    catch (error) { evidence.hostLossBeforeStopError = String(error); }
+    try { await page.evaluate(() => window.matrixTake?.session.stop()); }
+    catch (error) { evidence.hostLossStopError = String(error); }
+    try { evidence.hostLossAfterStop = await page.evaluate(() => window.matrixTake?.snapshot()); }
+    catch (error) { evidence.hostLossAfterStopError = String(error); }
+    await save();
+  }
+}
+async function requireUnlockedHost(stage) {
+  if (!macLockRequired) return;
+  hostMonitor?.assert();
+  const host = { ...await macHostState(), stage };
+  evidence.hostTimeline.push(host); latestHostSample = host;
+  if (!isVerifiedUnlockedMac(host)) await recordHostLoss(host);
+  assertUnlockedMac(host, stage);
+  hostMonitor?.assert();
+}
+async function startMatrixTake(options = {}) {
+  await requireUnlockedHost('before-media-preparation');
+  await page.evaluate(async options => {
+    const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
+    window.matrixTake = await prepareMatrix(options);
+  }, options);
+  await requireUnlockedHost('before-recording-start');
+  await page.evaluate(() => window.matrixTake.start());
 }
 async function nativeAllocationProbe() {
   const result = { startedAt: new Date().toISOString() };
@@ -96,6 +112,7 @@ async function chromeExecutable() {
 }
 async function launch(media) {
   const executable = await chromeExecutable();
+  await requireUnlockedHost('before-browser-launch');
   const options = new Map([['headless', 'new'], ['remote-debugging-port', 0], ['user-data-dir', profile],
     ['no-first-run', true], ['no-default-browser-check', true], ['use-fake-device-for-media-stream', true],
     ['use-fake-ui-for-media-stream', true], ['use-file-for-fake-video-capture', media.video],
@@ -153,7 +170,7 @@ async function sample(stage) {
   const [snapshot, processRss, host, nativeProbe] = await Promise.all([page.evaluate(() => window.matrixTake?.snapshot()), rss(),
     allocationDiagnostic ? macHostState() : Promise.resolve(null),
     allocationDiagnostic ? nativeAllocationProbe() : Promise.resolve(null)]);
-  if (host) evidence.hostTimeline.push(host);
+  if (host) { evidence.hostTimeline.push(host); latestHostSample = host; }
   evidence.samples.push({ stage, at: new Date().toISOString(), rssBytes: processRss,
     elapsedMs: snapshot?.elapsedMs, heap: snapshot?.heap, inputFrames: snapshot?.metrics.frames['input-camera']?.count,
     outputFrames: snapshot?.metrics.frames['output-composed']?.count, pendingBytes: snapshot?.metrics.pendingBytes,
@@ -161,7 +178,8 @@ async function sample(stage) {
     captureState: snapshot?.metrics.states.at(-1)?.state,
     inputStaleMs: snapshot?.metrics.frames['input-camera'] ? snapshot.wallMs - snapshot.metrics.frames['input-camera'].lastWallMs : null,
     outputStaleMs: snapshot?.metrics.frames['output-composed'] ? snapshot.wallMs - snapshot.metrics.frames['output-composed'].lastWallMs : null,
-    visibility: snapshot?.visibilityState, focus: snapshot?.focused, host, nativeProbe });
+    visibility: snapshot?.visibilityState, focus: snapshot?.focused, host: host || latestHostSample || null,
+    hostObservationAgeMs: latestHostSample?.endedAt ? Date.now() - Date.parse(latestHostSample.endedAt) : null, nativeProbe });
   return snapshot;
 }
 async function downloadTracks(manifest, directory) {
@@ -253,15 +271,13 @@ async function runDiagnostic() {
   evidence.scope = `One bounded${diagnosticDurationMs / 1000}s foreground diagnostic; zero extra processor readers; constant tone; no M1/sync/background verdict`;
   evidence.source = 'Native fake MJPEG and constant-tone AudioWorklet; no extra processor consumers';
   if (allocationDiagnostic) {
-    const host = await macHostState(); evidence.hostTimeline.push(host);
-    if (host.IOConsoleLocked !== false) throw new Error('Unlocked Mac host prerequisite is unverified; no recording started.');
+    await requireUnlockedHost('before-allocation-diagnostic');
     histogramSession = await browser.newBrowserCDPSession();
     try { evidence.histogramBaseline = inspectHistogramPayload((await histogramSession.send('Browser.getHistogram', { name: histogramName, delta: true })).histogram, histogramName); }
     catch (error) { evidence.histogramBaseline = { availability: 'absent-or-error', message: String(error) }; }
   }
-  await page.evaluate(async duration => {
-    const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
-    window.matrixTake = await prepareMatrix({ diagnostic: true }); await window.matrixTake.start();
+  await startMatrixTake({ diagnostic: true });
+  await page.evaluate(duration => {
     setTimeout(() => { void window.matrixTake.session.stop(); }, duration - window.matrixTake.elapsed());
   }, diagnosticDurationMs);
   console.log(`Diagnostic ACTIVE${diagnosticDurationMs / 1000}s: ${evidence.chrome}; zero extra frame consumers, constant tone, real five recorders/OPFS/backup/preview.`);
@@ -282,6 +298,7 @@ async function runDiagnostic() {
   try { evidence.recording = await page.evaluate(() => window.matrixTake.finish()); }
   finally { finishing = false; await monitor; }
   evidence.finalizationMs = Date.now() - startedFinalization;
+  hostMonitor?.assert();
   const manifest = evidence.recording.manifest;
   check('diagnostic has zero extra processor readers', () => assert.equal(evidence.recording.metrics.extraProcessorReaders, 0));
   check('diagnostic finishes complete', () => assert.equal(manifest.state, 'complete'));
@@ -328,21 +345,25 @@ async function runDiagnostic() {
 }
 
 try {
-  if (allocationDiagnostic) {
-    const host = await macHostState(); evidence.hostTimeline.push(host);
-    if (host.IOConsoleLocked !== false) throw new Error('Unlocked Mac host prerequisite is unverified; browser/recording not launched.');
-  }
+  await requireUnlockedHost('before-run-preparation');
   const media = process.env.RUSHES_M1_SOURCE_FILE ? { video: process.env.RUSHES_M1_SOURCE_FILE,
     audio: join(dirname(process.env.RUSHES_M1_SOURCE_FILE), 'calibration.wav') } : await matrixMedia(proof);
+  const [videoEvidence, audioEvidence] = await Promise.all([mediaFileEvidence(media.video), mediaFileEvidence(media.audio)]);
+  evidence.sourceMediaFiles = { video: videoEvidence, audio: audioEvidence };
   server = await createServer({ root, server: { host: '127.0.0.1', port: 0 }, logLevel: 'error' });
   server.middlewares.use('/matrix-fixture', (_request, response) => { response.setHeader('Content-Type', 'text/html');
     response.end('<!doctype html><title>Independent Rushes synthetic M1</title>'); });
   await server.listen(); origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   const context = await launch(media);
+  if (long && !diagnostic && process.platform === 'darwin') {
+    evidence.hostObservationCoverage = 'Independent approximately2s lock metadata monitor, with fresh reads before each launch/start; unobserved intervals are not proven unlocked';
+    hostMonitor = monitorMacLock({ read: macHostState,
+      onSample: host => { host.stage = 'continuous-long-host'; evidence.hostTimeline.push(host); latestHostSample = host; },
+      onLoss: recordHostLoss });
+  }
   if (diagnostic) await runDiagnostic();
   else {
-  await page.evaluate(async () => { const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
-    window.matrixTake = await prepareMatrix(); await window.matrixTake.start(); });
+  await startMatrixTake();
   if (!long) await page.evaluate(() => {
     // A foreground smoke-only control clock keeps process/RSS polling latency
     // outside the target duration. Neither fake input nor composition uses it.
@@ -357,7 +378,7 @@ try {
   const targetMs = long ? 600000 : 8000, pausesAt = long ? [60000, 160000, 260000, 360000, 460000] : [1500, 2500, 3500, 4500, 5500];
   let pauseIndex = 0, offlineStarted, offlineEnded = false, switched = false, returned = false;
   for (;;) {
-    const snapshot = await sample('recording'); const elapsed = snapshot.elapsedMs;
+    const snapshot = await sample('recording'); hostMonitor?.assert(); const elapsed = snapshot.elapsedMs;
     if (snapshot.metrics.states.at(-1).state !== 'recording') break;
     if (pauseIndex < pausesAt.length && elapsed >= pausesAt[pauseIndex]) {
       await page.evaluate(() => window.matrixTake.pause()); await sleep(long ? 1000 : 100);
@@ -386,6 +407,7 @@ try {
   try { evidence.recording = await page.evaluate(() => window.matrixTake.finish()); }
   finally { finishing = false; await monitor; }
   evidence.finalizationMs = Date.now() - finalizationStarted;
+  hostMonitor?.assert();
   const manifest = evidence.recording.manifest;
   check('normal Stop is complete', () => assert.equal(manifest.state, 'complete'));
   check('observer faults are reported rather than accepted', () => assert.deepEqual(evidence.recording.metrics.observerErrors, []));
@@ -429,8 +451,7 @@ try {
     totalRecordedBytes: manifest.tracks.reduce((sum, track) => sum + track.bytes, 0) };
   await save(); console.log('Normal recording measurements saved; starting abrupt-kill recovery.');
   await alternate.close(); await page.reload();
-  await page.evaluate(async () => { const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
-    window.matrixTake = await prepareMatrix(); await window.matrixTake.start(); });
+  await startMatrixTake();
   await sleep(6500); evidence.beforeKill = await page.evaluate(() => window.matrixTake.snapshot());
   const killedAtElapsed = evidence.beforeKill.elapsedMs; await killAbruptly();
   await launch(media);
@@ -465,8 +486,7 @@ try {
     assert.ok(evidence.recoveryCounterControl.message.includes('Recovery requested a device'));
   });
   await page.reload();
-  await page.evaluate(async () => { const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
-    window.matrixTake = await prepareMatrix({ backup: false }); await window.matrixTake.start(); });
+  await startMatrixTake({ backup: false });
   await sleep(2500);
   const quotaSession = await browser.contexts()[0].newCDPSession(page);
   await quotaSession.send('Storage.overrideQuotaForOrigin', { origin, quotaSize: 1 });
@@ -478,8 +498,7 @@ try {
     assert.ok(evidence.quota.manifest.tracks.some(track => track.chunks.length > 0));
   });
   await page.reload();
-  await page.evaluate(async () => { const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
-    window.matrixTake = await prepareMatrix({ backup: false }); await window.matrixTake.start(); });
+  await startMatrixTake({ backup: false });
   await sleep(2500);
   await page.evaluate(() => {
     const prototype = FileSystemWritableFileStream.prototype, write = prototype.write;
@@ -504,6 +523,16 @@ try {
     catch (failure) { evidence.observerErrorReadFailure = String(failure); }
   }
 } finally {
+  if (hostMonitor) {
+    try { await hostMonitor.stop(); hostMonitor.assert(); }
+    catch (error) { evidence.failures.push(`Host lock monitor: ${error.stack || error}`); }
+  }
+  if (long && process.platform === 'darwin') check('long Mac experiment has verified unlocked host reads without prerequisite loss', () => {
+    assert.ok(hostMonitor, 'the continuous long-mode monitor must have started');
+    assert.ok(evidence.hostTimeline.some(host => host.stage === 'continuous-long-host'));
+    assert.ok(evidence.hostTimeline.length > 0); assert.ok(evidence.hostTimeline.every(isVerifiedUnlockedMac));
+    assert.equal(evidence.hostPrerequisiteLost, undefined);
+  });
   evidence.endedAt = new Date().toISOString(); await stderrWrites; await save();
   await browser?.close().catch(() => undefined);
   if (processHandle && processHandle.exitCode === null) await killAbruptly().catch(error => console.error(error));
