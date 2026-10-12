@@ -256,8 +256,11 @@ private func pcmTrimFrames(_ sample: CMSampleBuffer, key: CFString) throws -> In
     return try pcmFramePosition(CMTimeMakeFromDictionary(unsafeDowncast(value, to: CFDictionary.self)), nonnegative: true)
 }
 
-/// Cancellation/deadline interrupts the SDK reader. The caller waits for the
-/// worker's cleanup, keeping the cache reservation until cleanup is complete.
+/// Cancellation and the stall deadline are recorded here and observed between
+/// samples. `cancelReading` stays on the decode queue: calling it while
+/// `copyNextSampleBuffer` is in flight segfaults on GitHub-hosted macOS.
+/// The caller waits for the worker's cleanup and keeps the cache reservation
+/// until that cleanup finishes.
 private final class PCMSourceWork<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Value, any Error>?
@@ -266,7 +269,6 @@ private final class PCMSourceWork<Value: Sendable>: @unchecked Sendable {
     private var reader: AVAssetReader?
     private let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
     private let queue = DispatchQueue(label: "rushes.pcm-source.\(UUID().uuidString)", qos: .utility)
-    private let cancellationQueue = DispatchQueue(label: "rushes.pcm-source.cancel.\(UUID().uuidString)", qos: .utility)
 
     init() {
         timer.setEventHandler { [weak self] in
@@ -310,10 +312,6 @@ private final class PCMSourceWork<Value: Sendable>: @unchecked Sendable {
         guard !completed, interruption == nil else { lock.unlock(); return }
         interruption = error
         lock.unlock()
-        cancellationQueue.async {
-            self.lock.lock(); let reader = self.reader; self.lock.unlock()
-            reader?.cancelReading()
-        }
     }
 }
 
