@@ -6,6 +6,10 @@ public struct StartRecordingIntent: AppIntent {
     public static var title: LocalizedStringResource { "Start Recording" }
     public static var description: IntentDescription { "Start a local Rushes recording. Camera and microphone stay off unless selected. Open Rushes and grant capture permissions first." }
     public static var supportedModes: IntentModes { .background }
+    // IntentExecutionTargets exists only in the macOS 27 SDK; @available covers
+    // the runtime floor and the compiler gate lets the package build on the
+    // macOS 26 SDK (CI), where the optimization knob is simply absent.
+    #if compiler(>=6.4)
     @available(macOS 27.0, *)
     public static var allowedExecutionTargets: IntentExecutionTargets {
         #if RUSHES_INTENTS_MAIN_HOST
@@ -14,6 +18,7 @@ public struct StartRecordingIntent: AppIntent {
         return .appIntentsExtension
         #endif
     }
+    #endif
     @Parameter(title: "Source", default: .display) public var source: RecordingSourceSelection
     @Parameter(title: "Display or window ID", default: "main") public var sourceID: String
     @Parameter(title: "Camera", default: RecordingDeviceSelection.none) public var camera: RecordingDeviceSelection
@@ -60,6 +65,10 @@ public struct StopRecordingIntent: AppIntent {
     public static var title: LocalizedStringResource { "Stop Recording" }
     public static var description: IntentDescription { "Stop the active local Rushes recording and return its package folder path. An optional recording ID limits the action to that take." }
     public static var supportedModes: IntentModes { .background }
+    // IntentExecutionTargets exists only in the macOS 27 SDK; @available covers
+    // the runtime floor and the compiler gate lets the package build on the
+    // macOS 26 SDK (CI), where the optimization knob is simply absent.
+    #if compiler(>=6.4)
     @available(macOS 27.0, *)
     public static var allowedExecutionTargets: IntentExecutionTargets {
         #if RUSHES_INTENTS_MAIN_HOST
@@ -68,6 +77,7 @@ public struct StopRecordingIntent: AppIntent {
         return .appIntentsExtension
         #endif
     }
+    #endif
     @Parameter(title: "Recording ID") public var recordingID: String?
     public static var parameterSummary: some ParameterSummary { Summary("Stop recording in Rushes") { \.$recordingID } }
     public init() {}
