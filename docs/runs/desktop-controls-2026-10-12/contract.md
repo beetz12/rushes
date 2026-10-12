@@ -56,3 +56,20 @@ not a secret or authority token. Preserve original image/device/recording behavi
 and handle missing/obsolete acknowledgments without showing a stale preview.
 Document the original design before coding, test old/new callback and transport
 orders without hardware, and do not claim a source-queue drain alone fixes it.
+
+Transport amendment after installed checks: root observed an invalid-json banner
+after a successful26s screen/camera/microphone take. The writer independently
+reproduced a truncated generated JSON prefix followed by another event after a
+250ms socket send timeout. This demonstrates a transport defect, without proving
+its attribution to that installed incident or a cause of the earlier PID change.
+The same writer additionally owns Sources/RushCore/Control/ControlServer.swift,
+narrow generated-byte transport tests, shell/src/main/engine.ts and its connection
+error classification/helper tests. Atomically mark/shutdown a failed connection
+while the write lock is held, so no new line can append after a truncated prefix.
+Malformed client NDJSON terminates only that socket; preserve the native process,
+active take and existing fresh-status recovery. Clear invalid-json only after that
+verified recovery, not merely on a parsed line or reconnect attempt. Keep payloads,
+schema/token validation, media/scheduling behavior and ownership rules intact.
+Retain safe lengths/error codes rather than private JPEGs or message contents.
+No hardware/shared GUI/provider/public action by the writer. Root owns integration,
+independent review, full release, packaging and installed verification.
