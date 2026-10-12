@@ -128,3 +128,12 @@ all-five decode and export hashes remain the media evidence. The new native
 socketpair, client recovery and actual-renderer synthetic probes verify the
 changed transport/error seams. Audible countdown and floating-bubble physical
 feedback from David remains pending, and no public source push is authorized.
+
+David subsequently confirmed in this chat: "Yes — ticks, bubble and minimization
+worked." That supersedes the physical feedback hold above. All five requested
+desktop behaviors have functional acceptance on the installed app, combining
+the actual two-take media/export/preview evidence with David's audible/overlay
+confirmation. The remaining closeout hold is concrete approval for public source
+publication, not an installed recording failure. Browser long capture is a
+separate unresolved gate; its observed-unlocked full experiment failed at about
+two minutes and is not reclassified by this desktop acceptance.
