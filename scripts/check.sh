@@ -50,6 +50,11 @@ for surface in shell cloud viewer worker; do
     fi
     echo "== $surface: Node $node_pin install/build/tests =="
     PATH="$node_dir:$PATH" npm --prefix "$surface" ci --no-audit --no-fund
+    # Viewer tests launch Playwright WebKit. npm ci does not download it.
+    # Chrome is the branded channel already on the runner.
+    if [ "$surface" = "viewer" ]; then
+      PATH="$node_dir:$PATH" npm --prefix "$surface" exec -- playwright install webkit
+    fi
     PATH="$node_dir:$PATH" npm --prefix "$surface" run build
     PATH="$node_dir:$PATH" npm --prefix "$surface" test
     if [ -d "$surface/src" ]; then
