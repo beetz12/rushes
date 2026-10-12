@@ -434,7 +434,11 @@ h3 {
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.alert.warning { background: #fff8e8; border-color: #f0d58a; color: #725719; }
+.alert.warning {
+  background: #fff8e8;
+  border-color: #f0d58a;
+  color: #725719;
+}
 .alert.error {
   background: #fff0ec;
   border-color: #ffd0c5;
@@ -524,6 +528,29 @@ h3 {
 }
 .bubble-wait {
   font-size: 11px;
+}
+.bubble-close {
+  position: absolute;
+  top: 12%;
+  right: 12%;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: #16212be6;
+  color: #fff;
+  font-size: 24px;
+  line-height: 1;
+  -webkit-app-region: no-drag;
+}
+.bubble-close:hover {
+  background: #35424d;
+}
+.bubble-error {
+  position: absolute;
+  top: 35%;
+  padding: 12px;
+  font-size: 10px;
+  background: #602626;
 }
 .bubble-move-hint {
   position: absolute;
@@ -1344,14 +1371,180 @@ textarea:focus-visible {
   color: #a54535;
   margin-top: 5px;
 }
-.share-access { border-top: 1px solid #dfe3eb; margin-top: 18px; padding-top: 12px; min-width: 0; grid-column: 1/-1; }
-.share-access input { min-width: 0; max-width: 100%; }
-.share-access .edit-tools { flex-wrap: wrap; }
-.feedback-comments { max-height: 240px; overflow: auto; overflow-wrap: anywhere; }
-.feedback-comments article { border-top: 1px solid #dfe3eb; padding: 10px 0; }
-.feedback-comments p { margin: 6px 0; }
-.feedback-reaction { font-size: 12px; }
-.zoom-fields { display: flex; flex-wrap: wrap; column-gap: 12px; }
-.zoom-fields .field { flex: 1 1 100px; min-width: 0; }
-.zoom-fields input { min-width: 0; }
-.zoom-editor { padding-top: 20px; }
+.share-access {
+  border-top: 1px solid #dfe3eb;
+  margin-top: 18px;
+  padding-top: 12px;
+  min-width: 0;
+  grid-column: 1/-1;
+}
+.share-access input {
+  min-width: 0;
+  max-width: 100%;
+}
+.share-access .edit-tools {
+  flex-wrap: wrap;
+}
+.feedback-comments {
+  max-height: 240px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.feedback-comments article {
+  border-top: 1px solid #dfe3eb;
+  padding: 10px 0;
+}
+.feedback-comments p {
+  margin: 6px 0;
+}
+.feedback-reaction {
+  font-size: 12px;
+}
+.zoom-fields {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 12px;
+}
+.zoom-fields .field {
+  flex: 1 1 100px;
+  min-width: 0;
+}
+.zoom-fields input {
+  min-width: 0;
+}
+.zoom-editor {
+  padding-top: 20px;
+}
+
+.bubble-help {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 16px;
+  color: #62717e;
+  font-size: 11px;
+  line-height: 1.6;
+}
+.permission-explanation {
+  font-size: 11px;
+  line-height: 1.6;
+  color: #62717e;
+  margin: 12px 0;
+}
+.tour-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  pointer-events: none;
+}
+.tour-spotlight {
+  position: fixed;
+  border: 3px solid #d74734;
+  border-radius: 12px;
+  box-shadow: 0 0 0 9999px #20262c38;
+  pointer-events: none;
+}
+.tour-card {
+  position: fixed;
+  pointer-events: auto;
+  width: min(380px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  padding: 22px;
+  border-radius: 14px;
+  border: 1px solid #d8dfe5;
+  background: #fff;
+  color: #20262c;
+  box-shadow: 0 12px 46px #16212b35;
+}
+.tour-card h2 {
+  margin: 10px 0 12px;
+  font-size: 21px;
+}
+.tour-card h2:focus {
+  outline: none;
+}
+.tour-card p {
+  font-size: 13px;
+  line-height: 1.6;
+  margin-bottom: 18px;
+}
+.tour-progress {
+  font-size: 11px;
+  color: #687783;
+}
+.tour-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+  flex-wrap: wrap;
+  position: sticky;
+  bottom: 0;
+  background: #fff;
+  padding-top: 8px;
+}
+.tour-skip {
+  margin-right: auto;
+  text-decoration: underline;
+  color: #52616d;
+  padding: 8px 0;
+  font-size: 12px;
+}
+.tour-card .tour-keyboard {
+  margin: 15px 0 0;
+  font-size: 10px;
+  color: #687783;
+}
+.tour-card .tour-error {
+  color: #a72f23;
+}
+.tour-card .tour-missing {
+  font-size: 11px;
+  color: #687783;
+}
+@media (max-width: 650px) {
+  .sidebar {
+    width: 126px;
+    padding: 14px 7px;
+  }
+  .brand {
+    font-size: 21px;
+    padding-bottom: 22px;
+  }
+  .brand-icon {
+    display: none;
+  }
+  .page {
+    padding: 22px 12px;
+  }
+  .topbar {
+    padding: 0 12px;
+    gap: 8px;
+  }
+  .status-pill {
+    font-size: 9px;
+  }
+  .capture-options {
+    grid-template-columns: 1fr;
+  }
+  .presets-row,
+  .record-footer,
+  .bubble-help {
+    flex-wrap: wrap;
+  }
+  .source-tabs {
+    flex-wrap: wrap;
+  }
+  .source-tabs button {
+    min-width: 100px;
+  }
+  .studio-preview select {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .tour-card {
+    padding: 16px;
+  }
+}

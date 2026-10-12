@@ -46,6 +46,7 @@ import {
   type DraftState,
 } from '../shared/review-draft';
 import { ZoomEditor } from './zoom-editor';
+import { OnboardingTour } from './onboarding-tour';
 document.documentElement.dataset.view = location.hash.slice(1) || 'recorder';
 const api = window.rushes;
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -77,7 +78,7 @@ function App() {
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [options, setOptions] = useState<RecordingOptions>(defaultOptions);
-  const [status, setStatus] = useState<any>({ state: 'idle' });
+  const [status, setStatus] = useState<any>({ state: 'loading' });
   const [targets, setTargets] = useState<any>({
     displays: [],
     windows: [],
@@ -87,6 +88,8 @@ function App() {
   const [permissions, setPermissions] = useState<any>({});
   const [preview, setPreview] = useState('');
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [guideTarget, setGuideTarget] = useState<string | null>(null);
+  const guideStep = useCallback((target: string | null) => setGuideTarget(target), []);
   const [presets, setPresets] = useState<Record<string, RecordingOptions>>({}),
     [presetName, setPresetName] = useState('');
   const [micMuted, setMicMuted] = useState(false),
@@ -176,15 +179,6 @@ function App() {
       clearInterval(timer);
     };
   }, [refresh]);
-  useEffect(() => {
-    if (options.camera === 'none' || !api || view !== 'recorder') return;
-    void api
-      .request('camera.preview.start', { camera: options.camera })
-      .catch((e) => setError(String(e)));
-    return () => {
-      void api.request('camera.preview.stop').catch(() => {});
-    };
-  }, [options.camera, view]);
   const updateOptions = (change: Partial<RecordingOptions>) => {
     const next = { ...options, ...change };
     return api.saveOptions(next).then(
@@ -244,7 +238,24 @@ function App() {
       window.removeEventListener('keydown', key);
     };
   }, [view, options, countdown]);
-  const active = ['recording', 'paused', 'preparing'].includes(status.state);
+  const active = ['recording', 'paused', 'preparing', 'armed', 'finishing'].includes(status.state);
+  const chooseCamera = (camera: string) =>
+    run(async () => {
+      if (camera === 'none') {
+        if (await updateOptions({ camera })) await api.request('camera.preview.stop');
+        return;
+      }
+      let access = permissions;
+      if (access.camera !== 'granted') {
+        access = await api.request(
+          access.camera === 'denied' ? 'permissions.settings' : 'permissions.request',
+          { permission: 'camera' },
+        );
+        await refresh();
+        if (access.camera !== 'granted') return;
+      }
+      if (await updateOptions({ camera })) await api.request('camera.preview.start', { camera });
+    });
   if (view === 'bubble')
     return (
       <div
@@ -258,6 +269,20 @@ function App() {
           <div className="bubble-wait">Warming camera…</div>
         )}
         <span className="bubble-move-hint">Drag to move</span>
+        <button
+          className="bubble-close"
+          aria-label="Hide camera bubble"
+          title="Hide camera bubble"
+          style={{ WebkitAppRegion: 'no-drag' } as any}
+          onClick={() => void api.window('hide-bubble').catch((e) => setError(String(e)))}
+        >
+          ×
+        </button>
+        {error && (
+          <span className="bubble-error" role="alert">
+            {error}
+          </span>
+        )}
       </div>
     );
   if (view === 'area') return <AreaSelector />;
@@ -365,6 +390,23 @@ function App() {
           <Icon name="settings" />
           Settings
         </button>
+        <button
+          className="nav"
+          disabled={active || countdown !== null}
+          onClick={() =>
+            run(async () => {
+              const result = await api.onboarding('reset');
+              if (result.status !== 'unseen')
+                throw new Error('Could not reopen the recording guide.');
+              await api.window('recorder');
+            })
+          }
+        >
+          Recording guide
+        </button>
+        <button className="nav" onClick={() => run(() => api.window('quit'))}>
+          Quit Rushes
+        </button>
         <div className="sidebar-bottom">
           <span className="local-dot" />
           Stored on your Mac<small>Your recordings. Your files.</small>
@@ -419,7 +461,7 @@ function App() {
                   <Icon name="refresh" />
                 </button>
               </div>
-              {permissions.screen !== 'granted' && (
+              {(permissions.screen !== 'granted' || guideTarget === 'permissions') && (
                 <PermissionPanel permissions={permissions} refresh={refresh} run={run} />
               )}
               <div className="presets-row">
@@ -429,7 +471,15 @@ function App() {
                   onChange={(e) => {
                     if (presets[e.target.value]) {
                       setOptions(presets[e.target.value]);
-                      void api.saveOptions(presets[e.target.value]);
+                      const chosen = presets[e.target.value];
+                      void api
+                        .saveOptions(chosen)
+                        .then(() => {
+                          if (chosen.camera !== 'none' && permissions.camera === 'granted')
+                            return api.request('camera.preview.start', { camera: chosen.camera });
+                          return api.request('camera.preview.stop');
+                        })
+                        .catch((e) => setError(String(e)));
                     }
                   }}
                 >
@@ -461,104 +511,99 @@ function App() {
                 </button>
               </div>
               <div className="studio-card">
-                <div className="source-tabs">
-                  {[
-                    ['display', 'Entire screen'],
-                    ['window', 'A window'],
-                    ['area', 'Select area'],
-                  ].map(([mode, label]) => (
-                    <button
-                      key={mode}
-                      className={options.mode === mode ? 'selected' : ''}
-                      onClick={() =>
-                        updateOptions({
-                          mode: mode as any,
-                          source:
-                            mode === 'window'
-                              ? (targets.windows[0]?.id ?? '')
-                              : (targets.displays.find((d: any) => d.isMain)?.id ?? 'main'),
-                        })
-                      }
-                    >
-                      <Icon name="screen" size={18} />
-                      {label}
-                    </button>
-                  ))}
-                </div>
-                <div className="studio-preview">
-                  <div className="screen-symbol">
-                    <Icon name="screen" size={50} />
+                <div data-tour="source">
+                  <div className="source-tabs">
+                    {[
+                      ['display', 'Entire screen'],
+                      ['window', 'A window'],
+                      ['area', 'Select area'],
+                    ].map(([mode, label]) => (
+                      <button
+                        key={mode}
+                        className={options.mode === mode ? 'selected' : ''}
+                        onClick={() =>
+                          updateOptions({
+                            mode: mode as any,
+                            source:
+                              mode === 'window'
+                                ? (targets.windows[0]?.id ?? '')
+                                : (targets.displays.find((d: any) => d.isMain)?.id ?? 'main'),
+                          })
+                        }
+                      >
+                        <Icon name="screen" size={18} />
+                        {label}
+                      </button>
+                    ))}
                   </div>
-                  <h2>
-                    {options.mode === 'window'
-                      ? 'Choose a window'
-                      : options.mode === 'area'
-                        ? 'A focused frame'
-                        : 'Your screen, clearly'}
-                  </h2>
-                  <p>
-                    {options.mode === 'area'
-                      ? options.area
-                        ? `${Math.round(options.area.width)} × ${Math.round(options.area.height)} pt selected`
-                        : 'Drag a rectangle around what matters.'
-                      : 'Screen and camera are captured as separate tracks.'}
-                  </p>
-                  {options.mode === 'area' ? (
-                    <button className="secondary" onClick={() => api.window('area')}>
-                      Select recording area
-                    </button>
-                  ) : (
-                    <select
-                      aria-label="Recording source"
-                      value={options.source}
-                      onChange={(e) => updateOptions({ source: e.target.value })}
-                    >
-                      {options.mode === 'display' ? (
-                        <>
-                          <option value="main">Main display</option>
-                          {targets.displays.map((d: any) => (
-                            <option key={d.id} value={d.id}>
-                              {d.name} · {d.widthPoints} × {d.heightPoints}
-                            </option>
-                          ))}
-                        </>
-                      ) : (
-                        targets.windows.map((w: any) => (
-                          <option key={w.id} value={w.id}>
-                            {w.title || w.owningApplication || w.id}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  )}
-                  {options.camera !== 'none' && (
-                    <div className="preview-camera">
-                      {preview ? (
-                        <img src={preview} alt="Live camera" />
-                      ) : (
-                        <Icon name="camera" size={36} />
-                      )}
+                  <div className="studio-preview">
+                    <div className="screen-symbol">
+                      <Icon name="screen" size={50} />
                     </div>
-                  )}
+                    <h2>
+                      {options.mode === 'window'
+                        ? 'Choose a window'
+                        : options.mode === 'area'
+                          ? 'A focused frame'
+                          : 'Your screen, clearly'}
+                    </h2>
+                    <p>
+                      {options.mode === 'area'
+                        ? options.area
+                          ? `${Math.round(options.area.width)} × ${Math.round(options.area.height)} pt selected`
+                          : 'Drag a rectangle around what matters.'
+                        : 'Screen and camera are captured as separate tracks.'}
+                    </p>
+                    {options.mode === 'area' ? (
+                      <button className="secondary" onClick={() => api.window('area')}>
+                        Select recording area
+                      </button>
+                    ) : (
+                      <select
+                        aria-label="Recording source"
+                        value={options.source}
+                        onChange={(e) => updateOptions({ source: e.target.value })}
+                      >
+                        {options.mode === 'display' ? (
+                          <>
+                            <option value="main">Main display</option>
+                            {targets.displays.map((d: any) => (
+                              <option key={d.id} value={d.id}>
+                                {d.name} · {d.widthPoints} × {d.heightPoints}
+                              </option>
+                            ))}
+                          </>
+                        ) : (
+                          targets.windows.map((w: any) => (
+                            <option key={w.id} value={w.id}>
+                              {w.title || w.owningApplication || w.id}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    )}
+                    {options.camera !== 'none' && (
+                      <div className="preview-camera">
+                        {preview ? (
+                          <img src={preview} alt="Live camera" />
+                        ) : (
+                          <Icon name="camera" size={36} />
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="capture-options">
+                <div className="capture-options" data-tour="devices">
                   <label>
                     <span>
                       <Icon name="camera" />
                       Camera
                     </span>
                     <select
+                      aria-label="Camera device"
+                      disabled={active}
                       value={options.camera}
-                      onChange={(e) => {
-                        const camera = e.target.value;
-                        if (camera !== 'none' && permissions.camera !== 'granted')
-                          void run(async () => {
-                            await api.request('permissions.request', { permission: 'camera' });
-                            await refresh();
-                            updateOptions({ camera });
-                          });
-                        else updateOptions({ camera });
-                      }}
+                      onChange={(e) => void chooseCamera(e.target.value)}
                     >
                       <option value="none">Camera off</option>
                       {targets.cameras.map((c: any) => (
@@ -574,6 +619,8 @@ function App() {
                       Microphone
                     </span>
                     <select
+                      aria-label="Microphone device"
+                      disabled={active}
                       value={options.mic}
                       onChange={(e) => {
                         const mic = e.target.value;
@@ -600,6 +647,8 @@ function App() {
                       System audio
                     </span>
                     <select
+                      aria-label="System audio"
+                      disabled={active}
                       value={String(options.systemAudio)}
                       onChange={(e) => updateOptions({ systemAudio: e.target.value === 'true' })}
                     >
@@ -608,10 +657,11 @@ function App() {
                     </select>
                   </label>
                 </div>
-                <div className="record-footer">
+                <div className="record-footer" data-tour="start">
                   <label className="countdown-label">
                     Countdown{' '}
                     <select
+                      disabled={active}
                       value={options.countdownSeconds}
                       onChange={(e) => {
                         const countdownSeconds = countdownFromSelection(e.target.value);
@@ -647,9 +697,21 @@ function App() {
                   )}
                 </div>
               </div>
-              <div className="studio-note">
+              <div className="studio-note" data-tour="originals">
                 <Icon name="check" size={16} />
                 Original tracks stay on your Mac. Share only when you choose.
+              </div>
+              <div className="bubble-help" data-tour="bubble-help">
+                <span>Camera bubble: drag to move · × hides it · choose a size in Settings.</span>
+                {options.camera !== 'none' && (
+                  <button
+                    className="secondary small"
+                    disabled={active}
+                    onClick={() => void chooseCamera(options.camera)}
+                  >
+                    Show camera preview
+                  </button>
+                )}
               </div>
               {countdown !== null && (
                 <div className="countdown-overlay">
@@ -671,15 +733,24 @@ function App() {
           )}
         </div>
       </main>
+      {view === 'recorder' && api && (
+        <OnboardingTour
+          api={api}
+          recordingState={status.state}
+          countdown={countdown}
+          onStep={guideStep}
+          onError={setError}
+        />
+      )}
     </div>
   );
 }
 function PermissionPanel({ permissions, refresh, run }: any) {
   return (
-    <div className="permission-card">
+    <div className="permission-card" data-tour="permissions">
       <div>
-        <h3>Let's give Rushes access.</h3>
-        <p>macOS asks before your screen or devices can be recorded.</p>
+        <h3>Choose your recording access.</h3>
+        <p>Screen Recording is required. Microphone and Camera are optional.</p>
       </div>
       <div className="permission-list">
         {[
@@ -688,7 +759,10 @@ function PermissionPanel({ permissions, refresh, run }: any) {
           ['screen', 'Screen recording'],
         ].map(([key, label]) => (
           <div key={key}>
-            <span>{label}</span>
+            <span>
+              {label}
+              {key !== 'screen' ? ' · optional' : ' · required'}
+            </span>
             <span className="muted">{permissions[key] ?? 'Checking…'}</span>
             {permissions[key] === 'granted' ? (
               <span className="granted">
@@ -709,12 +783,19 @@ function PermissionPanel({ permissions, refresh, run }: any) {
                   })
                 }
               >
-                {permissions[key] === 'denied' ? 'Open Settings' : 'Grant access'}
+                {permissions[key] === 'denied' ? `Open ${label} Settings` : `Grant ${label}`}
               </button>
             )}
           </div>
         ))}
       </div>
+      <p className="permission-explanation">
+        If access is denied, enable Rushes in System Settings → Privacy & Security. Optional
+        Accessibility and Input Monitoring are for advanced tracking only.
+      </p>
+      <button className="secondary small" onClick={() => run(refresh)}>
+        Check access again
+      </button>
       <button className="text-button" onClick={() => api.window('relaunch')}>
         Relaunch to apply a Screen Recording grant
       </button>
@@ -1377,10 +1458,27 @@ function Review({ id, back, run, setNote, trashed }: any) {
       />
       <p className="recording-meta">
         {formatDuration(duration)} · {recording.tracks.filter((t: any) => t.present).length}{' '}
-        separate tracks · {recording.manifest.status === 'failed' || (recording.manifest.warnings ?? []).some((warning: any) => warning.code === 'ended-early' && /^(stream-error|writer-failed)/.test(warning.message ?? '')) ? 'failed · surviving footage kept' : recording.manifest.status}
+        separate tracks ·{' '}
+        {recording.manifest.status === 'failed' ||
+        (recording.manifest.warnings ?? []).some(
+          (warning: any) =>
+            warning.code === 'ended-early' &&
+            /^(stream-error|writer-failed)/.test(warning.message ?? ''),
+        )
+          ? 'failed · surviving footage kept'
+          : recording.manifest.status}
       </p>
       {(recording.manifest.warnings ?? []).map((warning: any, index: number) => (
-        <div className={warning.code === 'track-empty' || (warning.code === 'ended-early' && /^(stream-error|writer-failed)/.test(warning.message ?? '')) ? 'alert error' : 'alert warning'} key={index}>
+        <div
+          className={
+            warning.code === 'track-empty' ||
+            (warning.code === 'ended-early' &&
+              /^(stream-error|writer-failed)/.test(warning.message ?? ''))
+              ? 'alert error'
+              : 'alert warning'
+          }
+          key={index}
+        >
           {warning.message ?? warning.code}
         </div>
       ))}
