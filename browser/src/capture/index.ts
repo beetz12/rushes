@@ -275,7 +275,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
           clearTimeout(timeout); reject(new Error(message.data.message)); fail(`Composition failed: ${message.data.message}`);
         } else if (message.data.kind === 'source-ended') fail('A video source ended. The saved portion is being finalized.');
         else if (message.data.kind === 'progress') lastProgress = performance.now();
-        else if (message.data.kind === 'limit') { event('take-limit'); void finish(); }
+        else if (message.data.kind === 'limit') stopAtLimit();
       };
       worker.onerror = () => { clearTimeout(timeout); reject(new Error('Composition worker failed.')); fail('Composition worker failed.'); };
     });
