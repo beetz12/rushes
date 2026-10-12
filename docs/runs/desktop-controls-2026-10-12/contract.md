@@ -73,3 +73,14 @@ schema/token validation, media/scheduling behavior and ownership rules intact.
 Retain safe lengths/error codes rather than private JPEGs or message contents.
 No hardware/shared GUI/provider/public action by the writer. Root owns integration,
 independent review, full release, packaging and installed verification.
+
+Renderer recovery amendment: the independent e98 review proved that App.run
+clears invalid-json before a Show-preview action, with zero completed fresh-status
+responses or verified-reconnected events. A pending request also legitimately
+rejects with engine-disconnected; generic catches must not erase the connection
+latch. The writer additionally owns renderer/main.tsx and a narrow shared error
+state helper/regression if needed. Keep connection errors latched separately from
+ordinary action errors until the existing verified recovery event. Action start,
+dismissal and success may clear ordinary errors; unrelated failures must remain
+visible and remain after connection recovery. Use pure or isolated synthetic
+renderer tests, no hardware/shared GUI. Preserve capture and every other user flow.
