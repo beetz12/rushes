@@ -825,6 +825,17 @@ function AreaSelector() {
   const [start, setStart] = useState<{ x: number; y: number } | null>(null),
     [end, setEnd] = useState<{ x: number; y: number } | null>(null),
     [ratio, setRatio] = useState(0);
+  const drag = useRef<{ id: number; start: { x: number; y: number } } | null>(null);
+  const updateEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    const active = drag.current;
+    if (!active || active.id !== e.pointerId) return;
+    const x = Math.min(window.innerWidth, Math.max(0, e.clientX));
+    const y = ratio
+      ? active.start.y +
+        (Math.sign(e.clientY - active.start.y || 1) * Math.abs(x - active.start.x)) / ratio
+      : e.clientY;
+    setEnd({ x, y: Math.min(window.innerHeight, Math.max(0, y)) });
+  };
   const rect =
     start && end
       ? {
@@ -838,21 +849,23 @@ function AreaSelector() {
     <div
       className="area-selector"
       onPointerDown={(e) => {
-        if ((e.target as HTMLElement).closest('button,select')) return;
+        if (e.button !== 0 || (e.target as HTMLElement).closest('button,select')) return;
         const point = { x: e.clientX, y: e.clientY };
+        drag.current = { id: e.pointerId, start: point };
         setStart(point);
         setEnd(point);
         e.currentTarget.setPointerCapture(e.pointerId);
       }}
-      onPointerMove={(e) => {
-        if (!start || !e.buttons) return;
-        const x = e.clientX;
-        const y = ratio
-          ? start.y + (Math.sign(e.clientY - start.y || 1) * Math.abs(x - start.x)) / ratio
-          : e.clientY;
-        setEnd({ x, y: Math.min(window.innerHeight, Math.max(0, y)) });
+      onPointerMove={updateEnd}
+      onPointerUp={(e) => {
+        updateEnd(e);
+        if (drag.current?.id === e.pointerId) drag.current = null;
       }}
-      onPointerUp={() => {}}
+      onPointerCancel={() => {
+        drag.current = null;
+        setStart(null);
+        setEnd(null);
+      }}
     >
       <div className="area-help">
         <button onClick={() => api.window('cancel-area')}>Cancel · Esc</button>

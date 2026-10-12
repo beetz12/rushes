@@ -146,11 +146,14 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
   });
   windows.set(view, w);
   if (compact) {
-    w.setContentProtection(view !== 'drawing');
+    // The transient picker contains only selection controls and closes before capture.
+    // Protecting a display-sized transparent window obscures desktop screenshots.
+    w.setContentProtection(!['drawing', 'area'].includes(view));
     w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     w.setAlwaysOnTop(true, 'floating');
   }
-  if (view === 'drawing') w.on('page-title-updated', (event) => event.preventDefault());
+  if (view === 'drawing' || view === 'area')
+    w.on('page-title-updated', (event) => event.preventDefault());
   w.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   w.webContents.on('will-navigate', (e) => e.preventDefault());
   let crashRestarts = 0;
