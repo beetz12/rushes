@@ -31,12 +31,14 @@ private struct PCMSourceFixture {
             settings[AVLinearPCMIsBigEndianKey] = false; settings[AVLinearPCMIsNonInterleaved] = false
         }
         let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
+        input.expectsMediaDataInRealTime = true
         writer.add(input)
         var tailInput: AVAssetWriterInput?
         var adaptor: AVAssetWriterInputPixelBufferAdaptor?
         if videoTail {
             let video = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264,
                 AVVideoWidthKey: 16, AVVideoHeightKey: 16])
+            video.expectsMediaDataInRealTime = true
             writer.add(video); tailInput = video
             adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: video, sourcePixelBufferAttributes: [
                 kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
@@ -70,8 +72,7 @@ private struct PCMSourceFixture {
             tailInput.markAsFinished()
         }
         writer.endSession(atSourceTime: CMTime(seconds: duration, preferredTimescale: 48_000))
-        await writer.finishWriting()
-        guard writer.status == .completed else { throw renderFailure(writer.error?.localizedDescription ?? "PCM fixture finish") }
+        try await finishWriting(writer, within: 20)
         if let windows {
             let asset = AVURLAsset(url: encodedURL), composition = AVMutableComposition()
             let original = try await asset.loadTracks(withMediaType: .audio)[0]

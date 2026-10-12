@@ -229,8 +229,7 @@ final class NativeRenderer: @unchecked Sendable {
             }
             try await withTaskCancellationHandler(operation:{ try await audioTask?.value },onCancel:{ audioTask?.cancel() })
             writer.endSession(atSourceTime:CMTime(seconds:edit.durationMs/1000,preferredTimescale:600_000))
-            await writer.finishWriting()
-            guard writer.status == .completed else { throw renderFailure(writer.error?.localizedDescription ?? "Writer failed during finalize") }
+            try await finishWriting(writer, within: 90)
             try Task.checkCancellation()
         } catch {
             audioTask?.cancel(); writer.cancelWriting()
@@ -293,3 +292,33 @@ final class NativeRenderer: @unchecked Sendable {
     }
 }
 func renderFailure(_ message: String) -> ControlFailure { ControlFailure(code:"render-failed",message:message) }
+
+/// `finishWriting` never returns when the CI VM's video encoder stalls.
+/// Give up and leave the caller to cancel, instead of pinning the process.
+func finishWriting(_ writer: AVAssetWriter, within seconds: Double) async throws {
+    let gate = OnceGate()
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        writer.finishWriting {
+            if gate.claim() { continuation.resume() }
+        }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds) {
+            if gate.claim() { continuation.resume() }
+        }
+    }
+    guard writer.status == .completed else {
+        if writer.status == .writing { writer.cancelWriting() }
+        throw renderFailure(writer.error?.localizedDescription ?? "Writer did not finish within \(Int(seconds)) seconds")
+    }
+}
+
+private final class OnceGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if claimed { return false }
+        claimed = true
+        return true
+    }
+}
