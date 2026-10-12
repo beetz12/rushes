@@ -130,9 +130,13 @@ describe('recording finalization on Quit', () => {
     await expect(supervisor.quit()).rejects.toThrow('finalization pending');
     expect(kill).not.toHaveBeenCalled();
     expect(close).not.toHaveBeenCalled();
-    request.mockResolvedValueOnce({ state: 'recording' }).mockResolvedValueOnce({ stopped: true });
+    request
+      .mockResolvedValueOnce({ state: 'recording' })
+      .mockResolvedValueOnce({ stopped: true })
+      .mockResolvedValueOnce({ state: 'idle' });
     await supervisor.quit();
-    expect(request).toHaveBeenCalledTimes(4);
+    expect(request).toHaveBeenCalledTimes(5);
+    expect(request).toHaveBeenLastCalledWith('status', {}, 10_000);
     expect(close).toHaveBeenCalledOnce();
     expect(kill).toHaveBeenCalledWith('SIGTERM');
   });
