@@ -1,5 +1,49 @@
 # Browser build evidence log
 
+Current continuation (2026-10-12, supersedes earlier publication/run holds):
+David approved publishing the two reviewed public snapshots, exact draft PRs and
+generated Windows/Mac CI. Root created and attached draft PR8 (desktop de6658d)
+and PR9 (browser520dfdb) as beetz12. A narrow workflow-context repair3ba35ea moved
+runner.temp proof paths into step env; actionlint passed, approved PR bodies stayed
+unchanged. No merge, deployment, private footage upload or live charge occurred.
+Desktop installed physical acceptance remains complete; hosted native gate is
+still pending. Browser hosted3ba checks failed on Mac155 initialization10s and
+Mac154 cold timing/recovered download, while Windows jobs remain running.
+
+The completed private eb47 default180s/full-five-reader buffer arm passed31/31
+and all100ms/250ms assertions under122 observed-unlocked samples. No qualifying
+stall occurred, so its conditional alternate arm was not run; pair actual exit2
+is INCONCLUSIVE. The earlier9c full run still stalled at122.8s despite110 observed
+unlocked samples. No cause or M1 acceptance is established.
+
+Investigation confirmed a separate test precondition defect: appended capture
+and matrix fixture routes follow Vite SPA fallback and serve App HTML/root/main,
+instead of their intended blank fixtures. Root HTTP probe and private a7bea5a
+matrix HTTP proof establish that fact, not that App boot caused either stall or
+hosted timing failure. Root's QA-only repair installs pre-configureServer routes
+and asserts fixture identity/no App/API requests. The UI recovery test now proves
+actual durable camera bytes before reload and matches the downloaded byte prefix.
+Independent read-only reviews qualified all three QA changes; product capture
+hashes remain5f76b32. Node22 build/syntax/scanner0 and full local72/72 test exit0
+(135.449s) passed. Its capture runtime was155.0.8059.39, but the later UI process
+reported155.0.8059.40 after the system Chrome bundle updated; both are recorded.
+
+A separate corrected-route short matrix on the fixed official Chrome for Testing
+155.0.8059.39 exited1: three videos fully decoded240frames/~7.968s/maxgap63ms,
+manifest complete8015ms, fixture title/root guard correct and no App/API requests.
+The sync oracle then failed its exact audio upper bracket (ordinal2 versus3),
+before recovery/fault cases ran. Preserve that failure and100ms/250ms guards;
+bounded offline generated-media analysis is next. Longer capture/Pause-only runs
+remain held. Neither QA repair is asserted to cure product timing or source stalls.
+
+Private Pause-only preparationa7bea5a and premise correction8d27ca6 passed24
+non-media checks/build/syntax/scanner, but no Pause-only take ran. The route and
+browser-version premises invalidated the intended comparison. A new corrected
+fixture/fixed-binary reference requires root review and release after sync review;
+no automatic600s retry or alternate backend experiment follows.
+Primary configuration sources: https://vite.dev/guide/api-plugin#configureserver
+and https://developer.chrome.com/docs/automation-and-testing/chrome-for-testing.
+
 Credential rotation completed at21:35UTC: David supplied the replacement JSON
 and confirmed the original was disabled/deleted. Root privately validated exact
 project/client/origin/callback and that the secret differs from the quarantined
@@ -21,7 +65,8 @@ inconclusive. The observed28 display-link stderr errors also occurred in this
 successful run, so that message alone cannot establish recording failure. This
 does not resolve earlier stalls or establish an unobserved lock timeline.
 
-Root authorizes preparation of one next full600s acceptance experiment at the
+Historical preparation authorization (its later9c run failed; current holds
+above govern): root authorized one full600s acceptance experiment at the
 current reviewed capture source5f76b32, with original ordinal-sync observers,
 five pauses, five-minute offline interval, exact source media/default Chrome flags
 and unchanged100ms/250ms limits. The new controlled prerequisite is a Mac lock

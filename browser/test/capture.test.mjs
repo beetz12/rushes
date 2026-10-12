@@ -5,8 +5,13 @@ import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
 let server, browser, origin;
 before(async () => {
-  server = await createServer({ root: fileURLToPath(new URL('..', import.meta.url)), server: { host: '127.0.0.1', port: 0 }, logLevel: 'error' });
-  server.middlewares.use('/capture-fixture', (_request, response) => { response.setHeader('Content-Type', 'text/html'); response.end('<!doctype html><title>Rushes synthetic capture test</title>'); });
+  server = await createServer({ root: fileURLToPath(new URL('..', import.meta.url)), server: { host: '127.0.0.1', port: 0 }, logLevel: 'error',
+    plugins: [{ name: 'rushes-capture-test-fixture', configureServer(value) {
+      value.middlewares.use('/capture-fixture', (_request, response) => {
+        response.setHeader('Content-Type', 'text/html'); response.end('<!doctype html><title>Rushes synthetic capture test</title>');
+      });
+    } }],
+  });
   await server.listen(); origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   browser = await chromium.launch({ ...(process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE ? { executablePath: process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE } : { channel: process.env.RUSHES_CAPTURE_BROWSER || 'chrome' }), headless: true });
   console.log(`Capture runtime ${browser.version()}; isolated synthetic media only.`);
@@ -15,7 +20,16 @@ after(async () => { await browser?.close(); await server?.close(); });
 async function pageFixture(callback) {
   const context = await browser.newContext(); const page = await context.newPage();
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  try { await page.goto(`${origin}/capture-fixture`); await callback(page); assert.deepEqual(errors, []); }
+  const appRequests = []; page.on('request', request => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === '/src/main.tsx' || pathname.startsWith('/api/')) appRequests.push(pathname);
+  });
+  try {
+    await page.goto(`${origin}/capture-fixture`);
+    assert.equal(await page.title(), 'Rushes synthetic capture test');
+    assert.equal(await page.locator('#root').count(), 0);
+    await callback(page); assert.deepEqual(errors, []); assert.deepEqual(appRequests, []);
+  }
   finally { await context.close(); }
 }
 test('screen/camera composition, separate originals, mixed audio, pause timeline, moved bubble, and final chunks decode', { timeout: 45000 }, async () => pageFixture(async page => {

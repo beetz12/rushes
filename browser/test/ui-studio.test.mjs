@@ -152,7 +152,35 @@ test('camera source loss ends the take safely and keeps saved originals in revie
   const f=await pageFixture({signed:false});await skip(f.page);await f.context.grantPermissions(['camera'],{origin});await f.page.getByRole('button',{name:'Camera',exact:true}).click();await f.page.getByLabel('Recording title').fill('Source lost synthetic');await f.page.getByRole('button',{name:'Enable camera',exact:true}).click();await f.page.getByLabel('Countdown',{exact:true}).selectOption('0');await f.page.getByRole('button',{name:'Start recording',exact:true}).click();await f.page.getByRole('button',{name:'Stop & review',exact:true}).waitFor();await f.page.waitForTimeout(1200);await f.page.evaluate(()=>window.testStreams[0].getVideoTracks()[0].dispatchEvent(new Event('ended')));await f.page.getByRole('heading',{name:'Source lost synthetic',exact:true}).waitFor();assert.match(await f.page.textContent('main'),/interrupted/);assert.equal(await f.page.locator('.track-list>div').filter({hasText:'Camera original'}).getByRole('button',{name:'Download WebM'}).isEnabled(),true);assert.equal(await f.page.evaluate(()=>window.testStreams.every(stream=>stream.getTracks().every(track=>track.readyState==='ended'))),true);await f.context.close();
 });
 test('reload recovers acknowledged OPFS bytes without restarting camera and preserves downloads',async()=>{
-  const f=await pageFixture({signed:false});await skip(f.page);await f.context.grantPermissions(['camera'],{origin});await f.page.getByRole('button',{name:'Camera',exact:true}).click();await f.page.getByLabel('Recording title').fill('Interrupted synthetic');await f.page.getByRole('button',{name:'Enable camera',exact:true}).click();await f.page.getByLabel('Countdown',{exact:true}).selectOption('0');await f.page.getByRole('button',{name:'Start recording',exact:true}).click();await f.page.getByRole('button',{name:'Stop & review',exact:true}).waitFor();await f.page.waitForFunction(()=>document.querySelector('.record-time')?.textContent.includes('Saved through'));f.page.once('dialog',dialog=>dialog.accept());await f.page.reload();await f.page.getByRole('heading',{name:'Show it. Say it. Send it.'}).waitFor();assert.equal(await f.page.evaluate(()=>window.permissionCalls.length),0);await f.page.getByRole('button',{name:'Local drafts',exact:true}).click();await f.page.getByRole('button').filter({has:f.page.getByRole('heading',{name:'Interrupted synthetic'})}).click();assert.match(await f.page.textContent('main'),/interrupted/);assert.match(await f.page.textContent('main'),/Encoder data after the last checkpoint may be lost/);const downloading=f.page.waitForEvent('download');await f.page.locator('.track-list>div').filter({hasText:'Camera original'}).getByRole('button',{name:'Download WebM'}).click();assert.ok((await downloading).suggestedFilename().includes('recovered.webm'));await f.context.close();
+  const f=await pageFixture({signed:false});await skip(f.page);await f.context.grantPermissions(['camera'],{origin});
+  await f.page.getByRole('button',{name:'Camera',exact:true}).click();await f.page.getByLabel('Recording title').fill('Interrupted synthetic');
+  await f.page.getByRole('button',{name:'Enable camera',exact:true}).click();await f.page.getByLabel('Countdown',{exact:true}).selectOption('0');
+  await f.page.getByRole('button',{name:'Start recording',exact:true}).click();await f.page.getByRole('button',{name:'Stop & review',exact:true}).waitFor();
+  await f.page.waitForFunction(()=>document.querySelector('.record-time')?.textContent.includes('Saved through'));
+  // A checkpoint from another recorder does not establish recoverable camera bytes.
+  await f.page.waitForFunction(async()=>{
+    const {createDraftStore}=await import('/src/capture/storage.ts');
+    const drafts=await(await createDraftStore()).list();
+    const camera=drafts.find(draft=>draft.title==='Interrupted synthetic')?.tracks.find(track=>track.kind==='camera');
+    return camera?.bytes>0 && camera.chunks.length>0;
+  });
+  const acknowledged=await f.page.evaluate(async()=>{
+    const {createDraftStore}=await import('/src/capture/storage.ts');const store=await createDraftStore();
+    const draft=(await store.list()).find(value=>value.title==='Interrupted synthetic');
+    const blob=await store.trackBlob(draft.id,'camera');const data=await blob.arrayBuffer();
+    return {bytes:blob.size,sha256:[...new Uint8Array(await crypto.subtle.digest('SHA-256',data))].map(value=>value.toString(16).padStart(2,'0')).join('')};
+  });
+  assert.ok(acknowledged.bytes>0);f.page.once('dialog',dialog=>dialog.accept());await f.page.reload();
+  await f.page.getByRole('heading',{name:'Show it. Say it. Send it.'}).waitFor();assert.equal(await f.page.evaluate(()=>window.permissionCalls.length),0);
+  await f.page.getByRole('button',{name:'Local drafts',exact:true}).click();await f.page.getByRole('button').filter({has:f.page.getByRole('heading',{name:'Interrupted synthetic'})}).click();
+  assert.match(await f.page.textContent('main'),/interrupted/);assert.match(await f.page.textContent('main'),/Encoder data after the last checkpoint may be lost/);
+  const downloading=f.page.waitForEvent('download');await f.page.locator('.track-list>div').filter({hasText:'Camera original'}).getByRole('button',{name:'Download WebM'}).click();
+  let download;
+  try {download=await downloading;}
+  catch(error){throw new Error(`Recovered download failed; review: ${await f.page.textContent('main')}`,{cause:error});}
+  assert.ok(download.suggestedFilename().includes('recovered.webm'));const bytes=await readFile(await download.path());
+  assert.ok(bytes.length>=acknowledged.bytes);assert.equal(Buffer.from(await crypto.subtle.digest('SHA-256',bytes.subarray(0,acknowledged.bytes))).toString('hex'),acknowledged.sha256);
+  await f.context.close();
 });
 test('damaged metadata remains visible and indexed original bytes can still be downloaded',async()=>{
   const f=await pageFixture({signed:false});await skip(f.page);await f.page.evaluate(async()=>{const root=await(await navigator.storage.getDirectory()).getDirectoryHandle('rushes-browser-v1',{create:true});const folder=await root.getDirectoryHandle('orphan-ui-proof',{create:true});const file=await folder.getFileHandle('camera-00000.bin',{create:true});const writer=await file.createWritable();await writer.write(new Uint8Array([31,32,33]));await writer.close();});await f.page.reload();await f.page.getByRole('button',{name:'Local drafts',exact:true}).click();await f.page.getByRole('button').filter({has:f.page.getByRole('heading',{name:'Recording needs recovery'})}).click();assert.match(await f.page.textContent('main'),/interrupted/);const downloading=f.page.waitForEvent('download');await f.page.locator('.track-list>div').filter({hasText:'Camera original'}).getByRole('button',{name:'Download WebM'}).click();const download=await downloading;assert.deepEqual([...await readFile(await download.path())],[31,32,33]);assert.equal(await f.page.getByRole('button',{name:'Upload to private library'}).isDisabled(),true);await f.context.close();

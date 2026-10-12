@@ -30,7 +30,7 @@ const evidence = { schema: 'rushes.independent-m1/1', startedAt: new Date().toIS
   normalBackgroundFlags: true, source: 'native Chrome fake MJPEG with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; headless virtual pages only',
-  diagnostic, allocationDiagnostic, samples: [], actions: [], checks: [], failures: [], browserStderr: [], lifecycle: [], hostTimeline: [], nativeAllocationSamples: [] };
+  diagnostic, allocationDiagnostic, samples: [], actions: [], checks: [], failures: [], browserStderr: [], lifecycle: [], hostTimeline: [], nativeAllocationSamples: [], fixturePages: [], appRequests: [] };
 evidence.fileHashes = {};
 for (const filename of ['test/matrix.mjs', 'test/matrix-fixture.mjs', 'test/matrix-media.mjs', 'test/matrix-source.worker.mjs', 'test/matrix-native-observation.mjs', 'test/matrix-host-state.mjs',
   'src/capture/index.ts', 'src/capture/composition.worker.ts', 'src/capture/storage.ts'])
@@ -139,12 +139,19 @@ async function launch(media) {
   if (!endpoint) throw new Error('Isolated Chrome did not start its headless test endpoint.');
   browser = await chromium.connectOverCDP(endpoint); evidence.chrome = browser.version();
   const context = browser.contexts()[0]; await context.setOffline(false);
+  context.on('request', request => {
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === '/src/main.tsx' || pathname.startsWith('/api/')) evidence.appRequests.push(pathname);
+  });
   page = context.pages()[0] || await context.newPage();
   const lifecycle = await context.newCDPSession(page);
   lifecycle.on('Page.lifecycleEvent', event => evidence.lifecycle.push({ at: new Date().toISOString(), ...event }));
   await lifecycle.send('Page.enable'); await lifecycle.send('Page.setLifecycleEventsEnabled', { enabled: true });
   page.on('crash', () => evidence.lifecycle.push({ at: new Date().toISOString(), name: 'page-crash' }));
   await page.goto(`${origin}/matrix-fixture`);
+  const fixturePage = { title: await page.title(), appRootCount: await page.locator('#root').count() };
+  evidence.fixturePages.push(fixturePage);
+  assert.equal(fixturePage.title, 'Independent Rushes synthetic M1'); assert.equal(fixturePage.appRootCount, 0);
   return context;
 }
 async function killAbruptly() {
@@ -350,9 +357,12 @@ try {
     audio: join(dirname(process.env.RUSHES_M1_SOURCE_FILE), 'calibration.wav') } : await matrixMedia(proof);
   const [videoEvidence, audioEvidence] = await Promise.all([mediaFileEvidence(media.video), mediaFileEvidence(media.audio)]);
   evidence.sourceMediaFiles = { video: videoEvidence, audio: audioEvidence };
-  server = await createServer({ root, server: { host: '127.0.0.1', port: 0 }, logLevel: 'error' });
-  server.middlewares.use('/matrix-fixture', (_request, response) => { response.setHeader('Content-Type', 'text/html');
-    response.end('<!doctype html><title>Independent Rushes synthetic M1</title>'); });
+  server = await createServer({ root, server: { host: '127.0.0.1', port: 0 }, logLevel: 'error',
+    plugins: [{ name: 'rushes-independent-matrix-fixture', configureServer(value) {
+      value.middlewares.use('/matrix-fixture', (_request, response) => { response.setHeader('Content-Type', 'text/html');
+        response.end('<!doctype html><title>Independent Rushes synthetic M1</title>'); });
+    } }],
+  });
   await server.listen(); origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   const context = await launch(media);
   if (long && !diagnostic && process.platform === 'darwin') {
@@ -523,6 +533,7 @@ try {
     catch (failure) { evidence.observerErrorReadFailure = String(failure); }
   }
 } finally {
+  check('independent fixture pages never boot the Rushes App', () => assert.deepEqual(evidence.appRequests, []));
   if (hostMonitor) {
     try { await hostMonitor.stop(); hostMonitor.assert(); }
     catch (error) { evidence.failures.push(`Host lock monitor: ${error.stack || error}`); }
