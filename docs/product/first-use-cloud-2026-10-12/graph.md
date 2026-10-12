@@ -31,12 +31,15 @@ flowchart LR
 | C1 | Attack lifecycle, permissions, skip/replay and accessibility | Fresh checker | Final implementation diff and built test results; main atomic/engine helpers and recovery tests; native EngineController/ControlGuide event and preview contracts; no maker working notes | code-verdict.md | check |
 | C2 | Attack browser feasibility, tenancy, quotas and unit economics | Fresh checker | cloud-plan.md and cited primary sources | plan-verdict.md | check |
 | N5 | Verify and install locally | Root | Passing C1 verdict and local declared gates | Private build/install/GUI proof; run-log | integrate |
+| N2r | Repair the live-engine reconnection gap found during installed stress tests | Root | engine/main/renderer source and engine recovery tests; private installed proof and failed-before regression | Declared engine/main/renderer files and engine-recovery tests; transport-debug.md | runtime repair |
+| C1r | Independently check active reconnection and status reconciliation | Fresh checker | N2r code diff, network regression results, transport-debug.md; native ControlServer and EngineController status/event contracts; preload error envelope and shared connection-error helper/tests | transport-verdict.md | runtime check |
 
 ## Checkers
 
 - C1 rejects stale asynchronous bubble creation, capture loss on hide/close, permission prompts on mount, nonpersistent dismissal, missed replay, hidden or unreachable guide controls, focus traps and unsafe Quit.
 - C2 rejects calling cloud sharing browser recording, assuming the native Swift engine runs in a browser, cross-tenant access, client-only quota enforcement, indefinite raw retention, unpriced video processing and unsupported claims about Loom.
 - Checkers write pass/fail and concrete findings. The maker does not set its own output to passed.
+- N5 found a new connection-recovery defect after the original code check: N2r → C1r → N5. This is a new bounded repair lane; its output has a fresh checker and at most two failed retries.
 
 ## Gates
 

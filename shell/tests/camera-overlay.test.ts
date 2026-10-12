@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { CameraOverlayLifecycle } from '../src/main/camera-overlay';
+import { CameraOverlayLifecycle, recoveredBubbleHidden } from '../src/main/camera-overlay';
 function gate<T>() {
   const completion = { resolve(_value: T): void {} };
   const pending = new Promise<T>((ready) => {
@@ -8,6 +8,14 @@ function gate<T>() {
   return { promise: pending, resolve: (value: T) => completion.resolve(value) };
 }
 describe('camera overlay lifetime', () => {
+  it('keeps a hidden bubble only for the same recovered take', () => {
+    for (const state of ['armed', 'recording', 'paused', 'finishing'])
+      expect(recoveredBubbleHidden('take-a', 'take-a', state, true)).toBe(true);
+    expect(recoveredBubbleHidden('take-a', 'take-b', 'recording', true)).toBe(false);
+    expect(recoveredBubbleHidden('take-a', undefined, 'idle', true)).toBe(false);
+    expect(recoveredBubbleHidden(undefined, undefined, 'preparing', true)).toBe(false);
+    expect(recoveredBubbleHidden('take-a', 'take-a', 'recording', false)).toBe(false);
+  });
   it('clears the idle preview at native armed, rejects its callback, and keeps a camera-less take clear', async () => {
     const overlay = new CameraOverlayLifecycle();
     let bubbleVisible = true;

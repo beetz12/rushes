@@ -149,6 +149,8 @@ export class EngineSupervisor {
   private restartTimer?: NodeJS.Timeout;
   private starting?: Promise<void>;
   private quitting?: Promise<void>;
+  private stateRevision = 0;
+  private lifecycleRevision = 0;
   constructor(
     readonly enginePath: string,
     readonly socketPath: string,
@@ -157,6 +159,8 @@ export class EngineSupervisor {
     private launch: typeof spawn = spawn,
   ) {
     this.client.on('event', (e) => {
+      if (['recording-started', 'recording-stopped', 'state-changed'].includes(e.event))
+        this.stateRevision++;
       if (e.event === 'recording-started') this.active = true;
       if (
         e.event === 'state-changed' &&
@@ -184,7 +188,7 @@ export class EngineSupervisor {
   private scheduleRestart() {
     if (
       this.closing ||
-      this.active ||
+      this.quitting ||
       this.restartTimer ||
       this.client.connected ||
       this.restartCount >= 3
@@ -193,11 +197,45 @@ export class EngineSupervisor {
     this.restartCount++;
     this.restartTimer = setTimeout(() => {
       this.restartTimer = undefined;
-      if (this.closing || this.active || this.client.connected) return;
-      void this.start().catch((error) =>
-        this.client.emit('engine-error', { code: 'engine-start-failed', message: String(error) }),
-      );
+      if (this.closing || this.quitting || this.client.connected) return;
+      // A lost connection can miss Stop. Reconcile the cache with the same
+      // socket first; a cached active take must never launch another engine.
+      const lifecycle = this.lifecycleRevision;
+      void this.recoverConnection(lifecycle).catch((error) => {
+        if (this.closing || lifecycle !== this.lifecycleRevision) return;
+        this.client.emit('engine-error', {
+          code: 'engine-recovery-failed',
+          message: String(error),
+        });
+        if (!this.closing) this.client.close();
+        this.scheduleRestart();
+      });
     }, 1000);
+  }
+  private async recoverConnection(lifecycle: number) {
+    if (this.active) await this.client.connect(this.socketPath);
+    else await this.start();
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const revision = this.stateRevision;
+      const status = await this.client.request('status', {}, 10_000);
+      if (!sessionStates.includes(status?.state))
+        throw Object.assign(new Error('Recovered engine returned invalid status.'), {
+          code: 'engine-status-invalid',
+        });
+      if (this.closing || lifecycle !== this.lifecycleRevision) return;
+      // A reply and newer events can share one packet. Never overwrite those events.
+      if (revision !== this.stateRevision) continue;
+      this.active = ['preparing', 'armed', 'recording', 'paused', 'finishing'].includes(
+        status.state,
+      );
+      this.restartCount = 0;
+      this.client.emit('event', { event: 'engine-reconnected', state: status.state, status });
+      return;
+    }
+    throw Object.assign(
+      new Error('Capture changed during connection verification. Retrying fresh status.'),
+      { code: 'engine-status-raced' },
+    );
   }
   private async boot() {
     try {
@@ -301,8 +339,12 @@ export class EngineSupervisor {
   }
   async quit() {
     if (this.quitting) return this.quitting;
+    this.lifecycleRevision++;
+    clearTimeout(this.restartTimer);
+    this.restartTimer = undefined;
     const operation = this.finishQuit().finally(() => {
       this.quitting = undefined;
+      if (!this.closing && !this.client.connected) this.scheduleRestart();
     });
     this.quitting = operation;
     return operation;

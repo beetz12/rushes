@@ -33,3 +33,17 @@ export class CameraOverlayLifecycle {
     return result;
   }
 }
+
+export function recoveredBubbleHidden(
+  previousId: string | undefined,
+  nextId: string | undefined,
+  state: string,
+  hidden: boolean,
+) {
+  return (
+    hidden &&
+    !!previousId &&
+    previousId === nextId &&
+    ['armed', 'recording', 'paused', 'finishing'].includes(state)
+  );
+}

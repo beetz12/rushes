@@ -14,6 +14,7 @@ async function service(path: string, state: string) {
     stopMode: 'done' | 'pending' | 'fail' = 'done';
   const connections = new Set<sockets.Socket>();
   const commands: string[] = [];
+  let nextStatusEvent: string | undefined;
   const server = sockets.createServer((socket) => {
     connections.add(socket);
     socket.setEncoding('utf8');
@@ -41,9 +42,15 @@ async function service(path: string, state: string) {
           continue;
         }
         if (request.cmd === 'record.stop') current = stopMode === 'pending' ? 'finishing' : 'idle';
-        socket.write(
-          JSON.stringify({ id: request.id, ok: true, result: { state: current } }) + '\n',
-        );
+        let response =
+          JSON.stringify({ id: request.id, ok: true, result: { state: current } }) + '\n';
+        if (request.cmd === 'status' && nextStatusEvent) {
+          current = nextStatusEvent;
+          nextStatusEvent = undefined;
+          response +=
+            JSON.stringify({ event: 'recording-started', recordingId: 'next-take' }) + '\n';
+        }
+        socket.write(response);
       }
     });
   });
@@ -57,6 +64,9 @@ async function service(path: string, state: string) {
     state: (value: string) => {
       current = value;
     },
+    raceNextStatus: (value: string) => {
+      nextStatusEvent = value;
+    },
     stop: (mode: typeof stopMode) => {
       stopMode = mode;
     },
@@ -67,6 +77,177 @@ async function service(path: string, state: string) {
   };
 }
 describe('shutdown connection recovery', () => {
+  it('rereads a reply superseded by a new-take event in the same packet', async () => {
+    const root = await files.mkdtemp(paths.join(host.tmpdir(), 'rushes-status-packet-'));
+    const peer = await service(paths.join(root, 'control.sock'), 'idle');
+    const launch = vi.fn();
+    const supervisor = new EngineSupervisor(
+      '/missing/engine',
+      paths.join(root, 'control.sock'),
+      root,
+      paths.join(root, 'index'),
+      launch as any,
+    );
+    try {
+      await supervisor.start();
+      supervisor.active = true;
+      peer.raceNextStatus('recording');
+      const recovered = vi.fn();
+      supervisor.client.on('event', recovered);
+      const lost = once(supervisor.client, 'disconnected');
+      for (const socket of peer.connections) socket.destroy();
+      await lost;
+      await vi.waitFor(
+        () =>
+          expect(recovered).toHaveBeenCalledWith(
+            expect.objectContaining({ event: 'engine-reconnected', state: 'recording' }),
+          ),
+        { timeout: 2500 },
+      );
+      expect(
+        recovered.mock.calls
+          .filter(([e]) => e.event === 'engine-reconnected')
+          .map(([e]) => e.state),
+      ).toEqual(['recording']);
+      expect(peer.commands).toEqual(['status', 'status']);
+      expect(supervisor.active).toBe(true);
+      expect(launch).not.toHaveBeenCalled();
+      peer.state('idle');
+      await supervisor.quit();
+    } finally {
+      supervisor.client.close();
+      await peer.close();
+      await files.rm(root, { recursive: true, force: true });
+    }
+  });
+  it('retries a connected peer whose first verification is malformed', async () => {
+    const root = await files.mkdtemp(paths.join(host.tmpdir(), 'rushes-invalid-retry-'));
+    const peer = await service(paths.join(root, 'control.sock'), 'unknown');
+    const supervisor = new EngineSupervisor(
+      '/missing/engine',
+      paths.join(root, 'control.sock'),
+      root,
+      paths.join(root, 'index'),
+    );
+    try {
+      await supervisor.start();
+      supervisor.active = true;
+      const errors = vi.fn();
+      supervisor.client.on('engine-error', errors);
+      const lost = once(supervisor.client, 'disconnected');
+      for (const socket of peer.connections) socket.destroy();
+      await lost;
+      await vi.waitFor(() => expect(errors).toHaveBeenCalled(), { timeout: 2000 });
+      peer.state('idle');
+      await vi.waitFor(() => expect(supervisor.active).toBe(false), { timeout: 2000 });
+      expect(peer.commands).toEqual(['status', 'status']);
+      expect(supervisor.client.connected).toBe(true);
+      await supervisor.quit();
+    } finally {
+      supervisor.client.close();
+      await peer.close();
+      await files.rm(root, { recursive: true, force: true });
+    }
+  });
+  it('reconciles a missed Stop from fresh idle and can recover a later independent outage', async () => {
+    const root = await files.mkdtemp(paths.join(host.tmpdir(), 'rushes-missed-stop-'));
+    const peer = await service(paths.join(root, 'control.sock'), 'idle');
+    const launch = vi.fn();
+    const supervisor = new EngineSupervisor(
+      '/missing/engine',
+      paths.join(root, 'control.sock'),
+      root,
+      paths.join(root, 'index'),
+      launch as any,
+    );
+    try {
+      await supervisor.start();
+      for (let outage = 0; outage < 4; outage++) {
+        supervisor.active = true;
+        const lost = once(supervisor.client, 'disconnected');
+        for (const socket of peer.connections) socket.destroy();
+        await lost;
+        await vi.waitFor(() => expect(supervisor.active).toBe(false), { timeout: 2000 });
+        expect(supervisor.client.connected).toBe(true);
+      }
+      expect(peer.commands).toEqual(['status', 'status', 'status', 'status']);
+      expect(launch).not.toHaveBeenCalled();
+      await supervisor.quit();
+    } finally {
+      supervisor.client.close();
+      await peer.close();
+      await files.rm(root, { recursive: true, force: true });
+    }
+  }, 10_000);
+  it('bounds failed active reconnections and never launches or stops a cached take', async () => {
+    const root = await files.mkdtemp(paths.join(host.tmpdir(), 'rushes-recovery-bound-'));
+    const peer = await service(paths.join(root, 'control.sock'), 'recording');
+    const launch = vi.fn();
+    const supervisor = new EngineSupervisor(
+      '/missing/engine',
+      paths.join(root, 'control.sock'),
+      root,
+      paths.join(root, 'index'),
+      launch as any,
+    );
+    try {
+      await supervisor.start();
+      supervisor.active = true;
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const lost = once(supervisor.client, 'disconnected');
+      await peer.close();
+      await lost;
+      const reconnect = vi
+        .spyOn(supervisor.client, 'connect')
+        .mockRejectedValue(new Error('Fixture path unavailable'));
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(reconnect).toHaveBeenCalledTimes(3);
+      expect(launch).not.toHaveBeenCalled();
+      expect(peer.commands).toEqual([]);
+      expect(supervisor.active).toBe(true);
+    } finally {
+      supervisor.client.close();
+      await files.rm(root, { recursive: true, force: true });
+    }
+  });
+  it('recovers the same live engine after a capture-time connection loss without launching another process', async () => {
+    const root = await files.mkdtemp(paths.join(host.tmpdir(), 'rushes-active-connection-'));
+    const peer = await service(paths.join(root, 'control.sock'), 'recording');
+    const launch = vi.fn();
+    const supervisor = new EngineSupervisor(
+      '/missing/engine',
+      paths.join(root, 'control.sock'),
+      root,
+      paths.join(root, 'index'),
+      launch as any,
+    );
+    try {
+      await supervisor.start();
+      supervisor.active = true;
+      const recovered = vi.fn();
+      supervisor.client.on('event', recovered);
+      const lost = once(supervisor.client, 'disconnected');
+      for (const socket of peer.connections) socket.destroy();
+      await lost;
+      await vi.waitFor(
+        () =>
+          expect(recovered).toHaveBeenCalledWith(
+            expect.objectContaining({ event: 'engine-reconnected', state: 'recording' }),
+          ),
+        { timeout: 2500 },
+      );
+      expect(supervisor.client.connected).toBe(true);
+      expect(supervisor.active).toBe(true);
+      expect(launch).not.toHaveBeenCalled();
+      expect(peer.commands).toEqual(['status']);
+      peer.state('idle');
+      await supervisor.quit();
+    } finally {
+      supervisor.client.close();
+      await peer.close();
+      await files.rm(root, { recursive: true, force: true });
+    }
+  });
   it('reconnects after an engine disconnect and requires fresh idle status despite stale active cache', async () => {
     const root = await files.mkdtemp(paths.join(host.tmpdir(), 'rushes-quit-recovery-'));
     const path = paths.join(root, 'control.sock');

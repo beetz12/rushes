@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { isConnectionErrorCode } from '../shared/connection-error';
 import { createRoot } from 'react-dom/client';
 import {
   formatDuration,
@@ -74,7 +75,12 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
 }
 function App() {
   const view = location.hash.slice(1) || 'recorder';
-  const [error, setError] = useState('');
+  const [error, setErrorText] = useState('');
+  const errorCode = useRef<unknown>(undefined);
+  const setError = useCallback((message: string, code?: unknown) => {
+    errorCode.current = code;
+    setErrorText(message);
+  }, []);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [options, setOptions] = useState<RecordingOptions>(defaultOptions);
@@ -100,7 +106,7 @@ function App() {
     try {
       return await fn();
     } catch (e) {
-      setError(String(e).replace(/^Error: /, ''));
+      setError(String(e).replace(/^Error: /, ''), (e as { code?: string })?.code);
     } finally {
       setBusy(false);
     }
@@ -111,7 +117,7 @@ function App() {
       setPermissions(p);
       if (p.screen === 'granted') setTargets(await api.request('targets'));
     } catch (e) {
-      setError(String(e));
+      setError(String(e), (e as { code?: string })?.code);
     }
     try {
       setStatus(await api.request('status'));
@@ -128,9 +134,15 @@ function App() {
     void api.presets('list').then(setPresets);
     void refresh();
     const off = api.onEvent((e) => {
-      if (e.event === 'error') setError(String(e.message ?? 'Native engine error'));
+      if (e.event === 'error') setError(String(e.message ?? 'Native engine error'), e.code);
       if (e.event === 'warning') setNote(String(e.message ?? e.code));
       if (e.event === 'engine-ready') void refresh();
+      if (e.event === 'engine-reconnected') {
+        setStatus(e.status ?? { state: e.state });
+        setCountdown(null);
+        if (isConnectionErrorCode(errorCode.current)) setError('');
+        setNote('Native engine connection restored.');
+      }
       if (e.event === 'camera-preview-cleared') setPreview('');
       if (e.event === 'camera-preview') {
         const data = (e.result ?? e) as any;
@@ -274,7 +286,7 @@ function App() {
           aria-label="Hide camera bubble"
           title="Hide camera bubble"
           style={{ WebkitAppRegion: 'no-drag' } as any}
-          onClick={() => void api.window('hide-bubble').catch((e) => setError(String(e)))}
+          onClick={() => void api.window('hide-bubble').catch((e) => setError(String(e), e.code))}
         >
           ×
         </button>

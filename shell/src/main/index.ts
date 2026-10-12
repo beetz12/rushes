@@ -33,7 +33,7 @@ import { copyVideoFile } from './file-clipboard';
 import { videoExportRequest } from '../shared/review-draft';
 import { atomicJSON, atomicBytes } from './atomic';
 import { OnboardingStore } from './onboarding-store';
-import { CameraOverlayLifecycle } from './camera-overlay';
+import { CameraOverlayLifecycle, recoveredBubbleHidden } from './camera-overlay';
 import { startShellServer } from './shell-server';
 import { MediaRegistry, parseRange, mimeType } from './media';
 import {
@@ -481,12 +481,39 @@ function bubble() {
     backgroundColor: '#00000000',
   });
 }
+function showRecordingBubble(id: string) {
+  if (bubbleSuppressed) return;
+  return cameraOverlay
+    .showWhenReady(
+      async (current) => {
+        const show = await supervisor.client.request('show', { id });
+        if (
+          !show.manifest.sources?.cameraId ||
+          !current() ||
+          currentId !== id ||
+          !supervisor.active
+        )
+          return false;
+        await supervisor.client.request('camera.preview.subscribe', { enabled: true });
+        return current() && currentId === id && supervisor.active;
+      },
+      (hasCamera) => {
+        if (hasCamera && !quitting && !bubbleSuppressed && currentId === id && supervisor.active) {
+          bubble();
+          void syncBubble().catch((error) =>
+            broadcast({ event: 'warning', message: String(error) }),
+          );
+        }
+      },
+    )
+    .catch((error) => broadcast({ event: 'warning', message: String(error) }));
+}
 async function requestControl(cmd: string, args: Record<string, unknown> = {}) {
   try {
     if (cmd === 'record.stop') await syncBubble();
     return await supervisor.client.request(cmd, args);
   } catch (error) {
-    broadcast({ event: 'error', message: String(error) });
+    broadcast({ event: 'error', message: String(error), code: (error as { code?: string })?.code });
   }
 }
 function trayUpdate() {
@@ -1098,43 +1125,33 @@ async function ready() {
           broadcast({ event: 'warning', message: String(error) }),
         );
       const id = currentId;
-      if (!bubbleSuppressed)
-        void cameraOverlay
-          .showWhenReady(
-            async (current) => {
-              const show = await supervisor.client.request('show', { id });
-              if (
-                !show.manifest.sources?.cameraId ||
-                !current() ||
-                currentId !== id ||
-                !supervisor.active
-              )
-                return false;
-              await supervisor.client.request('camera.preview.subscribe', { enabled: true });
-              return current() && currentId === id && supervisor.active;
-            },
-            (hasCamera) => {
-              if (
-                hasCamera &&
-                !quitting &&
-                !bubbleSuppressed &&
-                currentId === id &&
-                supervisor.active
-              ) {
-                bubble();
-                void syncBubble().catch((error) =>
-                  broadcast({ event: 'warning', message: String(error) }),
-                );
-              }
-            },
-          )
-          .catch((error) => broadcast({ event: 'warning', message: String(error) }));
+      if (!bubbleSuppressed && typeof id === 'string') void showRecordingBubble(id);
       else
         void queueBubbleWrite(async () => {
           if (currentId === id && supervisor.active)
             await supervisor.client.request('record.bubble', { ...lastBubble, visible: false });
         }).catch((error) => broadcast({ event: 'warning', message: String(error) }));
       void syncBubble().catch((error) => broadcast({ event: 'warning', message: String(error) }));
+    }
+    if (e.event === 'engine-reconnected' && !quitting) {
+      const recoveredId = e.status?.recording?.recordingID;
+      bubbleSuppressed = recoveredBubbleHidden(currentId, recoveredId, e.state, bubbleSuppressed);
+      if (recoveredId !== currentId || e.state === 'idle' || e.state === 'preparing') {
+        cameraOverlay.hide();
+      }
+      state = e.state;
+      currentId = recoveredId;
+      if (supervisor.active) {
+        bar();
+        if (typeof currentId === 'string') void showRecordingBubble(currentId);
+      } else {
+        cameraOverlay.hide();
+        windows.get('bar')?.close();
+        windows.get('bubble')?.close();
+        windows.get('teleprompter')?.close();
+        void hideDrawing().catch(() => {});
+        broadcast({ event: 'camera-preview-cleared' });
+      }
     }
     if (e.event === 'state-changed' && typeof e.state === 'string') {
       if (cameraOverlay.newTake(state, e.state)) {
@@ -1174,8 +1191,10 @@ async function ready() {
   supervisor.client.on('disconnected', () => {
     cameraOverlay.hide();
     windows.get('bubble')?.close();
+    broadcast({ event: 'camera-preview-cleared' });
     broadcast({
       event: 'error',
+      code: 'engine-disconnected',
       message: 'Native engine disconnected. Relaunch Rushes to reconnect.',
     });
   });
