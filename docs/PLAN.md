@@ -830,6 +830,14 @@ Done when:
 
 ### Phase 7: SaaS (sketch; opened only when David says go)
 
+**2026-10-12 planning update:** David requested a paid, no-install browser
+recording plan. The independently checked
+[browser service proposal](product/first-use-cloud-2026-10-12/cloud-plan.md)
+covers a new browser capture pipeline, private accounts, tenant isolation,
+quota enforcement and subscriptions. It expands the historical sketch below
+for planning only. Implementation, service provisioning and live billing have
+not been opened by this request.
+
 This phase is written down so the seams stay honest, not scheduled. Nothing before it assumes it exists. Scope sketch, if opened:
 
 1. Web sign-in and accounts on the TypeScript service tier (Cloudflare Worker, D1).

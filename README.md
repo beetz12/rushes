@@ -11,6 +11,14 @@ recording library and Settings. Select a display, window or area, enable the
 camera and audio sources you want, then Record. Pause and Stop are available
 from the floating controls. The camera and microphone start disabled.
 
+The first-use Recording guide highlights permissions, sources, devices and the
+recording controls. Skip and completion are saved across relaunch; replay it
+from **Recording guide** in the sidebar. Permissions and camera preview open
+only after an explicit action. Drag the camera bubble to move it, or use its
+× button to hide it. During a take, hiding the bubble keeps the camera original
+recording; while idle it also stops the preview. **Quit Rushes** is available
+in the sidebar and menu-bar menu.
+
 After Stop, review the video, trim or split clips, adjust the camera layout and
 audio, or edit through the transcript. Export MP4, full MOV, YouTube video,
 audio, or the original tracks for an editor. Editing preserves the originals.
@@ -20,6 +28,10 @@ available; failed background jobs can be retried from Settings.
 Configure sharing in Settings to create a stable web link with captions and
 transcript. Credentials are encrypted locally. The optional local MCP server
 starts disabled and permits reads until you explicitly enable mutations.
+
+Cloud sharing currently uploads locally recorded video. A paid, no-install
+browser recorder is a separate proposed product; see the checked
+[browser service plan](docs/product/first-use-cloud-2026-10-12/cloud-plan.md).
 
 Recordings live in `~/Movies/Rushes`; application settings live in
 `~/Library/Application Support/Rushes`. The CLI is bundled at
