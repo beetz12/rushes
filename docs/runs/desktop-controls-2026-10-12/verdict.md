@@ -90,3 +90,29 @@ state was preserved. No full Swift/media/encoder suite or physical recording
 test was started. Root must apply its full release and installed-app gate after
 unlock and a fresh input-idle check before reporting these installed fixes as
 complete. No code repair is required by this bounded review.
+
+## Fixture correction follow-up
+
+On 2026-10-12 the reviewer independently opened the complete `4237969` test/doc
+diff and relevant fixture/controller context. **No supported blocker found.**
+The previous `startRequest()` supplied only display and microphone, so the old
+"active CLI camera" test's arbitrary mock JPEG was correctly rejected by the
+strict camera-absent token guard. `ControlTests.swift:649` now explicitly selects
+`StubCatalog`'s existing `dev-facecam`; it retains the JPEG and subscription/device
+lifetime assertions and checks acknowledgment/frame token agreement. The new
+camera-less counterpart at `ControlTests.swift:670` requires a null token and no
+published JPEG from that same unexpected mock callback. The helper's new camera
+argument defaults to nil, preserving its other callers' request shape.
+
+`4237969` changes only `Tests/RushCoreTests/ControlTests.swift` and `release.md`.
+Production equality with the previously reviewed `e766577` was independently
+verified by equal complete Git tree IDs: `Sources` is
+`020a660a8d9601d931071ad4b43d44e52bbde907` at both revisions, and `shell/src` is
+`8687aec8a2406c2598c93137d78f4c9c2af67b54` at both. Its diff whitespace check
+passed. The release note describes the fixture mismatch without weakening the
+production token rule or declaring the repaired full gate complete.
+
+No tests, media probes or GUI/provider actions were run for this follow-up while
+root's full gate was running. The earlier independent 117 shell tests, eight
+native state tests and original-export proof remain bounded source evidence.
+Root owns the corrected full-gate outcome and pending installed physical checks.
