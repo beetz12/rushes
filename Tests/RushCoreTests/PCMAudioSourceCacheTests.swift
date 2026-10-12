@@ -47,7 +47,7 @@ private struct PCMSourceFixture {
         let inputFrames = windows?.reduce(0) { $0 + $1.count } ?? Int(duration * Double(rate))
         for window in [0..<inputFrames] {
             for frame in stride(from: window.lowerBound, to: window.upperBound, by: 1_024) {
-                while !input.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(1)) }
+                try await waitUntilReadyForMedia(input, writer: writer)
                 guard input.append(try Self.sample(frame: frame, count: min(1_024, window.upperBound - frame), rate: rate, channels: channels)) else {
                     throw renderFailure(writer.error?.localizedDescription ?? "PCM fixture append")
                 }
@@ -55,7 +55,7 @@ private struct PCMSourceFixture {
         }
         input.markAsFinished()
         if let tailInput, let adaptor {
-            while !tailInput.isReadyForMoreMediaData { try await Task.sleep(for: .milliseconds(1)) }
+            try await waitUntilReadyForMedia(tailInput, writer: writer)
             var pixel: CVPixelBuffer?
             guard let pool = adaptor.pixelBufferPool,
                   CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pixel) == kCVReturnSuccess, let pixel else {

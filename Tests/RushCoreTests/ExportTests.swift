@@ -32,7 +32,7 @@ struct SyntheticExportFixture {
         let adaptor=AVAssetWriterInputPixelBufferAdaptor(assetWriterInput:input,sourcePixelBufferAttributes:[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_32BGRA,kCVPixelBufferWidthKey as String:width,kCVPixelBufferHeightKey as String:height])
         writer.add(input); guard writer.startWriting() else { throw renderFailure("Fixture writer failed") }; writer.startSession(atSourceTime:.zero)
         for frame in 0..<frameCount {
-            while !input.isReadyForMoreMediaData { try await Task.sleep(for:.milliseconds(1)) }
+            try await waitUntilReadyForMedia(input, writer: writer)
             var pixel:CVPixelBuffer?
             // Fixtures need valid source pixels, independent of the encoder's
             // asynchronously created/managed adaptor pool.
@@ -62,7 +62,7 @@ struct SyntheticExportFixture {
         let input=AVAssetWriterInput(mediaType:.audio,outputSettings:[AVFormatIDKey:kAudioFormatMPEG4AAC,AVSampleRateKey:48_000,AVNumberOfChannelsKey:1,AVEncoderBitRateKey:128_000])
         writer.add(input); guard writer.startWriting() else { throw renderFailure("Audio fixture writer") }; writer.startSession(atSourceTime:.zero)
         for frame in stride(from:0,to:96_000,by:1024) {
-            while !input.isReadyForMoreMediaData { try await Task.sleep(for:.milliseconds(1)) }
+            try await waitUntilReadyForMedia(input, writer: writer)
             let count=min(1024,96_000-frame)
             let sample=try audioSample(frame:frame,count:count,frequency:frequency,onsetFrame:Int(onsetMs*48))
             guard input.append(sample) else { throw renderFailure(writer.error?.localizedDescription ?? "Audio fixture append") }

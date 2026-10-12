@@ -24,7 +24,7 @@ struct CameraBlurExportTests {
         let adaptor=AVAssetWriterInputPixelBufferAdaptor(assetWriterInput:input,sourcePixelBufferAttributes:nil)
         guard writer.startWriting() else { throw renderFailure("Pattern fixture writer") }; writer.startSession(atSourceTime:.zero)
         for frame in 0..<60 {
-            while !input.isReadyForMoreMediaData { try await Task.sleep(for:.milliseconds(1)) }
+            try await waitUntilReadyForMedia(input, writer: writer)
             var buffer:CVPixelBuffer?
             let status=CVPixelBufferCreate(kCFAllocatorDefault,width,height,kCVPixelFormatType_32BGRA,[kCVPixelBufferIOSurfacePropertiesKey:[:]] as CFDictionary,&buffer)
             guard status == kCVReturnSuccess,let buffer else { throw renderFailure("Pattern fixture pixel allocation status\(status)") }
