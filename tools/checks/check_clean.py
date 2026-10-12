@@ -102,8 +102,16 @@ def main() -> int:
     firsts = {key.split(" ", 1)[0] for key in doc_keys}
 
     hits: dict = {}
+    # A machine without the reference clones (for example a CI runner) cannot
+    # run the overlap comparison. Degrade loudly: skip those sources, keep the
+    # exit green, and say so on stderr. Where the clones exist the comparison
+    # always runs in full.
+    skipped_sources: list = []
     for slug, src in SOURCES.items():
         if src["class"] != "copyleft" and not src.get("copyleft_paths"):
+            continue
+        if not clone_dir(slug).exists():
+            skipped_sources.append(slug)
             continue
         for rel, text in source_files(slug, want_permissive=False):
             for key in scan(text, k, doc_keys, firsts):
@@ -112,6 +120,8 @@ def main() -> int:
     if hits:
         hit_firsts = {key.split(" ", 1)[0] for key in hits}
         for slug in SOURCES:
+            if not clone_dir(slug).exists():
+                continue
             for _rel, text in source_files(slug, want_permissive=True):
                 for key in scan(text, k, hits, hit_firsts):
                     hits.pop(key, None)
@@ -119,6 +129,13 @@ def main() -> int:
                     break
             if not hits:
                 break
+
+    if skipped_sources:
+        print(
+            "warning: reference clones absent; overlap comparison skipped for: "
+            + ", ".join(sorted(skipped_sources)),
+            file=sys.stderr,
+        )
 
     print(len(hits))
     for key, src in sorted(hits.items(), key=lambda kv: doc_keys[kv[0]]):

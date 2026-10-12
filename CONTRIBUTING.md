@@ -27,7 +27,10 @@ never set in CI; do not set them in CI either.
 Rushes was designed and built from clean-room research notes. Some features
 exist in AGPL-licensed recorders (Cap, Recordly, Screenity). To keep this
 repository safely permissive, code adapted from those projects must never be
-contributed. The rules below are copied verbatim from `docs/PLAN.md`:
+contributed. The rules below are copied verbatim from `docs/PLAN.md`. The
+`~/Work/reference-repos/` paths they name are the maintainer's local reference
+clones (catalogued in `tools/checks/sources.json`); contributors do not need
+them, and their absence never blocks the gate:
 
 <!-- VERBATIM-BEGIN: docs/PLAN.md "Clean-room rules for the build" -->
 
