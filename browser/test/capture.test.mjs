@@ -58,6 +58,50 @@ test('screen/camera composition, separate originals, mixed audio, pause timeline
   assert.ok(result.data['tab-audio'].powers[1] > 0.08 && result.data['tab-audio'].powers[0] < 0.01);
   for (const info of Object.values(result.data)) assert.ok(Math.abs(info.duration * 1000 - result.manifest.durationMs) < 250);
 }));
+test('late first camera frame stays in preflight and all recording tracks begin together', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { fixture, inspectVideo } = await import('/test/capture-fixture.mjs');
+    const before = performance.now();
+    const value = await fixture('screen-camera', true, false, undefined, 700);
+    const preparationMs = performance.now() - before;
+    try {
+      await value.session.start();
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      const manifest = await value.session.stop();
+      const videos = {};
+      for (const kind of ['screen', 'camera', 'composed']) videos[kind] = await inspectVideo(await value.store.trackBlob(value.id, kind));
+      return { preparationMs, manifest, videos };
+    } finally { await value.session.cancel(); await value.cleanup(); }
+  });
+  assert.ok(result.preparationMs >= 650, `Preflight resolved before the first camera frame: ${result.preparationMs}ms`);
+  assert.equal(result.manifest.state, 'complete');
+  assert.ok(result.manifest.durationMs >= 1200 && result.manifest.durationMs < 1500);
+  const offsets = result.manifest.tracks.map(track => track.startOffsetMs);
+  assert.ok(Math.max(...offsets) - Math.min(...offsets) <= 100, JSON.stringify(offsets));
+  for (const info of Object.values(result.videos)) assert.ok(Math.abs(info.duration * 1000 - result.manifest.durationMs) < 250);
+}));
+test('source loss before first composition output rejects preflight and releases every input without a draft', { timeout: 15000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { createCaptureSession } = await import('/src/capture/index.ts');
+    const { createDraftStore } = await import('/src/capture/storage.ts');
+    const screenCanvas = document.createElement('canvas'); screenCanvas.width = 640; screenCanvas.height = 360;
+    const screen = screenCanvas.captureStream(0), screenTrack = screen.getVideoTracks()[0];
+    const screenContext = screenCanvas.getContext('2d');
+    const ticking = setInterval(() => { screenContext.fillRect(0, 0, 640, 360); screenTrack.requestFrame(); }, 33);
+    const cameraCanvas = document.createElement('canvas'); cameraCanvas.width = 640; cameraCanvas.height = 360;
+    const camera = cameraCanvas.captureStream(0), cameraTrack = camera.getVideoTracks()[0];
+    const store = await createDraftStore(), id = crypto.randomUUID(), before = performance.now();
+    const ending = setTimeout(() => { cameraTrack.stop(); cameraTrack.dispatchEvent(new Event('ended')); }, 100);
+    let session, error;
+    try { session = await createCaptureSession({ id, title: 'Preflight source loss', mode: 'screen-camera', screen, camera, store, persistent: false, backupFolder: false }); }
+    catch (value) { error = value.message; }
+    finally { clearInterval(ticking); clearTimeout(ending); if (session) await session.cancel(); }
+    return { error, preparationMs: performance.now() - before, released: [screenTrack, cameraTrack].every(track => track.readyState === 'ended'), drafts: await store.list() };
+  });
+  assert.match(result.error ?? '', /source ended|source closed/i);
+  assert.ok(result.preparationMs < 1500, `Source loss waited for the initialization deadline: ${result.preparationMs}ms`);
+  assert.equal(result.released, true); assert.deepEqual(result.drafts, []);
+}));
 test('screen without audio and camera-only captures produce playable originals; rapid Stop waits for final data', { timeout: 30000 }, async () => pageFixture(async page => {
   const results = await page.evaluate(async () => {
     const { fixture, inspectVideo } = await import('/test/capture-fixture.mjs');

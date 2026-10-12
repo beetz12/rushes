@@ -90,6 +90,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
   let pendingBytes = 0;
   let ending: Promise<DraftManifest> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
+  let abortInitialization: ((error: Error) => void) | undefined;
   let lastProgress = performance.now();
   const slots: RecorderSlot[] = [];
   const manifest: DraftManifest = {
@@ -116,7 +117,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
   function fail(message: string) {
     if (canceled || ['complete', 'interrupted', 'failed'].includes(state)) return;
     failure ??= message; warn(message); event('failure', message);
-    if (state === 'ready' && !created) { notify('failed'); release(); }
+    if (state === 'ready' && !created) { abortInitialization?.(new Error(message)); notify('failed'); release(); }
     else void finish().catch(error => { warn(messageOf(error)); release(); });
   }
   const listeners: { track: MediaStreamTrack; handler: EventListener; name: string }[] = [];
@@ -244,8 +245,13 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
     const streams = clones.map(track => new apis.MediaStreamTrackProcessor({ track, maxBufferSize: 1 }).readable);
     const ready = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('Composition worker did not initialize.')), 10_000);
+      abortInitialization = error => { clearTimeout(timeout); reject(error); };
       worker.onmessage = (message: MessageEvent<{ kind: string; message?: string }>) => {
-        if (message.data.kind === 'ready') { clearTimeout(timeout); resolve(); }
+        if (message.data.kind === 'ready') {
+          clearTimeout(timeout);
+          if (released) reject(new Error('The recording source closed during initialization.'));
+          else resolve();
+        }
         else if (message.data.kind === 'error') {
           clearTimeout(timeout); reject(new Error(message.data.message)); fail(`Composition failed: ${message.data.message}`);
         } else if (message.data.kind === 'source-ended') fail('A video source ended. The saved portion is being finalized.');
@@ -260,6 +266,8 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
       maxSeconds: BROWSER_LIMITS.maxTakeSeconds, bubble: manifest.bubble,
     }, [...streams, generator.writable]);
     await ready;
+    abortInitialization = undefined;
+    if (released) throw new Error('The recording source closed during initialization.');
     return {
       preview,
       async start() {

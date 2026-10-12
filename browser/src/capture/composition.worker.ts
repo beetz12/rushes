@@ -44,6 +44,7 @@ async function compose(setup: Setup) {
     const frame = new VideoFrame(canvas, { timestamp: driver.timestamp });
     try { await writer.write(frame); } finally { frame.close(); }
     frameCount++;
+    if (frameCount === 1) send('ready');
     if (now - lastReport > 1000) { send('progress'); lastReport = now; }
   };
   async function consume(stream: ReadableStream<VideoFrame>, isScreen: boolean, driving: boolean) {
@@ -62,7 +63,6 @@ async function compose(setup: Setup) {
       }
     } finally { reader.releaseLock(); }
   }
-  send('ready');
   const jobs: Promise<void>[] = [];
   if (setup.screen) jobs.push(consume(setup.screen, true, !setup.camera));
   if (setup.camera) jobs.push(consume(setup.camera, false, true));

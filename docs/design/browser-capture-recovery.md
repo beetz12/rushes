@@ -60,3 +60,15 @@ their terminal duration. Composition uses relative nominal cadence buckets to
 avoid repeatedly rejecting near 30 fps input timestamps with small clock jitter.
 Optional cloud recording identity is initial immutable metadata only; upload
 ownership remains with the separate UI/protocol lane.
+
+Original C3 readiness refinement (2026-10-12): initializing a canvas/worker does
+not establish a usable composed input. The worker signals readiness once, after
+the required screen/camera inputs have produced frames, the draw has succeeded
+and the first generated-frame write has completed. Only then does the coordinator
+allow a recording epoch and recorder starts. Source ending or composition error
+rejects this preflight immediately, while a ten-second deadline bounds missing
+input. A released session cannot escape through a late ready message. Actual
+recorder start offsets remain measured; this barrier does not guarantee encoder
+warm-up or resolve the sustained native-input stall. A delayed-camera fixture and
+both protected Chrome versions must validate its effect without relaxing drift
+or duration assertions. No additional long-lived frame observer is introduced.

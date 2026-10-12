@@ -1,5 +1,5 @@
 // Synthetic calibration only: no device permission or real screen/camera input.
-export async function fixture(mode = 'screen-camera', audioEnabled = true, calibration = false, cloudRecordingId) {
+export async function fixture(mode = 'screen-camera', audioEnabled = true, calibration = false, cloudRecordingId, cameraDelayMs = 0) {
   const capture = await import('/src/capture/index.ts');
   const storage = await import('/src/capture/storage.ts');
   let clock = performance.now(), calibrationPause = 0;
@@ -17,8 +17,11 @@ export async function fixture(mode = 'screen-camera', audioEnabled = true, calib
       context.fillStyle = Math.floor(calibrationElapsed() / 500) % 2 ? '#ffffff' : '#000000';
       context.fillRect(0, 0, 64, 64); track.requestFrame();
     };
-    tick(); const timer = setInterval(tick, 1000 / 30);
-    canvases.push({ canvas, stream, timer }); feeds.push(stream);
+    const source = { canvas, stream, timer: undefined, delay: undefined };
+    const begin = () => { tick(); source.timer = setInterval(tick, 1000 / 30); };
+    if (name === 'camera' && cameraDelayMs) source.delay = setTimeout(begin, cameraDelayMs);
+    else begin();
+    canvases.push(source); feeds.push(stream);
   }
   let context;
   const oscillators = [];
@@ -48,7 +51,7 @@ export async function fixture(mode = 'screen-camera', audioEnabled = true, calib
   }, 10) : undefined;
   const cleanup = async () => {
     if (pulseTimer) clearInterval(pulseTimer);
-    canvases.forEach(({ timer, stream }) => { clearInterval(timer); stream.getTracks().forEach(track => track.stop()); });
+    canvases.forEach(({ timer, delay, stream }) => { clearInterval(timer); clearTimeout(delay); stream.getTracks().forEach(track => track.stop()); });
     oscillators.forEach(({ oscillator }) => oscillator.stop()); await context?.close();
   };
   const pauseCalibration = () => { calibrationPause = performance.now(); };
