@@ -1,5 +1,34 @@
 # Browser build evidence log
 
+Current provider update (2026-10-12, supersedes older pending-branding/client
+statements below): David approved the Google policy and branding action, then the
+specific client origin/callback and his sole test access. Rushes branding is
+External/Testing in the separate unbilled project nexai-rushes-20261012. The saved
+Rushes Browser web client has only https://rushes-browser.nexai-rushes.workers.dev
+as its JavaScript origin and that origin plus /auth/google/callback as redirect.
+The vendor JSON read-back confirms those fields; saved proof records the client
+table and sole David test user. No Worker deployment or real app login is implied.
+
+Credential incident: the Google creation dialog exposes its Copy-button secret
+inside an aria-label. A root button-label inspection printed that secret into tool
+output. Root acknowledged the mistake and requested that David add/download a
+replacement, then disable/delete the original in Google. Computer-use credential
+changes require human takeover; the existing downloaded JSON is private0600 and
+explicitly quarantined as unrotated. No secret is committed, bound to a provider
+or used for deployment. Rotation and sign-in validation remain release gates.
+The connected Chrome extension subsequently requested an update before further
+browser control; no raw-CDP, alternate profile or credential workaround is used.
+
+The two authorized installed desktop tests are now complete: camera-only14.726s
+and screen/camera/microphone26.165s, all five raw tracks fully software-decode0 and
+both separate exports hash-match their masters. Those media stay local, AutoShare
+Off. A bounded desktop transport/renderer recovery repair is undergoing final
+acceptance separately. The prior native locked-host and input-timer holds below
+are historical. Root released exactly one180s observer-free browser allocation
+diagnostic after observing an unlocked idle host and finishing all real media
+decodes, with full native/media gates held until the diagnostic decode finishes.
+That is an investigation, not M1 completion or permission for blind long retries.
+
 - 2026-10-12: User authorized browser build from reviewed paid plan; selected NexAI Stripe test mode and dedicated NexAI Google OAuth app. Central epic openbrain-4pyn, slice issues .1 capture/.2 service/.3 UI.
 - Shared contract/build scaffold f40c8c9 compiled under Node22.22.0, clean scan0, dependency notice checker36 directdeps and negativecontrols4pass. Three isolated writer worktrees share that exact ancestor.
 - Read-only Cloudflare identity: david@nexaiadvisors.com, account2c4f33400a9a986505f6491b2fa3fa66, subdomainnexai-rushes, personal R2 rushes-media and D1 rushes-share. OAuth Stream storage read denied HTTP403/code10000; this token does not establish Stream access or activation. No resources mutated.
