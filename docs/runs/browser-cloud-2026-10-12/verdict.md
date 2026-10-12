@@ -2,12 +2,17 @@
 
 **FAIL for release readiness.** Short capture, recovery, UI and tenant-service
 fixtures pass, but the protected M1 maximum/background outcome is not achieved.
-Three supported P2 integration findings were found; the history and reassessment
-below distinguish repaired code from remaining release conditions.
+Three supported P2 integration findings were found and repaired. **Qualified PASS
+for those code repairs at root `5f76b32083975b2657fc950d9284db61bd07b53d`;** the
+history and reassessment below preserve the remaining release conditions.
 
 Review base: `853ff16`. Initial candidate: `37c7838`. Root path repair: `95aa8f7`,
-copied as `7987d00` with equal Git tree hashes. This checker authored no business
-code. It used its own checkout/dependencies, Node22.22.0, synthetic media, actual
+copied as `7987d00` with equal Git tree hashes. Final R3 source is root `5f76b32`,
+copied through local `0ed2faf`; the final source inventory confirms every browser
+and Worker business source/config/migration file matches that root revision. Only
+the separate native-diagnostic matrix helpers/runner differ; they were read-only
+and no diagnostic recording was run here. This checker authored no business code.
+It used its own checkout/dependencies, Node22.22.0, synthetic media, actual
 SQLite/RSA/HMAC fixtures and isolated browser profiles. No sharedGUI, real screen,
 camera/microphone, provider account, sharedBeads, public push or PR was operated.
 
@@ -74,7 +79,51 @@ seam, not a ten-minute recording test. Coordinate bounded clock-metadata toleran
 with provider-measured≤600s and the existing≤250ms decoded-duration agreement;
 do not enlarge the provider duration, reservations or protected sync assertions.
 
-**Reassessment pending the coordinated root repair.**
+**Repaired and independently reassessed:** `5f2cae5` adds a dedicated active-time
+deadline at599.8s, with proportional headroom for short diagnostic ceilings,
+rearms across Pause/Resume and retains the redundant worker/periodic safeguards.
+Elapsed metadata is never clamped; a late Stop exceeding600s marks the saved
+take interrupted. The strict manifest/provider/reservation limits stay600s.
+
+The repair review also retained and resolved three boundary refinements:
+
+- `c196cee` routes a late worker limit through the guarded recording predicate.
+  An actual worker-originated limit was held, the take canceled, then the message
+  delivered: no state resurrection, draft or page error. The main deadline was
+  postponed only to isolate this redundant path, not as production behavior.
+- Fresh TypeScript7.0.2 build of `5f2cae5` failed withTS2367 at the post-start state
+  comparison. `7d12f9a` preserves the runtime predicate without that invalid
+  narrowing. The same declared browser build then passed; failed logs remain.
+- `baa7275` installs the health watcher for an owned unreleased/non-ending take.
+  The original independent gated-save/Pause probe observed0 watchers after
+  startup and Resume; the final probe observes1 throughout, with cancel cleanup.
+  `5f76b32` joins existing started-recorder stop events before cancellation
+  completion, with a15s bound, shared callers, in-flight Stop joining and cleanup
+  before reporting timeout. This is an event-confirmation boundary, not proof of
+  native GPU quiescence or a diagnosis of calibration variability.
+
+On exact final source, currentChrome155's independent one-second analog completes
+normal/paused takes below1000ms with decoded duration agreement within250ms;
+deliberate scheduling overrun retains an interrupted take with every track saved.
+Canceled timers and late worker messages are harmless. Held terminal events keep
+both cancel callers pending while all sources already end, then remove the draft;
+in-flight Stop also joins. Accelerating only the15s confirmation timer to35ms
+demonstrates timeout reporting after cleanup. The next five-track take decodes
+with35.1ms start-offset spread. These are bounded synthetic/fault-model results,
+not a ten-minute, background or real-device acceptance.
+
+Actual Worker/SQLite rejects manifest600001ms with400. Controlled provider
+duration600.001s returns422 and keeps the600s reservation; duration600s settles
+exactly600s and becomes ready. No provider account was called or changed.
+
+Fresh final browser build and changed-source clean checks pass. Official previous
+Chrome154's full capture gate passes21/21, including the original first cold
+calibration and the new cancellation/startup-Pause regressions. Earlier current
+and previous gates passed19/19. Root separately reports final currentChrome full
+browser66/66; this reviewer does not relabel that maker result as independent.
+The earlier root65 run's104ms spread over the unchanged100ms assertion and the
+unfinished file-parallel run remain retained; serialization/original calibration
+ordering are not claimed to cure a product or establish a sustained-source cause.
 
 ## Fresh passing checks
 

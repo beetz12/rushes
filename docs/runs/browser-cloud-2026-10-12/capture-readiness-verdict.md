@@ -46,9 +46,11 @@ exploratory race run used bundled Chrome149 and is retained separately as
 ## Retained limits
 
 The full candidate reviewer found a separate maximum-take metadata seam: automatic
-Stop preserves a wall-clock duration slightly beyond the limit, while the service
-accepts no manifest beyond600000ms. That finding is recorded separately in the
-whole-candidate verdict and does not invalidate this startup barrier result.
+Stop preserved a wall-clock duration slightly beyond the limit, while the service
+accepts no manifest beyond600000ms. Subsequent bounded deadline/ownership repairs
+through root `5f76b32` receive a qualified PASS in the whole-candidate verdict;
+the original failure evidence remains retained. This does not change this narrow
+startup-barrier result or create a maximum-duration/background guarantee.
 Retained M1 runs interrupted before their target duration; observer-free testing
 also stalled. No additional long run was launched by this reviewer, and no
 sustained-source cause was inferred from the passing startup tests.
