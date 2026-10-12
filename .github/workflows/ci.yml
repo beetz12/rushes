@@ -78,12 +78,14 @@ jobs:
           assert t.get("displays"), "no displays listed"
           print("targets ok:", len(t["displays"]), "displays")
           PY
-          .build/release/rushes --socket "$SOCK" record start --display main --mic default --duration 2 --wait > record.json
+          # --wait streams NDJSON events and ends with the done envelope;
+          # parse every line and take the recording id from any event/result.
+          .build/release/rushes --socket "$SOCK" record start --display main --mic default --duration 2 --wait > record.ndjson
           python3 - <<'PY'
           import json
           def find_id(o):
               if isinstance(o, dict):
-                  if "id" in o and isinstance(o["id"], str):
+                  if isinstance(o.get("id"), str) and len(o.get("id", "")) > 8:
                       return o["id"]
                   for v in o.values():
                       r = find_id(v)
@@ -93,7 +95,12 @@ jobs:
                       r = find_id(v)
                       if r: return r
               return None
-          rid = find_id(json.load(open("record.json")))
+          rid = None
+          for line in open("record.ndjson"):
+              line = line.strip()
+              if not line:
+                  continue
+              rid = find_id(json.loads(line)) or rid
           assert rid, "no recording id in record output"
           open("rid.txt", "w").write(rid)
           print("recorded:", rid)

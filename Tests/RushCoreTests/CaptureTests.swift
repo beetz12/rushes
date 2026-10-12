@@ -1033,9 +1033,13 @@ struct CaptureLiveConfigureTests {
 
         // Building an SCStream object without starting it prompts nothing.
         let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
+        // SCStream.isCapturing exists only in the macOS 27 SDK; @available
+        // alone cannot name it on the macOS 26 SDK (CI), so gate the check.
+        #if compiler(>=6.4)
         if #available(macOS 27.0, *) {
             #expect(!stream.isCapturing)
         }
+        #endif
     }
 
     @Test("The exclusion list matches live running applications")
