@@ -38,6 +38,12 @@ export class GuideSession {
   move(step: number, lastStep: number) {
     if (!this.state.saving) this.update({ step: Math.max(0, Math.min(lastStep, step)) });
   }
+  // Called only for the main process's successful reset notification. An ordinary
+  // focus refresh keeps progress, while explicit replay always returns to welcome.
+  replaySaved() {
+    this.update({ step: 0 });
+    return this.load();
+  }
   async persist(action: Exclude<GuideAction, 'get'>) {
     if (this.state.saving) return;
     ++this.revision;

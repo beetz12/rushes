@@ -70,6 +70,23 @@ describe('durable first-use choices', () => {
     expect(session.state.open).toBe(true);
     expect(session.state.error).toContain('could not save');
   });
+  it('replays an already open unseen guide at welcome while ordinary refresh preserves progress', async () => {
+    const request = vi.fn().mockResolvedValue({ version: 1, status: 'unseen' });
+    const session = new GuideSession(request, () => {});
+    await session.load();
+    session.move(4, 6);
+    await session.load();
+    expect(session.state).toMatchObject({ open: true, step: 4 });
+    const replay = session.replaySaved();
+    expect(session.state).toMatchObject({ open: true, step: 0 });
+    await replay;
+    expect(session.state).toMatchObject({ open: true, step: 0, error: '' });
+    request.mockRejectedValueOnce(new Error('Read unavailable'));
+    session.move(3, 6);
+    await session.replaySaved();
+    expect(session.state).toMatchObject({ open: true, step: 0 });
+    expect(session.state.error).toContain('Read unavailable');
+  });
   it('prevents a late startup read from reviving a successfully dismissed guide', async () => {
     let resolveRead: ((value: GuideRecord) => void) | undefined;
     const request = vi.fn((action) =>

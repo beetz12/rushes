@@ -82,7 +82,9 @@ export function OnboardingTour({
     const refresh = () => void session.load();
     window.addEventListener('focus', refresh);
     const off = api.onEvent((event) => {
-      if (event.event === 'onboarding-changed') refresh();
+      if (event.event !== 'onboarding-changed') return;
+      if (event.action === 'reset') void session.replaySaved();
+      else refresh();
     });
     return () => {
       off();
