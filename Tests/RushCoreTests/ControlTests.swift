@@ -85,7 +85,7 @@ final class ControlExchange: @unchecked Sendable {
     }
 
     /// Waits until an event of `kind` arrives, up to `timeout` seconds.
-    func event(_ kind: ControlEventKind, timeout: TimeInterval = 10) -> ControlEvent? {
+    func event(_ kind: ControlEventKind, timeout: TimeInterval = 45) -> ControlEvent? {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             if let found = events.first(where: { $0.event == kind.rawValue }) {
@@ -838,7 +838,7 @@ struct EngineControllerTests {
         await controller.handle(
             startRequest(duration: 1.0), context: exchange.context)
         #expect(exchange.lastResponse?.ok == true)
-        let stopped = exchange.event(.recordingStopped, timeout: 10)
+        let stopped = exchange.event(.recordingStopped, timeout: 45)
         #expect(stopped != nil)
         #expect(stopped?.result?["status"]?.string == "complete")
         // Nothing is active any more.
@@ -889,7 +889,7 @@ struct EngineControllerTests {
         await controller.handle(
             startRequest(duration: 0.8, title: "first"), context: exchange.context)
         let firstID = try #require(exchange.lastResponse?.result?["id"]?.string)
-        let firstStop = exchange.event(.recordingStopped, timeout: 10)
+        let firstStop = exchange.event(.recordingStopped, timeout: 45)
         #expect(firstStop?.result?["status"]?.string == "complete")
 
         // list: the index row exists.

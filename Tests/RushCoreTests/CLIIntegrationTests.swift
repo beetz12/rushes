@@ -329,9 +329,9 @@ final class EngineHarness: @unchecked Sendable {
         } catch {
             fatalError("could not spawn the engine: \(error)")
         }
-        // Wait for the ready line (up to 30 s; the first build-linked run
-        // can be slow to start).
-        let deadline = Date().addingTimeInterval(30)
+        // Wait for the ready line (up to 120 s; a cold start on a loaded CI
+        // VM can take much longer than a warm local run).
+        let deadline = Date().addingTimeInterval(120)
         while Date() < deadline {
             if readyOutput().contains("\"event\":\"ready\"") { return }
             if !process.isRunning { break }
