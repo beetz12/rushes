@@ -229,15 +229,11 @@ final class NativeRenderer: @unchecked Sendable {
             }
             try await withTaskCancellationHandler(operation:{ try await audioTask?.value },onCancel:{ audioTask?.cancel() })
             writer.endSession(atSourceTime:CMTime(seconds:edit.durationMs/1000,preferredTimescale:600_000))
-            try await finishWriting(writer, within: 90)
+            await writer.finishWriting()
+            guard writer.status == .completed else { throw renderFailure(writer.error?.localizedDescription ?? "Writer failed during finalize") }
             try Task.checkCancellation()
         } catch {
-            audioTask?.cancel()
-            // cancelWriting while finishWriting is still inside VideoToolbox
-            // segfaults on the CI VM. Abandon a stalled finish instead.
-            if (error as? ControlFailure)?.payload.code != "encoder-stalled" {
-                writer.cancelWriting()
-            }
+            audioTask?.cancel(); writer.cancelWriting()
             _=await audioTask?.result
             try? FileManager.default.removeItem(at:target); throw error
         }
@@ -297,50 +293,3 @@ final class NativeRenderer: @unchecked Sendable {
     }
 }
 func renderFailure(_ message: String) -> ControlFailure { ControlFailure(code:"render-failed",message:message) }
-
-/// `finishWriting` never returns when the CI VM's video encoder stalls.
-/// Give up and leave the caller to cancel, instead of pinning the process.
-func finishWriting(_ writer: AVAssetWriter, within seconds: Double) async throws {
-    let gate = OnceGate()
-    let finished: Bool = await withCheckedContinuation { continuation in
-        writer.finishWriting {
-            if gate.claim() { continuation.resume(returning: true) }
-        }
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds) {
-            if gate.claim() { continuation.resume(returning: false) }
-        }
-    }
-    if finished {
-        guard writer.status == .completed else {
-            throw renderFailure(writer.error?.localizedDescription ?? "Writer failed during finalize")
-        }
-        return
-    }
-    // Dropping the writer while VideoToolbox is still inside finishWriting
-    // segfaults. Keep it alive for the rest of the process.
-    StalledWriters.shared.keep(writer)
-    throw ControlFailure(code: "encoder-stalled", message: "Writer did not finish within \(Int(seconds)) seconds")
-}
-
-private final class StalledWriters: @unchecked Sendable {
-    static let shared = StalledWriters()
-    private let lock = NSLock()
-    private var held: [AVAssetWriter] = []
-    func keep(_ writer: AVAssetWriter) {
-        lock.lock()
-        held.append(writer)
-        lock.unlock()
-    }
-}
-
-private final class OnceGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var claimed = false
-    func claim() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if claimed { return false }
-        claimed = true
-        return true
-    }
-}

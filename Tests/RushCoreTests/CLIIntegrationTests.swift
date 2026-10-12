@@ -317,6 +317,7 @@ final class EngineHarness: @unchecked Sendable {
     /// instead of failing the suite.
     private func ensureRunning() {
         if process?.isRunning == true { return }
+        logEngineReplacement("process had exited")
         boot()
     }
 
@@ -324,6 +325,7 @@ final class EngineHarness: @unchecked Sendable {
     /// `isRunning` can still be true while shutdown is stuck, so replace
     /// the process before the retry.
     private func replaceEngine() {
+        logEngineReplacement("connection closed")
         if let process, process.isRunning {
             process.terminate()
             let deadline = Date().addingTimeInterval(3)
@@ -336,6 +338,11 @@ final class EngineHarness: @unchecked Sendable {
             }
         }
         boot()
+    }
+
+    private func logEngineReplacement(_ reason: String) {
+        let line = "CLI harness replaced the stub engine at \(socketPath.path) (\(reason))\n"
+        FileHandle.standardError.write(Data(line.utf8))
     }
 
     private func boot() {

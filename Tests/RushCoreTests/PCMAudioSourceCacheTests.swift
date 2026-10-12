@@ -139,6 +139,38 @@ private struct PCMSourceFixture {
     }
 }
 
+/// Stands in for `copyNextSampleBuffer` blocking inside the decoder.
+private final class HungSampleCopy: @unchecked Sendable {
+    private let lock = NSLock()
+    private let entered = DispatchSemaphore(value: 0)
+    private var release = false
+    private var didFinish = false
+    var finished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return didFinish
+    }
+    func block() {
+        entered.signal()
+        while true {
+            lock.lock()
+            let done = release
+            lock.unlock()
+            if done { break }
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        lock.lock()
+        didFinish = true
+        lock.unlock()
+    }
+    func waitUntilBlocked() { entered.wait() }
+    func unblock() {
+        lock.lock()
+        release = true
+        lock.unlock()
+    }
+}
+
 @Suite(.serialized) struct PCMAudioSourceCacheTests {
     @Test func aacResamplesMonoToCanonicalStereoWithoutApplyingOffsets() async throws {
         let fixture = try PCMSourceFixture(); defer { fixture.cleanup() }
@@ -228,6 +260,31 @@ private struct PCMSourceFixture {
         #expect(FileManager.default.fileExists(atPath: stamp.path))
     }
 
+    /// A copy that never returns still has to unblock the caller. The stall
+    /// timer is that escape: this closure does not call `check()`.
+    @Test(.timeLimit(.seconds(5)))
+    func hungSampleCopyStillResumesTheCaller() async throws {
+        let work = PCMSourceWork<Int>(stallTimeout: 0.4)
+        let hang = HungSampleCopy()
+        let task = Task {
+            try await work.run { _ in
+                hang.block()
+                return 1
+            }
+        }
+        hang.waitUntilBlocked()
+        let started = ContinuousClock.now
+        do {
+            _ = try await task.value
+            Issue.record("A hung sample copy returned a value")
+        } catch let error as ControlFailure {
+            #expect(error.payload.code == "audio-reader-stalled")
+        }
+        #expect(started.duration(to: .now) < .seconds(3))
+        #expect(hang.finished == false)
+        hang.unblock()
+    }
+
     @Test func cancellationAndInvalidSourceLeaveNoPartialCache() async throws {
         let fixture = try PCMSourceFixture(); defer { fixture.cleanup() }
         try await fixture.audio(aac: false, duration: 45)
@@ -243,7 +300,15 @@ private struct PCMSourceFixture {
         }
         #expect(staged)
         await #expect(throws: CancellationError.self) { try await task.value }
-        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+        // The caller is resumed while a stuck copy is abandoned, so the
+        // partial file can disappear a moment after the error surfaces.
+        let cleanupDeadline = ContinuousClock.now.advanced(by: .seconds(15))
+        var leftover = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        while !leftover.isEmpty, ContinuousClock.now < cleanupDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+            leftover = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        }
+        #expect(leftover.isEmpty)
         try FileManager.default.removeItem(at: fixture.package.trackURL(for: .microphone))
         try AtomicFileWriter.write(Data("invalid master".utf8), to: fixture.package.trackURL(for: .microphone))
         await #expect(throws: (any Error).self) { try await cache.prepare(package: fixture.package, track: fixture.track) }

@@ -26,10 +26,17 @@ jobs:
         run: |
           # macos-latest does not ship nvm. check.sh reads each .nvmrc and
           # requires that exact build at ~/.nvm/versions/node/v<pin>/bin.
+          # nvm v0.40.8, pinned to the commit rather than the movable tag.
           export NVM_DIR="$HOME/.nvm"
+          nvm_sha=a885b885fef16fac4bc544188fb25e9e37ae83e8
           if [ ! -s "$NVM_DIR/nvm.sh" ]; then
-            git clone --depth 1 --branch v0.40.8 https://github.com/nvm-sh/nvm.git "$NVM_DIR"
+            mkdir -p "$NVM_DIR"
+            git -C "$NVM_DIR" init -q
+            git -C "$NVM_DIR" remote add origin https://github.com/nvm-sh/nvm.git
+            git -C "$NVM_DIR" fetch --depth 1 origin "$nvm_sha"
+            git -C "$NVM_DIR" checkout --detach FETCH_HEAD
           fi
+          test "$(git -C "$NVM_DIR" rev-parse HEAD)" = "$nvm_sha"
           # nvm.sh returns non-zero while it is being sourced under `set -e`.
           set +e
           # shellcheck disable=SC1091

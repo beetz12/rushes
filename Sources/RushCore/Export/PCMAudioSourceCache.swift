@@ -256,27 +256,30 @@ private func pcmTrimFrames(_ sample: CMSampleBuffer, key: CFString) throws -> In
     return try pcmFramePosition(CMTimeMakeFromDictionary(unsafeDowncast(value, to: CFDictionary.self)), nonnegative: true)
 }
 
-/// Cancellation and the stall deadline are recorded here and observed between
-/// samples. `cancelReading` stays on the decode queue: calling it while
-/// `copyNextSampleBuffer` is in flight segfaults on GitHub-hosted macOS.
-/// The caller waits for the worker's cleanup and keeps the cache reservation
-/// until that cleanup finishes.
-private final class PCMSourceWork<Value: Sendable>: @unchecked Sendable {
+/// Cancellation and the stall deadline are recorded here. A hung
+/// `copyNextSampleBuffer` never reaches `check()`, so `interrupt` resumes the
+/// caller immediately and abandons that copy. `cancelReading` stays on the
+/// decode queue: calling it while the copy is in flight segfaults on
+/// GitHub-hosted macOS. The worker still cleans up once the copy returns.
+final class PCMSourceWork<Value: Sendable>: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: CheckedContinuation<Value, any Error>?
     private var interruption: (any Error)?
     private var completed = false
     private var reader: AVAssetReader?
+    private let stallTimeout: TimeInterval
+    private var timerResumed = false
     private let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
     private let queue = DispatchQueue(label: "rushes.pcm-source.\(UUID().uuidString)", qos: .utility)
 
-    init() {
+    init(stallTimeout: TimeInterval = 30) {
+        self.stallTimeout = stallTimeout
         timer.setEventHandler { [weak self] in
-            self?.interrupt(ControlFailure(code: "audio-reader-stalled", message: "Straight audio source decoding made no progress for 30 seconds"))
+            guard let self else { return }
+            self.interrupt(ControlFailure(code: "audio-reader-stalled", message: "Straight audio source decoding made no progress for \(Int(self.stallTimeout)) seconds"))
         }
-        timer.schedule(deadline: .now() + 30); timer.resume()
     }
-    deinit { timer.cancel() }
+    deinit { if timerResumed { timer.cancel() } }
 
     func run(_ operation: @escaping @Sendable (PCMSourceWork<Value>) throws -> Value) async throws -> Value {
         try await withTaskCancellationHandler {
@@ -284,6 +287,11 @@ private final class PCMSourceWork<Value: Sendable>: @unchecked Sendable {
                 lock.lock()
                 if let interruption { lock.unlock(); continuation.resume(throwing: interruption); return }
                 self.continuation = continuation
+                if !timerResumed {
+                    timerResumed = true
+                    timer.schedule(deadline: .now() + stallTimeout)
+                    timer.resume()
+                }
                 lock.unlock()
                 queue.async {
                     let result = Result { try operation(self) }
@@ -292,7 +300,6 @@ private final class PCMSourceWork<Value: Sendable>: @unchecked Sendable {
                     self.continuation = nil; self.completed = true
                     let interruption = self.interruption
                     self.lock.unlock()
-                    self.timer.cancel()
                     if let interruption { continuation?.resume(throwing: interruption) }
                     else { continuation?.resume(with: result) }
                 }
@@ -303,7 +310,7 @@ private final class PCMSourceWork<Value: Sendable>: @unchecked Sendable {
     func check() throws {
         lock.lock(); let interruption = interruption; lock.unlock()
         if let interruption { throw interruption }
-        timer.schedule(deadline: .now() + 30)
+        timer.schedule(deadline: .now() + stallTimeout)
     }
     func attach(_ reader: AVAssetReader) { lock.lock(); self.reader = reader; lock.unlock() }
     func detachReader() { lock.lock(); reader = nil; lock.unlock() }
@@ -311,7 +318,10 @@ private final class PCMSourceWork<Value: Sendable>: @unchecked Sendable {
         lock.lock()
         guard !completed, interruption == nil else { lock.unlock(); return }
         interruption = error
+        let continuation = self.continuation
+        self.continuation = nil
         lock.unlock()
+        continuation?.resume(throwing: error)
     }
 }
 

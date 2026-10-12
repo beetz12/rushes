@@ -152,14 +152,11 @@ private final class CameraBlurEncoding:@unchecked Sendable {
             }
             guard reader.status == .completed,frames>0 else { throw renderFailure("Camera source did not decode to completion") }
             input.markAsFinished(); writer.endSession(atSourceTime:duration)
-            try await finishWriting(writer, within: 90)
+            await writer.finishWriting()
+            guard writer.status == .completed else { throw renderFailure(writer.error?.localizedDescription ?? "Processed camera finalize failed") }
             try Task.checkCancellation()
             return (width,height,frames,duration.seconds*1000)
-        } catch {
-            processor.cancel(); reader.cancelReading()
-            if (error as? ControlFailure)?.payload.code != "encoder-stalled" { writer.cancelWriting() }
-            throw error
-        }
+        } catch { processor.cancel(); reader.cancelReading(); writer.cancelWriting(); throw error }
     }
     private func allocate() throws -> CVPixelBuffer {
         guard let pool=adaptor.pixelBufferPool else { throw renderFailure("Processed camera buffer pool unavailable") }
