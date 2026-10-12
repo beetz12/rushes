@@ -9,12 +9,15 @@ swift build
 echo "== swift test =="
 # A pipe fully buffers swift test, so a long suite prints nothing until it
 # exits. A pty makes that output line-buffered and preserves the exit code.
+# Parallel Swift Testing on the 3-core runner saturates the video encoder:
+# finalize deadlines miss, and fixture writers that poll readiness never
+# finish inside the job limit. One test at a time keeps those deadlines real.
 python3 - <<'PY'
 import os, sys
 pid, fd = os.forkpty()
 if pid == 0:
     try:
-        os.execvp("swift", ["swift", "test"])
+        os.execvp("swift", ["swift", "test", "--no-parallel"])
     except OSError as error:
         sys.stderr.write(f"swift test failed to start: {error}\n")
         os._exit(127)
