@@ -58,8 +58,15 @@ public enum MetadataService {
                 return "\(Int(anchor.startMs / 1000))s: " + transcript.words.dropFirst(index).prefix(12).map(\.text).joined(separator: " ")
             }.joined(separator: "\n")
             let chapters = fallback.chapters.enumerated().map { "\($0.offset): \(Int($0.element.startMs / 1000))s \($0.element.title)" }.joined(separator: "\n")
+            // FoundationModels renamed the GenerationOptions sampling argument between
+            // the Swift 6.3 and 6.4 SDKs; build on either toolchain.
+            #if swift(>=6.4)
+            let generationOptions = GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 700)
+            #else
+            let generationOptions = GenerationOptions(sampling: .greedy, maximumResponseTokens: 700)
+            #endif
             let response = try await session.respond(to: "Transcript excerpts:\n\(sampled)\nChapters:\n\(chapters)",
-                generating: GeneratedMetadata.self, options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 700))
+                generating: GeneratedMetadata.self, options: generationOptions)
             let generated = response.content
             guard generated.chapterTitles.count == fallback.chapters.count else { throw ControlFailure(code: "invalid-model-metadata") }
             var result = RecordingMetadata(title: generated.title, summary: generated.summary,
