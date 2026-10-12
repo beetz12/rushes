@@ -11,7 +11,7 @@ completed successfully. An early fatal stop or failed requested writer therefore
 marks the take failed while keeping other tracks and any partial failed file.
 Camera disconnection remains a warning and may leave an empty camera track.
 
-The camera output currently requests the device's native format with an empty
+The camera output previously requested the device's native format with an empty
 settings dictionary. Apple's installed SDK documents that behavior explicitly.
 After attaching the input and output, select a supported eight-bit format: video
 range NV12 first, full range NV12 next, then BGRA. Refuse unsupported output rather
