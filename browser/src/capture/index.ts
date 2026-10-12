@@ -124,12 +124,13 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
     if (state === 'ready' && !created) { abortInitialization?.(new Error(message)); notify('failed'); release(); }
     else void finish().catch(error => { warn(messageOf(error)); release(); });
   }
+  function activelyRecording(): boolean { return state === 'recording' && !released; }
   function stopAtLimit() {
-    if (state === 'recording' && !ending) { event('take-limit'); void finish(); }
+    if (activelyRecording() && !ending) { event('take-limit'); void finish(); }
   }
   function armTakeDeadline() {
     if (takeDeadline) clearTimeout(takeDeadline);
-    if (state !== 'recording' || released) return;
+    if (!activelyRecording()) return;
     const remaining = takeStopAtMs - elapsed();
     if (remaining <= 0) { stopAtLimit(); return; }
     takeDeadline = setTimeout(() => {
@@ -314,7 +315,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
           }));
           worker.postMessage({ kind: 'start' }); await Promise.all(starts); await save();
           armTakeDeadline();
-          if (state === 'recording' && !released) timer = setInterval(() => {
+          if (activelyRecording()) timer = setInterval(() => {
             if (state === 'recording' && elapsed() >= takeStopAtMs) stopAtLimit();
             else if (camera && state === 'recording' && performance.now() - lastProgress > 15_000)
               fail('Video frames stopped arriving. The saved portion is being finalized.');
