@@ -29,10 +29,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.22.0
-      - name: Install test dependencies
-        run: |
-          npm --prefix browser-worker ci --no-audit --no-fund
-          npm --prefix browser ci --no-audit --no-fund
+      - name: Install service test dependencies
+        run: npm --prefix browser-worker ci --no-audit --no-fund
+      - name: Install browser test dependencies
+        run: npm --prefix browser ci --no-audit --no-fund
       - name: Isolated official current or previous Chrome
         run: node scripts/install-test-chrome.mjs --generation ${{ matrix.chrome }} --destination "${{ runner.temp }}/rushes-test-chrome"
       - name: Install decode tools on Mac
@@ -41,10 +41,10 @@ jobs:
       - name: Install decode tools on Windows
         if: runner.os == 'Windows'
         run: choco install ffmpeg --no-progress -y
-      - name: Build and service checks
-        run: |
-          npm --prefix browser-worker run check
-          npm --prefix browser run build
+      - name: Build and check service
+        run: npm --prefix browser-worker run check
+      - name: Build browser
+        run: npm --prefix browser run build
       - name: Capture, UI and actual service seam checks
         run: npm --prefix browser test
       - name: Independent short recording matrix
