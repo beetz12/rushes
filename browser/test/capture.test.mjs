@@ -18,47 +18,6 @@ async function pageFixture(callback) {
   try { await page.goto(`${origin}/capture-fixture`); await callback(page); assert.deepEqual(errors, []); }
   finally { await context.close(); }
 }
-test('pause during the startup checkpoint retains the health watcher across resume and releases it on cancel', { timeout: 30000 }, async () => pageFixture(async page => {
-  const result = await page.evaluate(async () => {
-    const { fixture } = await import('/test/capture-fixture.mjs');
-    const value = await fixture();
-    const save = value.store.save, interval = window.setInterval, clear = window.clearInterval;
-    let entered, releaseSave, held = false;
-    const ready = new Promise(resolve => { entered = resolve; });
-    const gate = new Promise(resolve => { releaseSave = resolve; });
-    const watchers = new Set(), releasedWatchers = [], installed = [];
-    value.store.save = async manifest => {
-      if (!held && manifest.state === 'recording') { held = true; entered(); await gate; }
-      return save(manifest);
-    };
-    window.setInterval = function(callback, milliseconds, ...args) {
-      const id = interval.call(this, callback, milliseconds, ...args);
-      if (milliseconds === 1000) { watchers.add(id); installed.push(id); }
-      return id;
-    };
-    window.clearInterval = function(id) {
-      if (watchers.delete(id)) releasedWatchers.push(id);
-      return clear.call(this, id);
-    };
-    try {
-      const starting = value.session.start(); await ready;
-      await value.session.pause(); releaseSave(); await starting;
-      const paused = { installs: installed.length, active: watchers.size, state: value.states.at(-1) };
-      await value.session.resume();
-      const resumed = { installs: installed.length, active: watchers.size, state: value.states.at(-1) };
-      await value.session.cancel();
-      return { paused, resumed, released: releasedWatchers.length, activeAfterCancel: watchers.size,
-        states: value.states, retainedDrafts: (await value.store.list()).length };
-    } finally {
-      releaseSave(); await value.session.cancel(); await value.cleanup();
-      window.setInterval = interval; window.clearInterval = clear;
-    }
-  });
-  assert.deepEqual(result.paused, { installs: 1, active: 1, state: 'paused' });
-  assert.deepEqual(result.resumed, { installs: 1, active: 1, state: 'recording' });
-  assert.equal(result.released, 1); assert.equal(result.activeAfterCancel, 0); assert.equal(result.retainedDrafts, 0);
-  assert.deepEqual(result.states, ['recording', 'paused', 'recording', 'failed']);
-}));
 test('screen/camera composition, separate originals, mixed audio, pause timeline, moved bubble, and final chunks decode', { timeout: 45000 }, async () => pageFixture(async page => {
   const result = await page.evaluate(async () => {
     const { fixture, inspectVideo, inspectAudio } = await import('/test/capture-fixture.mjs');
@@ -490,4 +449,115 @@ test('an initial orphan and malformed retained metadata do not hide healthy comp
   }
   assert.equal(result.bytes, result.originalBytes); assert.equal(result.aliasBytes, result.originalBytes);
   assert.equal(result.malformed, '{original metadata never closed'); assert.equal(result.unknown, 'unknown bytes must stay');
+}));
+
+test('pause during the startup checkpoint retains the health watcher across resume and releases it on cancel', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { fixture } = await import('/test/capture-fixture.mjs');
+    const value = await fixture();
+    const save = value.store.save, interval = window.setInterval, clear = window.clearInterval;
+    let entered, releaseSave, held = false;
+    const ready = new Promise(resolve => { entered = resolve; });
+    const gate = new Promise(resolve => { releaseSave = resolve; });
+    const watchers = new Set(), releasedWatchers = [], installed = [];
+    value.store.save = async manifest => {
+      if (!held && manifest.state === 'recording') { held = true; entered(); await gate; }
+      return save(manifest);
+    };
+    window.setInterval = function(callback, milliseconds, ...args) {
+      const id = interval.call(this, callback, milliseconds, ...args);
+      if (milliseconds === 1000) { watchers.add(id); installed.push(id); }
+      return id;
+    };
+    window.clearInterval = function(id) {
+      if (watchers.delete(id)) releasedWatchers.push(id);
+      return clear.call(this, id);
+    };
+    try {
+      const starting = value.session.start(); await ready;
+      await value.session.pause(); releaseSave(); await starting;
+      const paused = { installs: installed.length, active: watchers.size, state: value.states.at(-1) };
+      await value.session.resume();
+      const resumed = { installs: installed.length, active: watchers.size, state: value.states.at(-1) };
+      await value.session.cancel();
+      return { paused, resumed, released: releasedWatchers.length, activeAfterCancel: watchers.size,
+        states: value.states, retainedDrafts: (await value.store.list()).length };
+    } finally {
+      releaseSave(); await value.session.cancel(); await value.cleanup();
+      window.setInterval = interval; window.clearInterval = clear;
+    }
+  });
+  assert.deepEqual(result.paused, { installs: 1, active: 1, state: 'paused' });
+  assert.deepEqual(result.resumed, { installs: 1, active: 1, state: 'recording' });
+  assert.equal(result.released, 1); assert.equal(result.activeAfterCancel, 0); assert.equal(result.retainedDrafts, 0);
+  assert.deepEqual(result.states, ['recording', 'paused', 'recording', 'failed']);
+}));
+
+test('concurrent cancel callers join terminal events before another take; a confirmation timeout still removes the discarded draft', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { fixture, inspectVideo } = await import('/test/capture-fixture.mjs');
+    const add = MediaRecorder.prototype.addEventListener, timeout = window.setTimeout;
+    let releaseStops;
+    const stops = new Promise(resolve => { releaseStops = resolve; });
+    MediaRecorder.prototype.addEventListener = function(name, listener, options) {
+      if (name === 'stop') return add.call(this, name, event => {
+        void stops.then(() => typeof listener === 'function' ? listener.call(this, event) : listener.handleEvent(event));
+      }, options);
+      return add.call(this, name, listener, options);
+    };
+    const value = await fixture();
+    let valueCleaned = false;
+    const cleanValue = async () => { if (!valueCleaned) { valueCleaned = true; await value.cleanup(); } };
+    try {
+      await value.session.start();
+      let settled = 0;
+      const first = value.session.cancel().then(() => { settled++; });
+      const second = value.session.cancel().then(() => { settled++; });
+      await new Promise(resolve => timeout(resolve, 40));
+      const waiting = { settled, ended: [...value.feeds.flatMap(feed => feed.getTracks()), ...value.session.preview.getTracks()].every(track => track.readyState === 'ended'),
+        hasDraft: (await value.store.list()).some(draft => draft.id === value.id) };
+      releaseStops(); await Promise.all([first, second]);
+      const cleared = { settled, drafts: (await value.store.list()).length, states: [...value.states] };
+      MediaRecorder.prototype.addEventListener = add;
+      await cleanValue();
+      const next = await fixture();
+      let nextManifest, decoded;
+      try {
+        await next.session.start(); await new Promise(resolve => timeout(resolve, 600));
+        nextManifest = await next.session.stop();
+        decoded = await inspectVideo(await next.store.trackBlob(next.id, 'composed'));
+        await next.store.remove(next.id);
+      } finally { await next.cleanup(); }
+
+      let releaseLate;
+      const late = new Promise(resolve => { releaseLate = resolve; });
+      MediaRecorder.prototype.addEventListener = function(name, listener, options) {
+        if (name === 'stop') return add.call(this, name, event => {
+          void late.then(() => typeof listener === 'function' ? listener.call(this, event) : listener.handleEvent(event));
+        }, options);
+        return add.call(this, name, listener, options);
+      };
+      const timed = await fixture();
+      try {
+        await timed.session.start();
+        const bounds = [];
+        window.setTimeout = function(callback, milliseconds, ...args) {
+          if (milliseconds === 15000) { bounds.push(milliseconds); return timeout.call(this, callback, 40, ...args); }
+          return timeout.call(this, callback, milliseconds, ...args);
+        };
+        const failure = await timed.session.cancel().then(() => null, error => error.message);
+        return { waiting, cleared, nextManifest, decoded: { duration: decoded.duration, width: decoded.width, height: decoded.height },
+          timed: { failure, bounds, drafts: (await timed.store.list()).length,
+            ended: timed.feeds.flatMap(feed => feed.getTracks()).every(track => track.readyState === 'ended') } };
+      } finally { releaseLate(); window.setTimeout = timeout; await timed.cleanup(); }
+    } finally {
+      releaseStops(); MediaRecorder.prototype.addEventListener = add; window.setTimeout = timeout; await cleanValue();
+    }
+  });
+  assert.deepEqual(result.waiting, { settled: 0, ended: true, hasDraft: true });
+  assert.deepEqual(result.cleared, { settled: 2, drafts: 0, states: ['recording', 'failed'] });
+  assert.equal(result.nextManifest.state, 'complete'); assert.ok(result.decoded.duration > 0.4);
+  assert.ok(Math.max(...result.nextManifest.tracks.map(track => track.startOffsetMs)) - Math.min(...result.nextManifest.tracks.map(track => track.startOffsetMs)) <= 100);
+  assert.ok(result.timed.failure.includes('Encoder stop confirmation timed out'));
+  assert.deepEqual(result.timed.bounds, [15000]); assert.equal(result.timed.drafts, 0); assert.equal(result.timed.ended, true);
 }));

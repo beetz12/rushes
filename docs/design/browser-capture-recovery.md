@@ -92,3 +92,16 @@ begun ending. Pause suspends active-time deadlines and Resume rearms them, witho
 losing or duplicating the watcher. Release always clears it. A regression holds
 the real initial save, pauses before start resolves, then checks resume and
 terminal cleanup at the timer boundary.
+
+Cancellation completion refinement: setting a MediaRecorder inactive synchronously
+does not establish delivery of its final asynchronous data/stop events. One shared
+cancel completion is claimed before notification; cancellation suppresses later
+discarded bytes. Stops, source/worker release and timer cleanup happen immediately,
+then existing terminal-event promises for successfully started recorders are
+awaited with the15-second bound. Never-started slots cannot supply a stop event.
+Repeated callers join the same completion. Existing in-flight Stop, storage queue
+cleanup and draft removal remain joined even when encoder confirmation fails;
+report that failure after cleanup. This is an observable event boundary, not a
+claim that all native GPU resources are freed. It is not an established cause or
+cure for the observed104ms calibration spread after a preceding canceled take.
+Keep the original calibration as the first capture in its shared browser process.

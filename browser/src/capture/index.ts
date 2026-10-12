@@ -7,7 +7,7 @@ type FrameAPIs = {
   MediaStreamTrackProcessor?: new (options: { track: MediaStreamTrack; maxBufferSize: number }) => FrameProcessor;
   MediaStreamTrackGenerator?: new (options: { kind: 'video' }) => FrameGenerator;
 };
-type RecorderSlot = { kind: TrackKind; recorder: MediaRecorder; sequence: number; ended: Promise<void> };
+type RecorderSlot = { kind: TrackKind; recorder: MediaRecorder; sequence: number; ended: Promise<void>; started: boolean };
 async function limited<T>(operation: Promise<T>, milliseconds: number, message: string): Promise<T> {
   let deadline: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
@@ -89,6 +89,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
   let saveTail: Promise<void> = Promise.resolve();
   let pendingBytes = 0;
   let ending: Promise<DraftManifest> | undefined;
+  let canceling: Promise<void> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let takeDeadline: ReturnType<typeof setTimeout> | undefined;
   const takeCeilingMs = BROWSER_LIMITS.maxTakeSeconds * 1000;
@@ -157,7 +158,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
       ...(hasAudio ? { audioBitsPerSecond: 128_000 } : {}),
     });
     const ended = new Promise<void>(resolve => recorder.addEventListener('stop', () => resolve(), { once: true }));
-    const slot = { kind, recorder, sequence: 0, ended }; slots.push(slot);
+    const slot = { kind, recorder, sequence: 0, ended, started: false }; slots.push(slot);
     manifest.tracks.push({ kind, mimeType: recorder.mimeType, startOffsetMs: 0, chunks: [], bytes: 0 });
     recorder.addEventListener('dataavailable', eventValue => {
       if (!eventValue.data.size || canceled) return;
@@ -311,7 +312,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
               event(`start-${slot.kind}`); resolve();
             };
             slot.recorder.addEventListener('start', start, { once: true });
-            try { slot.recorder.start(2000); } catch (error) { clearTimeout(startedTimer); reject(error); }
+            try { slot.recorder.start(2000); slot.started = true; } catch (error) { clearTimeout(startedTimer); reject(error); }
           }));
           worker.postMessage({ kind: 'start' }); await Promise.all(starts); await save();
           armTakeDeadline();
@@ -358,14 +359,28 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
       },
       stop: finish,
       async cancel() {
-        if (canceled) return;
-        if (ending) await ending;
+        if (canceling) return canceling;
         canceled = true;
-        try {
-          for (const slot of slots) if (slot.recorder.state !== 'inactive') slot.recorder.stop();
-        } finally { release(); notify('failed'); }
-         await limited(saveTail, 20_000, 'Cancellation storage cleanup timed out. A retained draft may be removed after reload.');
-        if (created) await limited(inputs.store.remove(inputs.id), 10_000, 'Removing the canceled draft timed out.');
+        // Claim completion before notifying or yielding to another caller.
+        canceling = Promise.resolve().then(async () => {
+          let stopError: unknown;
+          try {
+            for (const slot of slots) if (slot.recorder.state !== 'inactive') {
+              try { slot.recorder.stop(); } catch (error) { stopError ??= error; }
+            }
+          } finally { release(); notify('failed'); }
+          try {
+            await limited(Promise.all(slots.filter(slot => slot.started).map(slot => slot.ended)),
+              15_000, 'Encoder stop confirmation timed out during cancellation. Discarded draft cleanup will still finish.');
+          } catch (error) { stopError ??= error; }
+          if (ending) {
+            try { await ending; } catch (error) { stopError ??= error; }
+          }
+          await limited(saveTail, 20_000, 'Cancellation storage cleanup timed out. A retained draft may be removed after reload.');
+          if (created) await limited(inputs.store.remove(inputs.id), 10_000, 'Removing the canceled draft timed out.');
+          if (stopError) throw stopError;
+        });
+        return canceling;
       },
       setBubble(value) {
         manifest.bubble = boundedBubble(value); worker.postMessage({ kind: 'bubble', value: manifest.bubble });
