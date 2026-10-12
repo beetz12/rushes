@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
   formatDuration,
@@ -38,6 +38,14 @@ import {
 } from './extras';
 import './style.css';
 import { ShareAccess } from './share-access';
+import {
+  DraftAutosave,
+  sidebarDraft,
+  persistReviewDraft,
+  refreshedMetadata,
+  type DraftState,
+} from '../shared/review-draft';
+import { ZoomEditor } from './zoom-editor';
 document.documentElement.dataset.view = location.hash.slice(1) || 'recorder';
 const api = window.rushes;
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -959,6 +967,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
     [frames, setFrames] = useState<any>(null),
     [burnIn, setBurnIn] = useState(false),
     [metadata, setMetadata] = useState<any>(null),
+    [manualSummary, setManualSummary] = useState<string | undefined>(),
     [mirror, setMirror] = useState(true),
     [micGain, setMicGain] = useState(1),
     [systemGain, setSystemGain] = useState(0.5),
@@ -973,6 +982,8 @@ function Review({ id, back, run, setNote, trashed }: any) {
     [link, setLink] = useState(''),
     [sharePolicyDraft, setSharePolicyDraft] = useState<SharePolicyPatch>({}),
     [shareBusy, setShareBusy] = useState(false),
+    [draftState, setDraftState] = useState<DraftState>('saved'),
+    [copyBusy, setCopyBusy] = useState(false),
     [shareStage, setShareStage] = useState(''),
     [sharePercent, setSharePercent] = useState(0),
     [exportBusy, setExportBusy] = useState(false),
@@ -981,6 +992,67 @@ function Review({ id, back, run, setNote, trashed }: any) {
     ),
     [previewLoading, setPreviewLoading] = useState(false);
   const titleEdited = useRef(false);
+  const summaryEdited = useRef<string | undefined>(undefined);
+  const draftBaseline = useRef<string | null>(null);
+  const autosave = useMemo(
+    () =>
+      new DraftAutosave<Record<string, unknown>>(
+        (patch) => persistReviewDraft((cmd, args) => api.request(cmd, args), id, patch),
+        setDraftState,
+      ),
+    [id],
+  );
+  const draftPatch = useMemo(
+    () => ({
+      layout,
+      bubbleSize,
+      bubbleX: bubbleCenter[0],
+      bubbleY: bubbleCenter[1],
+      bubbleVisible,
+      shape: bubbleShape,
+      mirror,
+      micGain,
+      systemGain,
+      title,
+      burnIn,
+      ...(manualSummary === undefined ? {} : { summary: manualSummary }),
+    }),
+    [
+      layout,
+      bubbleSize,
+      bubbleCenter,
+      bubbleVisible,
+      bubbleShape,
+      mirror,
+      micGain,
+      systemGain,
+      title,
+      burnIn,
+      manualSummary,
+    ],
+  );
+  const draftKey = JSON.stringify(draftPatch);
+  const newestDraft = useRef(draftPatch);
+  newestDraft.current = draftPatch;
+  useEffect(() => {
+    if (!edit) return;
+    if (draftBaseline.current === null) {
+      draftBaseline.current = draftKey;
+      return;
+    }
+    if (draftBaseline.current === draftKey) return;
+    draftBaseline.current = draftKey;
+    autosave.update(draftPatch);
+    setRenderedPreview(null);
+  }, [Boolean(edit), draftKey, autosave]);
+  useEffect(
+    () => () => {
+      void autosave
+        .flush()
+        .catch(() => setNote('Draft could not be saved. Reopen the recording to retry.'));
+    },
+    [autosave],
+  );
   const screenRef = useRef<HTMLVideoElement>(null),
     cameraRef = useRef<HTMLVideoElement>(null),
     micRef = useRef<HTMLAudioElement>(null),
@@ -1024,7 +1096,6 @@ function Review({ id, back, run, setNote, trashed }: any) {
   const reload = useCallback(async () => {
     const show = await api.request('show', { id });
     setRecording(show);
-    setTitle(show.manifest.title ?? 'Untitled recording');
     const next: Record<string, string> = {};
     for (const track of show.tracks.filter((t: any) => t.present))
       try {
@@ -1034,7 +1105,11 @@ function Review({ id, back, run, setNote, trashed }: any) {
     setEnd((show.manifest.clock?.durationNs ?? 0) / 1e9);
     try {
       const document = await api.request('edit.get', { id });
+      draftBaseline.current = JSON.stringify(
+        sidebarDraft(document, show.manifest.title ?? 'Untitled recording'),
+      );
       setEdit(document);
+      setTitle(document.meta?.title ?? show.manifest.title ?? 'Untitled recording');
       setLayout(document.layout?.preset ?? 'bubble');
       setBubbleSize(document.layout?.bubble?.size ?? 0.22);
       setMirror(document.layout?.bubble?.mirror ?? true);
@@ -1063,10 +1138,13 @@ function Review({ id, back, run, setNote, trashed }: any) {
     ]);
     if (results[0].status === 'fulfilled') setTranscript(results[0].value);
     if (results[1].status === 'fulfilled') {
-      setMetadata(results[1].value);
+      const manual = summaryEdited.current;
+      setMetadata(refreshedMetadata(results[1].value, manual));
+      if (manual !== undefined && results[1].value.summary !== manual)
+        autosave.update({ ...newestDraft.current, summary: manual });
       if (!titleEdited.current && results[1].value.title) setTitle(results[1].value.title);
     }
-  }, [id]);
+  }, [id, autosave]);
   useEffect(() => {
     void run(reload);
   }, [reload]);
@@ -1133,22 +1211,9 @@ function Review({ id, back, run, setNote, trashed }: any) {
   };
   const save = () =>
     run(async () => {
-      await api.request('edit.set', {
-        id,
-        layout,
-        bubbleSize,
-        bubbleX: bubbleCenter[0],
-        bubbleY: bubbleCenter[1],
-        bubbleVisible,
-        shape: bubbleShape,
-        mirror,
-        micGain,
-        systemGain,
-        title,
-        burnIn,
-      });
+      await autosave.flush();
       await api.request('meta.set', { id, title });
-      await api.request('edit.save', { id });
+      await autosave.run(() => api.request('edit.save', { id }));
       setEdit(await api.request('edit.get', { id }));
       setNote('Edits saved. Original tracks are kept.');
     });
@@ -1165,15 +1230,22 @@ function Review({ id, back, run, setNote, trashed }: any) {
         },
       ].filter((c) => c.sourceEndMs > c.sourceStartMs);
       if (!cuts.length) return;
-      setEdit(await api.request('edit.cut', { id, cuts }));
+      setEdit(await autosave.run(() => api.request('edit.cut', { id, cuts })));
     });
-  const fullEdit = async (next: any) => {
-    const valid = next.clips.map((clip: any) => clip.id);
-    const document = {
-      ...next,
-      zoomCues: (next.zoomCues ?? []).filter((cue: any) => valid.includes(cue.clipId)),
-    };
-    setEdit(await api.request('edit.set', { id, edit: document }));
+  const fullEdit = async (update: (latest: any) => any) => {
+    setEdit(
+      await autosave.run(async () => {
+        const latest = await api.request('edit.get', { id });
+        const next = update(latest);
+        const valid = next.clips.map((clip: any) => clip.id);
+        const document = {
+          ...latest,
+          clips: next.clips,
+          zoomCues: (next.zoomCues ?? []).filter((cue: any) => valid.includes(cue.clipId)),
+        };
+        return api.request('edit.set', { id, edit: document });
+      }),
+    );
   };
   const split = () =>
     run(async () => {
@@ -1183,13 +1255,13 @@ function Review({ id, back, run, setNote, trashed }: any) {
       const atMs = currentTime * 1000,
         clip = edit.clips.find((c: any) => c.sourceStartMs < atMs && c.sourceEndMs > atMs);
       if (!clip) throw new Error('Place the playhead inside a clip to split it.');
-      setEdit(await api.request('edit.split', { id, clipId: clip.id, atMs }));
+      setEdit(await autosave.run(() => api.request('edit.split', { id, clipId: clip.id, atMs })));
     });
   const wordCut = () =>
     run(async () => {
       if (!selectedWords.length) throw new Error('Select transcript words to remove.');
       const cuts = await api.request('transcript.edit-plan', { id, wordIds: selectedWords });
-      setEdit(await api.request('edit.cut', { id, cuts }));
+      setEdit(await autosave.run(() => api.request('edit.cut', { id, cuts })));
       setSelectedWords([]);
       setNote('Selected words removed from the edit. Your transcript and originals are kept.');
     });
@@ -1201,28 +1273,14 @@ function Review({ id, back, run, setNote, trashed }: any) {
         removeSilence: type === 'silence',
         wordIds: [],
       });
-      setEdit(await api.request('edit.cut', { id, cuts }));
+      setEdit(await autosave.run(() => api.request('edit.cut', { id, cuts })));
       setNote(`${cuts.length} suggested cuts applied.`);
     });
   const doExport = () =>
     run(async () => {
       setExportBusy(true);
       try {
-        await api.request('edit.set', {
-          id,
-          layout,
-          bubbleSize,
-          bubbleX: bubbleCenter[0],
-          bubbleY: bubbleCenter[1],
-          bubbleVisible,
-          shape: bubbleShape,
-          mirror,
-          micGain,
-          systemGain,
-          title,
-          burnIn,
-        });
-        await api.request('edit.save', { id });
+        await autosave.run(() => api.request('edit.save', { id }));
         const r = await api.exportFile(id, preset, Math.round(currentTime * 1000));
         if (!r.canceled) {
           setNote(`Export saved: ${r.path}`);
@@ -1236,7 +1294,15 @@ function Review({ id, back, run, setNote, trashed }: any) {
   return (
     <>
       <div className="review-heading">
-        <button className="back-button" onClick={back}>
+        <button
+          className="back-button"
+          onClick={() =>
+            run(async () => {
+              await autosave.flush();
+              back();
+            })
+          }
+        >
           ← All recordings
         </button>
         <div className="review-actions">
@@ -1460,21 +1526,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
                         systemRef.current,
                       ].forEach((el) => el?.pause());
                       setPlaying(false);
-                      await api.request('edit.set', {
-                        id,
-                        layout,
-                        bubbleSize,
-                        bubbleX: bubbleCenter[0],
-                        bubbleY: bubbleCenter[1],
-                        bubbleVisible,
-                        shape: bubbleShape,
-                        mirror,
-                        micGain,
-                        systemGain,
-                        title,
-                        burnIn,
-                      });
-                      await api.request('edit.save', { id });
+                      await autosave.flush();
                       const preview = await api.previewFile(id);
                       setRenderedPreview(preview);
                       setCurrentTime(0);
@@ -1573,7 +1625,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
                   className="secondary"
                   onClick={() =>
                     run(async () => {
-                      await api.request('edit.undo', { id });
+                      await autosave.run(() => api.request('edit.undo', { id }));
                       await reload();
                     })
                   }
@@ -1584,7 +1636,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
                   className="secondary"
                   onClick={() =>
                     run(async () => {
-                      await api.request('edit.redo', { id });
+                      await autosave.run(() => api.request('edit.redo', { id }));
                       await reload();
                     })
                   }
@@ -1600,7 +1652,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
                           'Discard draft edits and return to your last saved version?',
                         )
                       ) {
-                        await api.request('edit.discard', { id });
+                        await autosave.run(() => api.request('edit.discard', { id }));
                         await reload();
                       }
                     })
@@ -1609,6 +1661,23 @@ function Review({ id, back, run, setNote, trashed }: any) {
                   Discard draft
                 </button>
               </div>
+              <ZoomEditor
+                clips={edit?.clips ?? []}
+                cues={edit?.zoomCues ?? []}
+                change={(operation) =>
+                  fullEdit((latest) => ({
+                    ...latest,
+                    zoomCues:
+                      'removeId' in operation
+                        ? latest.zoomCues.filter((cue: any) => cue.id !== operation.removeId)
+                        : [
+                            ...latest.zoomCues.filter((cue: any) => cue.id !== operation.id),
+                            operation,
+                          ],
+                  }))
+                }
+                run={run}
+              />
             </div>
           ) : tab === 'clips' ? (
             <div className="edit-panel">
@@ -1622,16 +1691,17 @@ function Review({ id, back, run, setNote, trashed }: any) {
                   <select
                     aria-label={`Clip ${index + 1} speed`}
                     value={clip.speed}
-                    onChange={(e) =>
-                      run(() =>
-                        fullEdit({
-                          ...edit,
-                          clips: edit.clips.map((c: any) =>
-                            c.id === clip.id ? { ...c, speed: Number(e.target.value) } : c,
+                    onChange={(e) => {
+                      const rate = Number(e.target.value);
+                      void run(() =>
+                        fullEdit((latest) => ({
+                          ...latest,
+                          clips: latest.clips.map((c: any) =>
+                            c.id === clip.id ? { ...c, speed: rate } : c,
                           ),
-                        }),
-                      )
-                    }
+                        })),
+                      );
+                    }}
                   >
                     {[1, 1.5, 2, 4, 8].map((s) => (
                       <option key={s} value={s}>
@@ -1643,10 +1713,10 @@ function Review({ id, back, run, setNote, trashed }: any) {
                     title="Remove clip from edit"
                     onClick={() =>
                       run(() =>
-                        fullEdit({
-                          ...edit,
-                          clips: edit.clips.filter((c: any) => c.id !== clip.id),
-                        }),
+                        fullEdit((latest) => ({
+                          ...latest,
+                          clips: latest.clips.filter((c: any) => c.id !== clip.id),
+                        })),
                       )
                     }
                   >
@@ -1663,7 +1733,11 @@ function Review({ id, back, run, setNote, trashed }: any) {
                   className="secondary"
                   onClick={() =>
                     run(async () => {
+                      await autosave.flush();
                       const generated = await api.request('meta.generate', { id });
+                      summaryEdited.current = undefined;
+                      setManualSummary(undefined);
+                      titleEdited.current = false;
                       setMetadata(generated);
                       if (generated.title) setTitle(generated.title);
                     })
@@ -1679,7 +1753,12 @@ function Review({ id, back, run, setNote, trashed }: any) {
                 Summary
                 <textarea
                   value={metadata?.summary ?? ''}
-                  onChange={(e) => setMetadata({ ...metadata, summary: e.target.value })}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    summaryEdited.current = value;
+                    setManualSummary(value);
+                    setMetadata({ ...metadata, summary: value });
+                  }}
                 />
               </label>
               {(metadata?.chapters ?? []).map((chapter: any, index: number) => (
@@ -1695,6 +1774,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
                 className="secondary"
                 onClick={() =>
                   run(async () => {
+                    await autosave.flush();
                     await api.request('meta.set', {
                       id,
                       title,
@@ -1889,6 +1969,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
               {[
                 ['share', 'Share MP4 · 1080p'],
                 ['youtube', 'YouTube · 1080p60'],
+                ['youtube-source', 'YouTube · source size at 60fps'],
                 ['full', 'Full quality MOV'],
                 ['editor-tracks', 'Raw original tracks for editing'],
                 ['audio', 'Audio only · M4A'],
@@ -1919,6 +2000,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
             className="secondary full-width"
             onClick={() =>
               run(async () => {
+                await autosave.flush();
                 const result = await api.openEditor(id);
                 if (!result.canceled)
                   setNote(
@@ -1932,27 +2014,45 @@ function Review({ id, back, run, setNote, trashed }: any) {
             Open in editor
           </button>
           <button
+            className="secondary full-width"
+            disabled={copyBusy}
+            onClick={() =>
+              run(async () => {
+                setCopyBusy(true);
+                try {
+                  await autosave.flush();
+                  await api.copyVideoFile(id);
+                  setNote('Edited video file copied. Paste it into your destination app.');
+                } finally {
+                  setCopyBusy(false);
+                }
+              })
+            }
+          >
+            {copyBusy ? 'Preparing video file…' : 'Copy video file'}
+          </button>
+          <p className="fine-print" role="status">
+            {draftState === 'saved'
+              ? 'Draft saved automatically.'
+              : draftState === 'failed'
+                ? 'Draft save failed. Retry before leaving.'
+                : draftState === 'saving'
+                  ? 'Saving draft…'
+                  : 'Draft changes pending…'}
+          </p>
+          {draftState === 'failed' && (
+            <button className="text-button" onClick={() => run(() => autosave.flush())}>
+              Retry draft save
+            </button>
+          )}
+          <button
             className="primary full-width"
             disabled={shareBusy}
             onClick={() =>
               run(async () => {
                 setShareBusy(true);
                 try {
-                  await api.request('edit.set', {
-                    id,
-                    layout,
-                    bubbleSize,
-                    bubbleX: bubbleCenter[0],
-                    bubbleY: bubbleCenter[1],
-                    bubbleVisible,
-                    shape: bubbleShape,
-                    mirror,
-                    micGain,
-                    systemGain,
-                    title,
-                    burnIn,
-                  });
-                  await api.request('edit.save', { id });
+                  await autosave.run(() => api.request('edit.save', { id }));
                   const r = await api.share(
                     id,
                     Object.keys(sharePolicyDraft).length ? sharePolicyDraft : undefined,

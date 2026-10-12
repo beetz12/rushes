@@ -1334,3 +1334,7 @@ textarea:focus-visible {
 .feedback-comments article { border-top: 1px solid #dfe3eb; padding: 10px 0; }
 .feedback-comments p { margin: 6px 0; }
 .feedback-reaction { font-size: 12px; }
+.zoom-fields { display: flex; flex-wrap: wrap; column-gap: 12px; }
+.zoom-fields .field { flex: 1 1 100px; min-width: 0; }
+.zoom-fields input { min-width: 0; }
+.zoom-editor { padding-top: 20px; }

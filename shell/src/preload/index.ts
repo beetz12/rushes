@@ -23,6 +23,7 @@ const api: RushesAPI = {
   exportFile: (id, preset, atMs) => invoke('rushes:export-file', { id, preset, atMs }),
   openEditor: (id) => invoke('rushes:open-editor', id),
   previewFile: (id) => invoke('rushes:preview-file', id),
+  copyVideoFile: (id) => invoke('rushes:copy-video-file', id),
   media: (path) => invoke('rushes:media', path),
   reveal: (path) => invoke('rushes:reveal', path),
   confirm: (message) => invoke('rushes:confirm', message),

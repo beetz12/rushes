@@ -13,6 +13,7 @@ import {
   screen,
   safeStorage,
   Notification,
+  ClipboardItem,
 } from 'electron';
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -28,6 +29,8 @@ import { SharingService } from './sharing';
 import { createShareDispatcher } from './share-dispatch';
 import { AutoShare, ViewNotifications } from './share-lifecycle';
 import { openInEditor, editorArguments } from './editor-handoff';
+import { copyVideoFile } from './file-clipboard';
+import { videoExportRequest } from '../shared/review-draft';
 import { atomicJSON, atomicBytes } from './atomic';
 import { startShellServer } from './shell-server';
 import { MediaRegistry, parseRange, mimeType } from './media';
@@ -776,7 +779,7 @@ async function ready() {
       windows.get('drawing')?.setIgnoreMouseEvents(v.paused === true, { forward: true });
     broadcast({ event: 'drawing-action', ...v });
   });
-  handle('rushes:preview-file', async (value) => {
+  const previewFile = async (value: unknown) => {
     const id = z.string().min(1).max(200).parse(value);
     const show = await supervisor.client.request('show', { id });
     const path = join(show.packagePath, 'renders', 'preview.mp4');
@@ -788,6 +791,13 @@ async function ready() {
     );
     const url = await media.allowFile(path);
     return { ...result, url, path };
+  };
+  handle('rushes:preview-file', previewFile);
+  handle('rushes:copy-video-file', async (value) => {
+    const preview = await previewFile(value);
+    return copyVideoFile(preview.path, (path) => media.allowFile(path), {
+      write: (formats) => clipboard.write([new ClipboardItem(formats)]),
+    });
   });
   const exportFile = async (value: unknown) => {
     const v = z
@@ -797,6 +807,7 @@ async function ready() {
           'share',
           'full',
           'youtube',
+          'youtube-source',
           'audio',
           'audio-wav',
           'editor-tracks',
@@ -864,7 +875,7 @@ async function ready() {
     else
       result = await supervisor.client.request(
         'export',
-        { id: v.id, preset: v.preset === 'audio-wav' ? 'audio' : v.preset, path },
+        videoExportRequest(v.id, v.preset, path),
         30 * 60 * 1000,
       );
     exportedFiles.add(path);
@@ -921,7 +932,7 @@ async function ready() {
   handle('rushes:copy-link', async (value) => {
     const url = z.url().parse(value);
     if (!['http:', 'https:'].includes(new URL(url).protocol)) throw new Error('Invalid link');
-    clipboard.writeText(url);
+    await clipboard.writeText(url);
   });
   const desktopNotification = (title: string, body: string) => {
     if (!quitting && Notification.isSupported()) new Notification({ title, body }).show();
@@ -953,15 +964,15 @@ async function ready() {
   );
   handle('rushes:share', async (value) => {
     const result = await shares.share(z.string().min(1).max(200).parse(value));
-    clipboard.writeText(result.url);
+    await clipboard.writeText(result.url);
     return result;
   });
   const dispatchShare = createShareDispatcher(shares, {
     configuration: persistedCloudSummary,
     configure: saveCloud,
     setup: async () => (await provider()).setupCheck(),
-    copy: (url) => {
-      clipboard.writeText(url);
+    copy: async (url) => {
+      await clipboard.writeText(url);
       void viewNotifications?.poll();
     },
   });

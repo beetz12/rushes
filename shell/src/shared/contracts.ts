@@ -233,6 +233,7 @@ export interface RushesAPI {
     id: string,
   ): Promise<{ canceled?: boolean; revealed?: boolean; started?: boolean; path?: string }>;
   previewFile(id: string): Promise<{ url: string; path: string; durationMs: number }>;
+  copyVideoFile(id: string): Promise<{ copied: boolean }>;
   media(path: string): Promise<string>;
   selectArea(area: { x: number; y: number; width: number; height: number }): Promise<void>;
   reveal(path: string): Promise<void>;

@@ -4,7 +4,7 @@ export class AutoShare {
   private stopped = new Set<string>();
   constructor(
     private share: (id: string) => Promise<{ url: string; state: string }>,
-    private copy: (url: string) => void,
+    private copy: (url: string) => void | Promise<void>,
     private emit: (event: Record<string, unknown>) => void,
     private now = () => Date.now(),
   ) {}
@@ -14,7 +14,7 @@ export class AutoShare {
     const began = this.now();
     try {
       const result = await this.share(id);
-      this.copy(result.url);
+      await this.copy(result.url);
       this.emit({
         event: 'share-link-copied',
         id,

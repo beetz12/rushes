@@ -8,7 +8,7 @@ export function createShareDispatcher(
     configuration(): Promise<unknown>;
     configure(value: unknown): Promise<unknown>;
     setup(): Promise<unknown>;
-    copy(url: string): void;
+    copy(url: string): void | Promise<void>;
   },
 ) {
   return async (command: string, args: Record<string, unknown>) => {
@@ -33,7 +33,7 @@ export function createShareDispatcher(
           ? sharePolicyPatchSchema.parse(values)
           : undefined;
         const result = await shares.share(id, wait === true, policy);
-        controls.copy(result.url);
+        await controls.copy(result.url);
         return result;
       }
       case 'share.status':
