@@ -36,3 +36,57 @@ synthetic camera and asserts acknowledgment/frame token agreement, retaining the
 existing JPEG/subscription/device-lifetime assertions. A separate camera-less
 request must continue to reject the mock's unexpected frame. Production code is
 unchanged; the failed gate remains retained and the repaired full gate is due.
+
+## Current release state after unlocked installed checks
+
+The earlier locked-host and input-timer holds above are historical. David
+unlocked the host, authorized a bounded display-awake hold, and explicitly
+overrode the three-second input rule for two local recordings. The signed
+e766577 production candidate is installed at `/Applications/Rushes.app`; the
+previous application and recording/settings stores remain preserved. AutoShare
+was observed Off in the installed Settings. No test recording was uploaded.
+
+The corrected merged-tree gate on4237969 exited0: 328 native tests,5 Intents,
+117 shell,16 cloud,4 viewer and18 worker tests; clean/notices checks passed.
+Independent fixture review f84a178 was integrated at5932dad and confirmed that
+the production trees matched e766577. The original failing gate is retained.
+
+Two real installed recordings completed and native verification returned
+`ok:true` for each:
+
+| Take | Actual duration | Saved masters | Export result |
+| --- | --- | --- | --- |
+| 01M4RWRSAZT6FHTHC3G2EQY9Z8 | 14.726475s | camera.mov, mic.mov; camera-only source, no screen, system audio Off | Both separate exported files equal their master SHA-256 hashes. |
+| 01M4RX2TSZJVPKZJEW6WJC09R4 | 26.165008s | screen.mov, camera.mov, mic.mov; display source, system audio Off | All three separate exported files equal their master SHA-256 hashes; edit/offset sidecars are present. |
+
+Root fully software-decoded all five movies with ffmpeg, actual exit0 for each.
+ffprobe counted440/783 camera frames at1920x1080,1226 screen frames at3456x2234,
+and mono48kHz AAC in both microphone tracks. These checks establish valid
+encoded media and preserved exports, not intelligible speech or acoustic sync.
+Private evidence is in the owned0700 host directory
+`~/.goal-loop/loom-clone/host/2026-10-12-desktop-controls`: physical-decode.json,
+physical-camera-export-hashes.json and physical-screen-export-hashes.json.
+
+The restored selected camera preview appeared automatically on launch and again
+on recorder entry without an Off/On toggle. The inspected automatic-preview.png
+records a live camera image. Main-window OS controls disappeared at the recording
+gate and returned after Stop; the source/state checks cover actual minimize and
+independent overlay lifetimes. CUA did not expose a reliable floating-window
+inventory, and root could not hear playback. David's confirmation of countdown
+sound and visible bubble while minimized remains requested; do not label either
+as physically verified from those instrumentation limits.
+
+After the second Stop, the installed UI showed invalid-json and then connection
+restored notices despite valid media. A generated-byte probe independently
+reproduced a terminal socket-write corruption defect, repaired ine98c3d7. That
+does not prove the installed incident's exact cause or explain a prior native PID
+change. Independent review found a separate renderer latch gap inApp.run;
+f42f59b authorizes its bounded repair. Initial review/failure history is retained
+in transport-verdict.md. The repaired source still needs independent renderer
+acceptance, fresh full release verification, packaging and installed read-back.
+No additional real recording is required solely to verify unchanged media code.
+
+The desktop issue remains in progress for that repair/install and the pending
+physical feedback. The commercial browser long-capture/provider/Windows gates
+remain separate. No public code push, commercial deployment or live charge is
+claimed by these local results.
