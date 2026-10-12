@@ -1,5 +1,8 @@
 # Rushes
 
+[![ci](https://github.com/beetz12/rushes/actions/workflows/ci.yml/badge.svg)](https://github.com/beetz12/rushes/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
+
 David's local Loom-style recorder for macOS 26.4 and later. Screen, camera,
 microphone and system audio are saved as separate original tracks.
 
@@ -25,6 +28,27 @@ Recordings live in `~/Movies/Rushes`; application settings live in
 For development, run `/bin/bash scripts/check.sh`. The gate provisions the
 pinned Node runtime for each JavaScript surface, builds and tests Swift and the
 desktop/cloud/viewer/Worker code, then checks source and license notices.
+
+## Open source
+
+Rushes is open source under [Apache-2.0](LICENSE). The local recorder — every
+recording, editing and export feature, plus the self-hostable share Worker —
+is free and stays free. A hosted sharing service may come later as a separate,
+optional paid convenience; nothing local depends on it.
+
+Build from source:
+
+```bash
+git clone https://github.com/beetz12/rushes.git
+cd rushes
+swift build -c release
+.build/release/rushcore-engine --socket-path /tmp/rushes.sock &
+.build/release/rushes --socket /tmp/rushes.sock guide --json
+```
+
+Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md) — read its clean-room
+rules before your first pull request. "Rushes" is a trademark of David He;
+forks must rename (see [TRADEMARKS.md](TRADEMARKS.md)).
 
 - `docs/research/`: clean-room notes on nine open-source recorders.
 - `docs/PLAN.md`: the approved build plan; public distribution and SaaS remain optional.

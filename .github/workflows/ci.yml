@@ -1,0 +1,85 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: check.sh (build, tests, clean-room, notices)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install the pinned Node runtimes
+        run: |
+          source "$HOME/.nvm/nvm.sh"
+          for pin in $(cat */.nvmrc 2>/dev/null | sort -u); do
+            echo "nvm install $pin"
+            nvm install "$pin"
+          done
+      - name: Gate
+        run: bash scripts/check.sh
+
+  smoke:
+    name: release engine + CLI smoke (stub capture)
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build release binaries
+        run: swift build -c release
+      - name: Engine + CLI over a real socket
+        run: |
+          set -euo pipefail
+          SOCK="$RUNNER_TEMP/rushes.sock"
+          .build/release/rushcore-engine \
+            --socket-path "$SOCK" \
+            --recordings-root "$RUNNER_TEMP/rushes-recordings" \
+            --index-path "$RUNNER_TEMP/rushes-index.sqlite" \
+            --capture-stub &
+          ENGINE=$!
+          trap 'kill $ENGINE 2>/dev/null || true' EXIT
+          sleep 3
+          .build/release/rushes --socket "$SOCK" guide --json > guide.json
+          python3 - <<'PY'
+          import json
+          guide = json.load(open("guide.json"))
+          assert guide.get("commands"), "guide listed no commands"
+          print("guide ok:", len(guide["commands"]), "commands")
+          PY
+          .build/release/rushes --socket "$SOCK" targets > targets.json
+          python3 - <<'PY'
+          import json
+          t = json.load(open("targets.json"))
+          assert t.get("displays"), "no displays listed"
+          print("targets ok:", len(t["displays"]), "displays")
+          PY
+          .build/release/rushes --socket "$SOCK" record start --display main --mic default --duration 2 --wait > record.json
+          python3 - <<'PY'
+          import json
+          def find_id(o):
+              if isinstance(o, dict):
+                  if "id" in o and isinstance(o["id"], str):
+                      return o["id"]
+                  for v in o.values():
+                      r = find_id(v)
+                      if r: return r
+              elif isinstance(o, list):
+                  for v in o:
+                      r = find_id(v)
+                      if r: return r
+              return None
+          rid = find_id(json.load(open("record.json")))
+          assert rid, "no recording id in record output"
+          open("rid.txt", "w").write(rid)
+          print("recorded:", rid)
+          PY
+          .build/release/rushes --socket "$SOCK" verify "$(cat rid.txt)" > verify.json
+          cat verify.json
