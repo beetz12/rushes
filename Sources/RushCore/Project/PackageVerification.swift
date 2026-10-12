@@ -8,6 +8,26 @@ import Foundation
 /// result into the manifest's `verified` block).
 public struct PackageVerifier: Sendable {
 
+    /// AVFoundation's synchronous decoder can wait for codec work. Keep those
+    /// waits outside Swift's cooperative executor, which must remain available
+    /// to concurrent writers and cancellation tasks.
+    private final class Decoder: @unchecked Sendable {
+        let reader: AVAssetReader
+        let output: AVAssetReaderTrackOutput
+        private var started = false
+        init(reader: AVAssetReader, output: AVAssetReaderTrackOutput) {
+            self.reader = reader; self.output = output
+        }
+        // Called only by this reader's dedicated serial queue.
+        func copyCount() -> Int? {
+            if !started {
+                started = true
+                guard reader.startReading() else { return nil }
+            }
+            return output.copyNextSampleBuffer().map(CMSampleBufferGetNumSamples)
+        }
+    }
+
     /// The report for one package.
     public struct Report: Equatable, Sendable {
 
@@ -173,14 +193,14 @@ public struct PackageVerifier: Sendable {
                     continue
                 }
                 reader.add(output)
-                guard reader.startReading() else {
-                    issues.append("\(track.file): decoder could not start")
-                    continue
-                }
+                let decoder = Decoder(reader: reader, output: output)
+                let reads = BoundedMediaRead<Int>(copy: { decoder.copyCount() },
+                                                  cancel: { decoder.reader.cancelReading() })
+                defer { reads.cancel() }
                 var samples = 0
-                while let sample = output.copyNextSampleBuffer() {
-                    if Task.isCancelled { reader.cancelReading(); throw CancellationError() }
-                    samples += CMSampleBufferGetNumSamples(sample)
+                while let count = try await reads.read() {
+                    try Task.checkCancellation()
+                    samples += count
                 }
                 if reader.status != .completed || samples == 0 {
                     issues.append("\(track.file): stream did not decode to completion")
