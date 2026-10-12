@@ -32,6 +32,8 @@ import { openInEditor, editorArguments } from './editor-handoff';
 import { copyVideoFile } from './file-clipboard';
 import { videoExportRequest } from '../shared/review-draft';
 import { atomicJSON, atomicBytes } from './atomic';
+import { OnboardingStore } from './onboarding-store';
+import { CameraOverlayLifecycle } from './camera-overlay';
 import { startShellServer } from './shell-server';
 import { MediaRegistry, parseRange, mimeType } from './media';
 import {
@@ -55,6 +57,12 @@ const media = new MediaRegistry();
 const exportedFiles = new Set<string>();
 const userDir =
   process.env.RUSHES_DATA_DIR ?? join(homedir(), 'Library', 'Application Support', 'Rushes');
+const onboarding = new OnboardingStore(join(userDir, 'onboarding.json'));
+const cameraOverlay = new CameraOverlayLifecycle();
+let startRequests = 0;
+let bubbleSuppressed = false;
+let bubbleWrites: Promise<unknown> = Promise.resolve();
+let lastBubble = { center: [0.5, 0.5], size: 200, sizeFraction: undefined as number | undefined };
 const recordingsRoot = process.env.RUSHES_RECORDINGS_ROOT ?? join(homedir(), 'Movies', 'Rushes');
 const enginePath = app.isPackaged
   ? join(process.resourcesPath, 'bin', 'rushcore-engine')
@@ -150,12 +158,24 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
       w.webContents.reload();
   });
   w.on('closed', () => {
-    windows.delete(view);
+    if (windows.get(view) === w) windows.delete(view);
+    if (view === 'recorder' && !captureBusy())
+      void hideCameraBubble().catch((error) =>
+        broadcast({ event: 'warning', message: String(error) }),
+      );
     if (view === 'drawing' && drawingEnabled)
       void hideDrawing().catch((error) => broadcast({ event: 'warning', message: String(error) }));
   });
+  if (view === 'recorder')
+    w.on('hide', () => {
+      if (!captureBusy())
+        void hideCameraBubble().catch((error) =>
+          broadcast({ event: 'warning', message: String(error) }),
+        );
+    });
   if (view === 'bubble' || view === 'bar') w.on('moved', () => rememberPosition(view, w));
   w.once('ready-to-show', () => {
+    if (quitting || w.isDestroyed() || windows.get(view) !== w) return;
     if (['bubble', 'bar', 'teleprompter', 'drawing', 'drawing-tools'].includes(view))
       w.showInactive();
     else w.show();
@@ -371,12 +391,48 @@ async function syncBubble() {
     )
   )
     w.setBounds(geometry.bounds);
-  await supervisor.client.request('record.bubble', {
+  lastBubble = {
     center: geometry.center,
     size: options.bubbleSize,
     sizeFraction: geometry.sizeFraction,
-    visible: true,
+  };
+  const id = currentId;
+  await queueBubbleWrite(async () => {
+    if (
+      w.isDestroyed() ||
+      windows.get('bubble') !== w ||
+      !supervisor.active ||
+      bubbleSuppressed ||
+      currentId !== id
+    )
+      return;
+    await supervisor.client.request('record.bubble', { ...lastBubble, visible: true });
   });
+}
+function captureBusy() {
+  return supervisor.active || startRequests > 0;
+}
+function queueBubbleWrite(write: () => Promise<void>) {
+  const next = bubbleWrites.catch(() => {}).then(write);
+  bubbleWrites = next;
+  return next;
+}
+async function hideCameraBubble() {
+  const generation = cameraOverlay.hide();
+  const busy = captureBusy();
+  const id = currentId;
+  if (busy) bubbleSuppressed = true;
+  windows.get('bubble')?.close();
+  broadcast({ event: 'camera-preview-cleared' });
+  await supervisor.client.request('camera.preview.subscribe', { enabled: false });
+  if (busy) {
+    await queueBubbleWrite(async () => {
+      if (supervisor.active && currentId === id && cameraOverlay.sameGeneration(generation))
+        await supervisor.client.request('record.bubble', { ...lastBubble, visible: false });
+    });
+  } else if (!captureBusy() && cameraOverlay.sameGeneration(generation)) {
+    await supervisor.client.request('camera.preview.stop');
+  }
 }
 function rememberPosition(view: 'bubble' | 'bar', w: BrowserWindow) {
   const bounds = w.getBounds(),
@@ -586,6 +642,14 @@ async function ready() {
   app.dock?.hide();
   if (app.isPackaged) app.setAsDefaultProtocolClient('rushes');
   handle('rushes:bootstrap', () => ({ options, enginePath, packaged: app.isPackaged }));
+  handle('rushes:onboarding', async (value) => {
+    const result = await onboarding.action(value);
+    if (value !== 'get') {
+      broadcast({ event: 'onboarding-changed', action: value, ...result });
+      if (value === 'reset') windowFor('recorder');
+    }
+    return result;
+  });
   handle('rushes:request', async (value) => {
     const request = requestSchema.parse(value);
     if (JSON.stringify(request.args).length > 2 * 1024 * 1024) throw new Error('Request too large');
@@ -596,22 +660,53 @@ async function ready() {
     )
       throw new Error('Use the native save dialog for file output');
     if (request.cmd === 'camera.preview.start' && supervisor.active) {
-      const live = await supervisor.client.request('status');
-      const id = currentId ?? live.recording?.recordingID;
-      if (!id) throw new Error('The active take is not available for camera preview.');
-      const take = await supervisor.client.request('show', { id });
-      const camera = take.manifest.sources?.cameraId;
-      if (!camera) throw new Error('This take has no camera track.');
-      if (request.args.camera !== 'default' && request.args.camera !== camera)
-        throw new Error('Keep the active recording camera selected until this take finishes.');
-      const result = await supervisor.client.request('camera.preview.subscribe', { enabled: true });
-      bubble();
-      return result;
+      bubbleSuppressed = false;
+      return cameraOverlay.showWhenReady(
+        async (current) => {
+          const live = await supervisor.client.request('status');
+          const id = currentId ?? live.recording?.recordingID;
+          if (!id || !supervisor.active || !current())
+            throw new Error('The active take is no longer available for camera preview.');
+          const take = await supervisor.client.request('show', { id });
+          const camera = take.manifest.sources?.cameraId;
+          if (!camera) throw new Error('This take has no camera track.');
+          if (request.args.camera !== 'default' && request.args.camera !== camera)
+            throw new Error('Keep the active recording camera selected until this take finishes.');
+          if (!current() || !supervisor.active || currentId !== id) return;
+          return supervisor.client.request('camera.preview.subscribe', { enabled: true });
+        },
+        () => {
+          if (!quitting && supervisor.active) {
+            bubble();
+            void syncBubble();
+          }
+        },
+      );
+    }
+    if (request.cmd === 'camera.preview.stop') return hideCameraBubble();
+    if (request.cmd === 'camera.preview.start') {
+      return cameraOverlay.showWhenReady(
+        () => supervisor.client.request(request.cmd, request.args),
+        () => {
+          if (!quitting && !captureBusy() && windows.get('recorder')?.isVisible()) bubble();
+        },
+      );
     }
     if (request.cmd === 'record.stop') await syncBubble();
     if (request.cmd === 'camera.blur.set' && request.args.enabled === true)
       broadcast({ event: 'camera-preview-cleared' });
-    const result = await supervisor.client.request(request.cmd, request.args);
+    if (request.cmd === 'record.start') {
+      startRequests++;
+      bubbleSuppressed = false;
+      cameraOverlay.hide();
+      windows.get('bubble')?.close();
+    }
+    let result;
+    try {
+      result = await supervisor.client.request(request.cmd, request.args);
+    } finally {
+      if (request.cmd === 'record.start') startRequests--;
+    }
     if (request.cmd === 'permissions.settings' && result.url) {
       const u = new URL(result.url);
       if (u.protocol === 'x-apple.systempreferences:') await shell.openExternal(result.url);
@@ -622,10 +717,6 @@ async function ready() {
       broadcast({ event: 'teleprompter-config', script: promptScript, enabled: promptEnabled });
       if (!promptEnabled) windows.get('teleprompter')?.close();
     }
-    if (request.cmd === 'camera.preview.start') {
-      bubble();
-    }
-    if (request.cmd === 'camera.preview.stop') windows.get('bubble')?.close();
     if (request.cmd === 'record.start') {
       windows.get('recorder')?.hide();
       bar();
@@ -717,6 +808,8 @@ async function ready() {
         return showTeleprompter();
       case 'close':
         return windows.get('recorder')?.hide();
+      case 'hide-bubble':
+        return hideCameraBubble();
       case 'area': {
         const selected =
           screen.getAllDisplays().find((d) => `display-${d.id}` === options.source) ??
@@ -1004,25 +1097,60 @@ async function ready() {
         void showTeleprompter().catch((error) =>
           broadcast({ event: 'warning', message: String(error) }),
         );
-      if (!windows.has('bubble'))
-        void supervisor.client
-          .request('show', { id: currentId })
-          .then(async (show) => {
-            if (show.manifest.sources?.cameraId) {
+      const id = currentId;
+      if (!bubbleSuppressed)
+        void cameraOverlay
+          .showWhenReady(
+            async (current) => {
+              const show = await supervisor.client.request('show', { id });
+              if (
+                !show.manifest.sources?.cameraId ||
+                !current() ||
+                currentId !== id ||
+                !supervisor.active
+              )
+                return false;
               await supervisor.client.request('camera.preview.subscribe', { enabled: true });
-              bubble();
-              await syncBubble();
-            }
-          })
+              return current() && currentId === id && supervisor.active;
+            },
+            (hasCamera) => {
+              if (
+                hasCamera &&
+                !quitting &&
+                !bubbleSuppressed &&
+                currentId === id &&
+                supervisor.active
+              ) {
+                bubble();
+                void syncBubble().catch((error) =>
+                  broadcast({ event: 'warning', message: String(error) }),
+                );
+              }
+            },
+          )
           .catch((error) => broadcast({ event: 'warning', message: String(error) }));
+      else
+        void queueBubbleWrite(async () => {
+          if (currentId === id && supervisor.active)
+            await supervisor.client.request('record.bubble', { ...lastBubble, visible: false });
+        }).catch((error) => broadcast({ event: 'warning', message: String(error) }));
       void syncBubble().catch((error) => broadcast({ event: 'warning', message: String(error) }));
     }
-    if (e.event === 'state-changed' && typeof e.state === 'string') state = e.state;
+    if (e.event === 'state-changed' && typeof e.state === 'string') {
+      if (cameraOverlay.newTake(state, e.state)) {
+        if (startRequests === 0) bubbleSuppressed = false;
+        windows.get('bubble')?.close();
+      }
+      if (e.state === 'armed' && typeof e.recordingId === 'string') currentId = e.recordingId;
+      state = e.state;
+    }
     if (e.event === 'recording-stopped') {
       const stoppedId = e.recordingId ?? currentId;
       if (typeof stoppedId === 'string')
         void autoShare.recordingStopped(stoppedId, options.autoShare);
       state = 'idle';
+      cameraOverlay.hide();
+      bubbleSuppressed = false;
       broadcast({ event: 'camera-preview-cleared' });
       void hideDrawing().catch(() => {});
       windows.get('teleprompter')?.close();
@@ -1038,16 +1166,19 @@ async function ready() {
       if (library.webContents.isLoading())
         library.webContents.once('did-finish-load', () => setTimeout(openReview, 100));
       else openReview();
+      currentId = undefined;
     }
     trayUpdate();
   });
   supervisor.client.on('engine-error', (e) => broadcast({ event: 'error', ...e }));
-  supervisor.client.on('disconnected', () =>
+  supervisor.client.on('disconnected', () => {
+    cameraOverlay.hide();
+    windows.get('bubble')?.close();
     broadcast({
       event: 'error',
       message: 'Native engine disconnected. Relaunch Rushes to reconnect.',
-    }),
-  );
+    });
+  });
   try {
     await supervisor.start();
     engineReady = true;
@@ -1273,6 +1404,7 @@ app.on('before-quit', (event) => {
   if (quitting) return;
   event.preventDefault();
   quitting = true;
+  cameraOverlay.hide();
   void supervisor
     .quit()
     .then(async () => {

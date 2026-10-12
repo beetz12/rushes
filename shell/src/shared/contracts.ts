@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { OnboardingAction, OnboardingRecord } from './onboarding';
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export const commands = [
   'ping',
@@ -80,6 +81,7 @@ export const windowSchema = z
       'cancel-area',
       'bubble-size',
       'move-bubble',
+      'hide-bubble',
       'relaunch',
       'acknowledgements',
       'quit',
@@ -218,6 +220,7 @@ export type ShareStatus = {
 };
 export type EngineEvent = { event: string; [key: string]: unknown };
 export interface RushesAPI {
+  onboarding(action: OnboardingAction): Promise<OnboardingRecord>;
   request(cmd: string, args?: Record<string, unknown>): Promise<any>;
   bootstrap(): Promise<{ options: RecordingOptions; enginePath: string; packaged: boolean }>;
   saveOptions(options: RecordingOptions): Promise<void>;

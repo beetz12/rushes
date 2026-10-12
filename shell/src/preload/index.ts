@@ -9,6 +9,7 @@ async function invoke(channel: string, value?: unknown) {
   return response;
 }
 const api: RushesAPI = {
+  onboarding: (action) => invoke('rushes:onboarding', action),
   request: (cmd, args = {}) => invoke('rushes:request', { cmd, args }),
   presets: (action, name, options) => invoke('rushes:presets', { action, name, options }),
   bootstrap: () => invoke('rushes:bootstrap'),
