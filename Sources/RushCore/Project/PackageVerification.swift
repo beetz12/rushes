@@ -80,6 +80,9 @@ public struct PackageVerifier: Sendable {
         if manifest.status != .complete && manifest.status != .recovered {
             packageIssues.append("package is not a finalized successful or recovered recording")
         }
+        if manifest.warnings.contains(where: { $0.code == "ended-early" && ($0.message?.hasPrefix("stream-error") == true || $0.message?.hasPrefix("writer-failed") == true) }) {
+            packageIssues.append("recording ended early because a capture stream or writer failed; playable surviving tracks do not make the take successful")
+        }
         if !manifest.tracks.contains(where: \.present) {
             packageIssues.append("package has no recorded media tracks")
         }

@@ -1363,10 +1363,10 @@ function Review({ id, back, run, setNote, trashed }: any) {
       />
       <p className="recording-meta">
         {formatDuration(duration)} · {recording.tracks.filter((t: any) => t.present).length}{' '}
-        separate tracks · {recording.manifest.status}
+        separate tracks · {recording.manifest.status === 'failed' || (recording.manifest.warnings ?? []).some((warning: any) => warning.code === 'ended-early' && /^(stream-error|writer-failed)/.test(warning.message ?? '')) ? 'failed · surviving footage kept' : recording.manifest.status}
       </p>
       {(recording.manifest.warnings ?? []).map((warning: any, index: number) => (
-        <div className="alert" key={index}>
+        <div className={warning.code === 'track-empty' || (warning.code === 'ended-early' && /^(stream-error|writer-failed)/.test(warning.message ?? '')) ? 'alert error' : 'alert warning'} key={index}>
           {warning.message ?? warning.code}
         </div>
       ))}

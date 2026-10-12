@@ -716,6 +716,26 @@ struct ProjectTests {
         #expect(!(await PackageVerifier().verify(package)).ok)
     }
 
+    @Test("A fatal early-stop warning cannot verify successfully merely because other tracks play")
+    func verifyRejectsFatalEarlyStop() async throws {
+        let root = tempDir("verify-fatal-stop")
+        defer { cleanup(root) }
+        let package = try RecordingPackage.create(root: root)
+        try await writeAudioFile(url: package.trackURL(for: .microphone), durationNs: 1_000_000_000, epochNs: epochNs)
+        var manifest = sampleManifest(id: package.id, status: .complete)
+        manifest.clock?.durationNs = 1_000_000_000
+        manifest.tracks = [.init(kind: .microphone)]
+        manifest.warnings = []
+        try package.writeManifest(manifest)
+        #expect((await PackageVerifier().verify(package)).ok)
+        manifest.tracks.append(.init(kind: .camera, present: false))
+        manifest.warnings = [.init(code: "ended-early", message: "stream-error: camera writer: encoder failed")]
+        try package.writeManifest(manifest)
+        let report = await PackageVerifier().verify(package)
+        #expect(!report.ok)
+        #expect(report.trackChecks.first(where: { $0.kind == .microphone })?.ok == true)
+        #expect(report.issues.contains { $0.contains("writer failed") })
+    }
     @Test("Verify reports the specific failure for each broken track")
     func verifyReportsSpecificFailures() async throws {
         let root = tempDir("verify-bad")

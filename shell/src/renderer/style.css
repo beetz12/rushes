@@ -434,6 +434,7 @@ h3 {
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
+.alert.warning { background: #fff8e8; border-color: #f0d58a; color: #725719; }
 .alert.error {
   background: #fff0ec;
   border-color: #ffd0c5;
