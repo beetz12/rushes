@@ -1,6 +1,8 @@
 # Independent commercial service verdict
 
-**FAIL for this code candidate.** Four reproduced failures break verified provider cleanup, the atomic budget ledger or logout revocation. Repair the consolidated set below before accepting the service slice. A passing repair review still cannot establish live M2–M5 provider, billing or launch gates.
+**Current code disposition: PASS for the consolidated F1–F4 repair reassessment of service `5c11c834577d9af4e5b783412f5a829e6874732e`.** Paid launch remains blocked by capture feasibility and external outcome gates. The independently rerun evidence and precise scope appear in the reassessment below; the original failure history is retained.
+
+**Initial candidate: FAIL.** Four reproduced failures broke verified provider cleanup, the atomic budget ledger or logout revocation. A passing repair review cannot establish live M2–M5 provider, billing or launch gates.
 
 Reviewed candidate: `fb998e846e0a8a2816397b3c49de740d91551956`, branch `codex/rushes-browser-service-review`, independently checked on 2026-10-12 in `/Users/dave/Work/rushes-browser-service-review`. Review type: implementation against the paid plan and immutable browser contract, base `853ff16`. One independent service reviewer; this reviewer wrote no business code. This report owns only this artifact. No provider/account mutation, credentials, deployment, GUI action, recording or shared task-tracker write occurred.
 
@@ -82,3 +84,59 @@ Private proof directory: `/Users/dave/.goal-loop/loom-clone/host/2026-10-12-brow
 | `shares.ts` | `d29b2f3f3618c84a7f1ddfce7d3df08f9a390692feda849b6b7d087cadb2f0ba` |
 
 Required disposition: one consolidated service maker repair and fresh independent replay against the resulting exact revision. No live provider gate or paid-launch criterion is relaxed by these fixes. Missing real configured auth/library, private Stream ingestion/read-back/playback, NexAI Stripe test-mode read-back, provider-metrics reconciliation, practical replay exposure, alert/restore exercise and separately approved M5 audience/live mode/spend remain root-owned external conditions.
+
+## Consolidated repair reassessment — 2026-10-12
+
+**PASS for the bounded service code repair.** No unresolved F1–F4 reproduction remains against the reviewed revision. This is not a browser recorder, deployment, live account/provider or paid-launch pass.
+
+Exact maker revision: `5c11c834577d9af4e5b783412f5a829e6874732e`; root reports integration at `5cef240`. On the independent review branch, shared root seam `68c6844` was cherry-picked as `a6d1288`, then **only** the service repair was cherry-picked as `41d3481703850f5d44d879b9a5709f56562c98d1`. A direct `git diff 5c11c834 HEAD -- browser-worker/src browser-worker/schema.sql browser-worker/migrations browser-worker/test browser-worker/README.md` was empty, establishing equality of reviewed service paths despite different commit ancestry. Initial FAIL artifacts `b6558f8` / `1c3c4c3` and private failing probes/logs remain unchanged. This reviewer made no business-code edits.
+
+| Finding | Independent corrected result and source |
+|---|---|
+| F1: post-create mapping/crash uncertainty | Original injected mapping failure now retains UID/lease plus uncertainty; verified maintenance removes its creator-associated provider asset before `deleted`, with zero assets remaining. The service's new tests additionally pass mapping **and error-write** failure, a real child `SIGKILL` between provider creation and mapping, failed provider deletion/read-back, and incomplete creator-list coverage. `records.ts:711–715` rejects another create while a durable provision marker exists; `cleanup.ts:44–69` reloads persisted ownership and reconciles marker/uncertainty/unmapped finalization rather than relying on an error-write succeeding. `providers.ts:172–210` checks exact creator and complete counts. New creator keys are 64 hex characters, versioned by the stored finalization marker; legacy associations keep their original key. |
+| F2: HTTP failure ambiguity | Original side-effect-then-503 probe now returns uncertainty on both attempts, **one create and one provider asset**. Source only treats explicit structured validation/auth rejection as definite; 5xx, transport loss and malformed mapping remain quarantined. Service regression tests pass each outcome and exact cleanup before allowance release. |
+| F3: immutable budget month | Original paused October batch / successful November mint / failed October mint now leaves **October 0 seconds, November 10 seconds**. Source captures one reservation timestamp and charges/checks/releases its immutable month (`shares.ts:236–269`, `schema.sql:161–182`). Service tests also pass the inverse failure ordering. Upgrade `0002` explicitly replaces the old trigger, reconstructs the reserve from durable delivery rows and rejects negative counters. |
+| F4: logout versus session rotation | Original success-logout/late-cookie reproduction now yields `user:null` and protected library **401**. Rotation CAS, successor insertion and ancestor revocation share a SQLite transaction (`auth.ts:133–176`); authentication requires an unrevoked current family (`auth.ts:84–90`). CSRF-valid ancestor logout revokes the whole applicable family (`auth.ts:213–227`) while ordinary routes still reject revoked ancestors. Extra original reviewer probes independently pass ancestor logout after committed rotation, wrong-CSRF rejection, stale-auth insertion blocked after committed logout, a fresh RSA-verified Google login after revocation, and preservation of a separately verified device login family. |
+
+The first independent repair replay had **6 tests, 6 pass, 0 fail**: all original provider/month/control probes plus both logout schedules. Its only test-harness adaptations are extending the newly required family's absolute expiry alongside sessions in the controlled month-boundary fixture, and pausing the new observed family-revocation SQL instead of the removed token-only update. No security outcome assertion was relaxed. The original failing scripts/logs remain untouched; adapted copies are `repaired-probe.mjs` and `repaired-logout-race.mjs`.
+
+The additional independent `family-migration-probe.mjs` has **5 tests, 5 pass, 0 fail**, with real SQLite and RSA signing. It runs the five behaviors in the F4 table row and the migration check below. Google provider exchange/certs remain controlled fixtures: this proves server claim/signature handling, not a real Google account login.
+
+### Upgrade and fresh-schema checks
+
+The extra independent probe applied the actual top-level `0001` → `0002` → `0003` files to SQLite. A seeded pre-family session was revoked with `family_id=NULL`; inserts lacking a verified family are rejected. The resulting named tables/indexes/views/triggers match the latest fresh schema, and every normalized trigger body is equal. Negative insert/update counters are rejected in both paths. Against the upgraded database, real API session rotation, CSRF-valid ancestor logout, invalid successor authority and a fresh verified OIDC login all pass; `PRAGMA foreign_key_check` is empty.
+
+This is behavioral/object/trigger parity, **not byte-identical table declarations**: the upgraded family column remains nullable for the deliberately revoked legacy rows, while the fresh schema uses NOT NULL; the required-family trigger protects subsequent inserts in both. Fresh budget tables add CHECK clauses while upgraded tables obtain the equivalent tested trigger guards. Migration `0003` is intentionally applied once through the migration ledger, not rerun as a bootstrap schema.
+
+Root's deployment script at `5cef240:browser-worker/scripts/deploy.mjs` was read, without executing it. It enumerates top-level numbered SQL files, rejects an existing database without an understood ledger, uses Wrangler `d1 migrations apply`, verifies every expected migration in remote ledger read-back before deploying and then checks revision/config. This supports the deployment design only; no actual remote migration/restore/deployment was performed by this reviewer. One integration configuration caveat was sent to root: the deployment preflight permits `rk_` Stripe credentials while the service config accepts `sk_`; use the accepted credential type or align that preflight before enabling hosting. It does not alter this service repair disposition.
+
+### Fresh commands and evidence identity
+
+| Command | Actual result and retained file |
+|---|---|
+| Pinned Node 22.22.0 `npm --prefix browser-worker run check` | Exit **0**, typecheck/build and **67/67 tests**, including the real process interruption and independent-family/fresh-login cases; `repair-check.log`. |
+| Pinned `node --test repaired-probe.mjs repaired-logout-race.mjs` | Exit **0**, **6/6**; `repaired-originals.log`. |
+| Pinned `node --test family-migration-probe.mjs` | Exit **0**, **5/5**; `family-migration-probe.log`. |
+| Clean scanner on repaired service source, schema/migrations, fixtures, old/new service tests, crash fixture and original design | Exit **0**, first stdout line **0** inspected; `repair-clean.log`. |
+| Exact service-path diff against maker `5c11c834` | Exit **0**, empty output. |
+
+All private repair proof is in the existing 0700 `.../2026-10-12-browser/service-review` directory; proof files are 0600. SHA-256 identities:
+
+| Artifact | SHA-256 |
+|---|---|
+| `repair-check.log` | `cf5e241569202b7ced5bb09aa6f982dda691a53e2c6a97b9b7e6d3587c49d995` |
+| `repair-clean.log` | `9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa` |
+| `repaired-probe.mjs` | `0177cbef15822e0d1556833bc3c45e8246b20b4fe7c1c17010c3ec3e6d0d9e46` |
+| `repaired-logout-race.mjs` | `dbdecab5f19eb4d4dd51c9f11b115d6f514acc06918bc9131d2c677b5ccc0926` |
+| `repaired-originals.log` | `28356a22d301a8911cae14430866c1bd32c10293cf7496e13454c31a0b189bff` |
+| `family-migration-probe.mjs` | `1587f0683273f43aff5f097bfea3301ea4efee9b6433740a05da14aa44af8f03` |
+| `family-migration-probe.log` | `c70943fc23c483a34cf03ccb4bf5009a190155a960011d7c1411d5defccd46c2` |
+| Repaired `auth.ts` | `66b6d89a5d2e51ba5b886eab88e4f679fba61ec7f4dccb863e6a9cf3c23efddf` |
+| Repaired `records.ts` | `85c9913a7871f8116f5d51cd9fca6ca2ede539c492b84824fd6bb42a265e2b3a` |
+| Repaired `cleanup.ts` | `871e3f169bda83361d19b4c937c264ed0bc992f2d60c135d95599f3029a0945a` |
+| Repaired `providers.ts` | `3df0ea69a35b399d30927632a1bbaad8ad439ba7396c4191c8896fb1e699de0f` |
+| Fresh cumulative `schema.sql` | `4418d962f49aee9b22db6ccf099c4a8dc897a00cbd95e4965899b158754d288b` |
+| Upgrade `0002` | `8d5753b46233d5d962d22192c81b30c7d4be061e56610b3bdc557461ac9d7d87` |
+| Upgrade `0003` | `3229673ced41e892e8373b588bb3a814072ed4ba083598cf581a19c72277bc66` |
+
+**Release boundary unchanged.** Root reports a capture M1 diagnostic failure at 146 seconds; this service lane did not run or independently verify that capture diagnostic and does not issue an M1 pass. The reviewed paid plan forbids selling or treating provider/account progress as capture-feasibility evidence. Real configured account/library isolation, private Stream origin/ingestion/playback/export read-back, NexAI Stripe test-mode/provider read-back, provider invoice/metrics and replay exposure, operational alerts/restore, exact deployed assets/revision and separately approved audience/live mode/spend still require their own fresh outcome evidence. Code fixture PASS does not permit a paid launch or relax any of those criteria.
