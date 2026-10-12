@@ -139,6 +139,10 @@ public actor EngineController: ControlHandling {
     private let extended: ExtendedCommandRouter
     private let automation: LocalAutomationService
     private let trash: RecordingTrashService
+    private let effects: ProductionEffectsCoordinator
+    private let serviceEvents: ControlEventRelay
+    private var defaultBlur = CameraBlurConfiguration()
+    private var productionSettingsError: String?
     private var drawingWindowID: String?
     private var serviceWork: [String: Int] = [:]
     private var startupWarnings: [String] = []
@@ -168,6 +172,16 @@ public actor EngineController: ControlHandling {
     private var eventSink: (@Sendable (ControlEvent) -> Void)?
 
     public init(config: EngineControllerConfig) throws {
+        let relay = ControlEventRelay()
+        serviceEvents = relay
+        effects = ProductionEffectsCoordinator(onVoice: { id, progress in
+            var safe = (try? JSONValue(encoding: progress).object) ?? [:]
+            safe.removeValue(forKey: "recognizedText")
+            relay.publish(ControlEvent(kind: .teleprompterProgress, recordingId: id,
+                result: .object(["progress": .object(safe)])))
+        }, warning: { code, message in
+            relay.publish(ControlEvent(kind: .warning, code: code, message: message))
+        })
         trash = RecordingTrashService(root: config.recordingsRoot)
         automation = LocalAutomationService(directory: (config.socketPath.isEmpty ? config.indexDatabaseURL.deletingLastPathComponent() : URL(fileURLWithPath: config.socketPath).deletingLastPathComponent()).appendingPathComponent("automation"))
         self.config = config
@@ -193,6 +207,17 @@ public actor EngineController: ControlHandling {
         } catch {
             startupWarnings.append("Recovery/index refresh failed: \(error)")
         }
+        do {
+            try await restoreProductionSettings()
+            await config.captureRigs.setCameraPreviewTransform(effects.previewTransform())
+        } catch {
+            productionSettingsError = String(describing: error)
+            startupWarnings.append("Production settings could not be restored: \(error)")
+        }
+        do {
+            let relay = serviceEvents
+            try await extended.prepare(eventSink: { event in relay.publish(event) })
+        } catch { startupWarnings.append("Post-Stop jobs could not resume: \(error)") }
         do { try await automation.restore(tools: automationTools(), handler: automationHandler()) }
         catch { startupWarnings.append("Local automation startup failed: \(error)") }
     }
@@ -201,6 +226,7 @@ public actor EngineController: ControlHandling {
     public func setEventSink(_ sink: @escaping @Sendable (ControlEvent) -> Void) {
         eventSink = sink
         previewPublication.setSink(sink)
+        serviceEvents.setSink(sink)
     }
 
     /// Stops any active recording (bounded: each writer's finalize is raced
@@ -211,6 +237,8 @@ public actor EngineController: ControlHandling {
         let result = active != nil ? try? await stopActive() : nil
         await config.captureRigs.stopPreview()
         await automation.shutdown()
+        do { try await extended.shutdownJobs() } catch { startupWarnings.append("Job shutdown failed: \(error)") }
+        await effects.cancelRecording()
         return result
     }
 
@@ -219,6 +247,7 @@ public actor EngineController: ControlHandling {
     public func handle(_ request: ControlRequest, context: ControlCommandContext) async {
         eventSink = context.broadcast
         previewPublication.setSink(context.broadcast)
+        serviceEvents.setSink(context.broadcast)
         do {
             if let response = try await dispatch(request, context: context) {
                 context.reply(response)
@@ -245,6 +274,9 @@ public actor EngineController: ControlHandling {
     }
 
     private func dispatch(_ request: ControlRequest, context: ControlCommandContext) async throws -> ControlResponse? {
+        if ProductionEffectsCoordinator.commands.contains(request.cmd) {
+            return .success(id: request.id, result: try await productionCommand(request))
+        }
         if LocalAutomationService.commands.contains(request.cmd) {
             return .success(id: request.id, result: try await automation.handle(request,
                 tools: automationTools(), handler: automationHandler()))
@@ -381,6 +413,9 @@ public actor EngineController: ControlHandling {
         case "record.resume":
             try await transition(.resume)
             return .success(id: request.id, result: .object(["state": .string("recording")]))
+        case "record.geometry":
+            let geometry = await active?.rig.captureGeometry()
+            return .success(id: request.id, result: geometry?.jsonValue ?? .null)
         case "drawing.show":
             let current = try requireActive()
             guard let windowID = request.param("windowID")?.string else {
@@ -400,12 +435,18 @@ public actor EngineController: ControlHandling {
             guard !starting, !finishing, serviceWork[id, default: 0] == 0 else {
                 throw ControlFailure(code: "recording-busy", message: "Finish the current operation before moving this take to Trash")
             }
-            let receipt = try await trash.trash(id: id, activeRecordingID: active?.recordingID)
+            _ = try await resolvePackage(id: id)
+            guard active?.recordingID != id else { throw ControlFailure(code: "recording-active", message: "Stop this take before moving it to Trash") }
+            try await extended.cancelRecordingJobs(id: id)
+            let receipt: RecordingTrashService.Receipt
+            do { receipt = try await trash.trash(id: id, activeRecordingID: active?.recordingID) }
+            catch { await extended.allowRecordingJobs(id: id); throw error }
             _ = try await index.rebuild(root: config.recordingsRoot)
             return .success(id: request.id, result: try JSONValue(encoding: receipt))
         case "library.undoTrash":
             guard let token = request.param("token")?.string else { throw ControlFailure(code: "invalid-params", message: "library.undoTrash requires its undo token") }
             let id = try await trash.undo(token: token)
+            await extended.allowRecordingJobs(id: id)
             _ = try await index.rebuild(root: config.recordingsRoot)
             try await extended.refreshIndex(id: id)
             return .success(id: request.id, result: .object(["id": .string(id), "restored": .bool(true)]))
@@ -450,6 +491,76 @@ public actor EngineController: ControlHandling {
         }
     }
 
+    private struct ProductionSettings: Codable {
+        var schema = "rushes.production-settings/1"
+        var prompt: TeleprompterConfiguration
+        var blur: CameraBlurConfiguration
+    }
+    private var productionSettingsURL: URL { config.indexDatabaseURL.deletingLastPathComponent().appendingPathComponent("production-settings.json") }
+    private func restoreProductionSettings() async throws {
+        let url = productionSettingsURL
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        var info = stat()
+        guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG,
+              info.st_uid == geteuid(), info.st_mode & 0o077 == 0, info.st_size <= 262_144 else {
+            throw ControlFailure(code: "unsafe-production-settings")
+        }
+        let settings = try JSONDecoder().decode(ProductionSettings.self, from: Data(contentsOf: url))
+        guard settings.schema == "rushes.production-settings/1" else { throw ControlFailure(code: "invalid-production-settings") }
+        try settings.prompt.validate(); try settings.blur.validate()
+        defaultBlur = settings.blur
+        try effects.configureBlur(settings.blur)
+        _ = try await effects.handle(.init(id: "restore-production", cmd: "teleprompter.set",
+            args: try JSONValue(encoding: settings.prompt)))
+    }
+    private func saveProductionSettings() async throws {
+        let promptValue = try await effects.handle(.init(id: "save-production", cmd: "teleprompter.get"))
+        let prompt = try JSONDecoder().decode(TeleprompterConfiguration.self, from: ControlWire.encoder.encode(promptValue))
+        let settings = ProductionSettings(prompt: prompt, blur: defaultBlur)
+        let url = productionSettingsURL
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        if let type = try? FileManager.default.attributesOfItem(atPath: url.path)[.type] as? FileAttributeType,
+           type == .typeSymbolicLink { throw ControlFailure(code: "unsafe-production-settings") }
+        try AtomicFileWriter.writeEncodable(settings, to: url)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        productionSettingsError = nil
+    }
+    private func productionCommand(_ request: ControlRequest) async throws -> JSONValue {
+        if request.cmd.hasPrefix("camera.blur.") {
+            let id = request.param("id")?.string
+            let package: RecordingPackage?
+            if let id { package = try await resolvePackage(id: id) } else { package = nil }
+            var config = try package.map { try ProductionEffectsPolicy.read(from: $0.folderURL).cameraBlur } ?? defaultBlur
+            if request.cmd == "camera.blur.set" {
+                guard let enabled = request.param("enabled")?.bool else { throw ControlFailure(code: "invalid-params", message: "enabled must be Boolean") }
+                config.enabled = enabled
+                if let raw = request.param("radius") {
+                    guard let radius = raw.double else { throw ControlFailure(code: "invalid-params") }
+                    config.radius = radius
+                }
+                try config.validate()
+                if let package {
+                    try ProductionEffectsPolicy(cameraBlur: config).write(to: package.folderURL)
+                    if active?.recordingID == id {
+                        try effects.configureBlur(config)
+                        await self.config.captureRigs.setCameraPreviewTransform(effects.previewTransform())
+                    }
+                } else {
+                    defaultBlur = config
+                    try await saveProductionSettings()
+                    if active == nil {
+                        try effects.configureBlur(config)
+                        await self.config.captureRigs.setCameraPreviewTransform(effects.previewTransform())
+                    }
+                }
+            }
+            return .object(["enabled": .bool(config.enabled), "radius": .double(config.radius), "preservesRawMasters": .bool(true)])
+        }
+        let result = try await effects.handle(request)
+        if request.cmd != "teleprompter.get" { try await saveProductionSettings() }
+        return result
+    }
+
     private func automationHandler() -> AutomationDispatcher.CommandHandler {
         { [weak self] request in
             guard let self else { throw ControlFailure(code: "engine-unavailable") }
@@ -468,7 +579,7 @@ public actor EngineController: ControlHandling {
 
     private func automationTools() -> [MCPTool] {
         let reads: Set<String> = ["ping", "version", "guide", "status", "targets", "permissions.check",
-            "permissions.settings", "list", "show", "verify", "edit.get", "transcript.get", "meta.get", "share.status", "jobs.list"]
+            "permissions.settings", "list", "show", "verify", "edit.get", "transcript.get", "meta.get", "share.status", "jobs.list", "teleprompter.get", "camera.blur.get", "record.geometry", "drawing.status"]
         let excluded = LocalAutomationService.commands.union(["permissions.request", "camera.preview.start", "camera.preview.stop", "camera.preview.subscribe", "url.open"])
         return ControlGuide.make(version: config.version, socketPath: config.socketPath).commands
             .filter { !excluded.contains($0.name) }.map { doc in
@@ -837,6 +948,18 @@ public actor EngineController: ControlHandling {
     // MARK: - record.start
 
     private func recordStart(_ request: ControlRequest) async throws -> ControlResponse? {
+        try await extended.setCaptureActive(true)
+        do { return try await recordStartPerform(request) }
+        catch {
+            if active == nil { try? await extended.setCaptureActive(false) }
+            throw error
+        }
+    }
+
+    private func recordStartPerform(_ request: ControlRequest) async throws -> ControlResponse? {
+        if let productionSettingsError {
+            throw ControlFailure(code: "invalid-production-settings", message: "Reset or save valid production settings before recording: \(productionSettingsError)")
+        }
         guard !starting, !previewStarting, !finishing else { throw ControlFailure(code: "already-active", message: "a take is preparing or finishing") }
         if let current = active {
             throw ControlFailure(
@@ -871,6 +994,20 @@ public actor EngineController: ControlHandling {
             throw Self.failure(forSessionError: error)
         }
 
+        do {
+            try effects.configureBlur(defaultBlur)
+            try effects.currentPolicy().write(to: startedPackage.folderURL)
+            await config.captureRigs.setCameraPreviewTransform(effects.previewTransform())
+        } catch {
+            _ = try? await session.stopEarly(code: "effects-policy-failed", message: String(describing: error))
+            throw ControlFailure(code: "effects-policy-failed", message: "The requested camera policy could not be preserved: \(error)")
+        }
+        do {
+            try await effects.beginRecording(id: startedPackage.id, microphoneEnabled: sessionRequest.microphoneId != nil)
+        } catch {
+            await session.recordWarning(code: "production-effect-unavailable", message: String(describing: error))
+            await publishCaptureWarning(code: "production-effect-unavailable", message: String(describing: error))
+        }
         // Capture attaches behind the gate: pre-gate video frames are
         // cached for media time zero, pre-gate audio is discarded.
         let rig: CaptureRig
@@ -882,6 +1019,7 @@ public actor EngineController: ControlHandling {
                 selftest: request.param("selftest")?.bool == true,
                 shellBundleID: config.shellBundleID,
                 preview: previewPublisher(),
+                microphoneObserver: effects.microphoneObserver(),
                 warning: { [weak self] code, message in
                     Task {
                         await session.recordWarning(code: code, message: message)
@@ -892,6 +1030,7 @@ public actor EngineController: ControlHandling {
                     Task { await self?.captureStreamFailure(reason) }
                 }))
         } catch {
+            await effects.cancelRecording()
             _ = try? await session.stopEarly(
                 code: "capture-failed", message: String(describing: error))
             await upsertIndexRow(for: startedPackage)
@@ -901,6 +1040,7 @@ public actor EngineController: ControlHandling {
         }
 
         guard startGeneration == generation else {
+            await effects.cancelRecording()
             await rig.stop()
             _ = try? await session.stop()
             try? FileManager.default.removeItem(at: startedPackage.folderURL)
@@ -999,11 +1139,16 @@ public actor EngineController: ControlHandling {
         defer { finishing = false }
 
         await recording.rig.stop()
+        do { _ = try await effects.finishRecording() }
+        catch { await recording.session.recordWarning(code: "voice-finalize-failed", message: String(describing: error)) }
+        try? effects.configureBlur(defaultBlur)
+        await config.captureRigs.setCameraPreviewTransform(effects.previewTransform())
         if !previewEnabled { await config.captureRigs.stopPreview() }
         do {
             let outcome = try await recording.session.stop()
             return await finish(recording, outcome: outcome)
         } catch {
+            try? await extended.setCaptureActive(false)
             let failure = Self.failure(forSessionError: error)
             resumeWaiters(with: StoppedRecording(
                 failedRecordingID: recording.recordingID,
@@ -1024,6 +1169,10 @@ public actor EngineController: ControlHandling {
         if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
         active = nil
         await recording.rig.stop()
+        do { _ = try await effects.finishRecording() }
+        catch { await recording.session.recordWarning(code: "voice-finalize-failed", message: String(describing: error)) }
+        try? effects.configureBlur(defaultBlur)
+        await config.captureRigs.setCameraPreviewTransform(effects.previewTransform())
         if !previewEnabled { await config.captureRigs.stopPreview() }
         let outcome = try? await recording.session.stopEarly(
             code: "stream-error", message: reason)
@@ -1036,6 +1185,8 @@ public actor EngineController: ControlHandling {
                 packagePath: recording.package.folderURL.path)
         }
         lastStopResult = result
+        if outcome != nil { try? await extended.enqueueAfterStop(id: recording.recordingID) }
+        try? await extended.setCaptureActive(false)
         await upsertIndexRow(for: recording.package)
         emitStopped(result, tag: recording.startRequestID)
         resumeWaiters(with: result)
@@ -1044,10 +1195,12 @@ public actor EngineController: ControlHandling {
     private func finish(
         _ recording: ActiveRecording, outcome: SessionOutcome
     ) async -> StoppedRecording {
-        let report = await PackageVerifier().verify(recording.package)
-        if var manifest = try? recording.package.readManifest() {
-            manifest.verified = RecordingManifest.VerificationStamp(at: ISO8601DateFormatter().string(from: Date()), ok: report.ok)
-            try? recording.package.writeManifest(manifest)
+        do {
+            try await extended.enqueueAfterStop(id: recording.recordingID)
+            try await extended.setCaptureActive(false)
+        } catch {
+            await recording.session.recordWarning(code: "post-stop-job-failed", message: String(describing: error))
+            try? await extended.setCaptureActive(false)
         }
         let result = StoppedRecording(outcome: outcome)
         lastStopResult = result
@@ -1178,6 +1331,7 @@ public actor EngineController: ControlHandling {
     private func discardActive() async throws -> JSONValue {
         let recording = try requireActive()
         let result = try await stopActive()
+        try await extended.cancelRecordingJobs(id: recording.recordingID)
         try FileManager.default.removeItem(at: recording.package.folderURL)
         _ = try await index.rebuild(root: config.recordingsRoot)
         return .object(["id": .string(result.id), "discarded": .bool(true), "state": .string("idle")])

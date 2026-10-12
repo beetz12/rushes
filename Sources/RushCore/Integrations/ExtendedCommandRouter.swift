@@ -6,7 +6,7 @@ public actor ExtendedCommandRouter {
     public static let cloudCommands: Set<String> = ["share", "share.setup", "share.status", "share.enrich", "unshare"]
     public static var commands: Set<String> {
         PostproductionService.commands.union(TranscriptCommands.commands)
-            .union(MetadataCommands.commands).union(cloudCommands).union(["diagnostics"])
+            .union(MetadataCommands.commands).union(cloudCommands).union(PostStopJobService.commands).union(["diagnostics"])
     }
     public static var commandDocs: [ControlGuide.CommandDoc] {
         let descriptions: [String: String] = [
@@ -26,7 +26,7 @@ public actor ExtendedCommandRouter {
         let names = commands.union(["recover"]).sorted()
         return names.map { name in
             var params: [ControlGuide.ParamDoc] = []
-            if !["share.setup", "diagnostics", "recover"].contains(name) {
+            if !["share.setup", "diagnostics", "recover", "jobs.list", "jobs.retry", "jobs.cancel"].contains(name) {
                 params.append(.init(name: "id", type: "string", required: true, description: "Recording ULID from list/show."))
             }
             if name == "export" {
@@ -36,6 +36,9 @@ public actor ExtendedCommandRouter {
             if name == "captions.export" || name == "transcribe" {
                 params.append(.init(name: "format", flag: "--format", type: "json|srt|vtt|txt", description: "Subtitle/transcript output type."))
             }
+            if name == "jobs.list" { params.append(.init(name: "id", type: "string", description: "Optional recording ULID to filter durable jobs.")) }
+            if ["jobs.retry", "jobs.cancel"].contains(name) { params.append(.init(name: "jobId", type: "string", required: true, description: "Job UUID from jobs list.")) }
+            if name == "jobs.retry" { params += [.init(name: "allowAssetDownload", type: "boolean", description: "Explicitly allow first-use Apple model setup."), .init(name: "metadataMode", type: "string", description: "apple or explicitly chosen extractive.")] }
             if name == "share" { params.append(.init(name: "wait", flag: "--wait", type: "boolean", description: "Wait for real upload/publish completion.")) }
             return .init(name: name, cli: [name.replacingOccurrences(of: ".", with: " ")],
                 summary: descriptions[name] ?? "\(name): validated local recording service.",
@@ -47,16 +50,45 @@ public actor ExtendedCommandRouter {
     private let index: PackageIndex
     private let production: PostproductionService
     private let sharing: ShellServiceBridge
+    private let jobs: PostStopJobService
+    private var jobsPrepared = false
 
     public init(root: URL, index: PackageIndex, shellSocket: URL) {
         self.root = root
         self.index = index
-        production = PostproductionService(root: root)
-        sharing = ShellServiceBridge(socketPath: shellSocket)
+        let production = PostproductionService(root: root)
+        let sharing = ShellServiceBridge(socketPath: shellSocket)
+        self.production = production
+        self.sharing = sharing
+        jobs = PostStopJobService(root: root, executor: NativePostStopJobExecutor(enrich: { id in
+            guard let package = RecordingPackage.resolve(root: root, id: id) else { throw ControlFailure(code: "not-found") }
+            let folder = package.folderURL.standardizedFileURL.resolvingSymlinksInPath()
+            let state = folder.appendingPathComponent("share/state.json").standardizedFileURL.resolvingSymlinksInPath()
+            guard state.path.hasPrefix(folder.path + "/share/") else { throw ControlFailure(code: "unsafe-package-path") }
+            if !FileManager.default.fileExists(atPath: state.path) {
+                return .success(id: id, result: .object(["updated": .bool(false), "reason": .string("no-state")]))
+            }
+            return try await sharing.forward(.init(id: UUID().uuidString, cmd: "share.enrich", args: .object(["id": .string(id)])), timeout: 30)
+        }, currentEdit: { id in try await production.getEdit(id: id) }))
     }
+
+    public func prepare(eventSink: @escaping @Sendable (ControlEvent) -> Void) async throws {
+        jobsPrepared = true
+        await jobs.setEventSink { event in
+            eventSink(ControlEvent(kind: .jobChanged, result: try? postStopJobJSON(event)))
+        }
+        await jobs.setArtifactDidWrite { [weak self] id in try await self?.refreshIndex(id: id) }
+        _ = try await jobs.resume()
+    }
+    public func setCaptureActive(_ active: Bool) async throws { try await jobs.setCaptureActive(active || !jobsPrepared) }
+    public func enqueueAfterStop(id: String) async throws { _ = try await jobs.enqueueAfterStop(id: id) }
+    public func cancelRecordingJobs(id: String) async throws { _ = try await jobs.cancelRecording(id: id) }
+    public func allowRecordingJobs(id: String) async { await jobs.allowRecording(id: id) }
+    public func shutdownJobs() async throws { try await jobs.shutdown() }
 
     public func handle(_ request: ControlRequest) async throws -> JSONValue {
         try validateOutput(request)
+        if PostStopJobService.commands.contains(request.cmd) { return try await jobs.handle(request) }
         if Self.cloudCommands.contains(request.cmd) {
             let response = try await sharing.forward(request)
             guard response.ok else {
@@ -96,7 +128,7 @@ public actor ExtendedCommandRouter {
             value = try await TranscriptCommands.handle(request: request, packageURL: package.folderURL)
             if ["transcribe", "transcript.run", "transcript.correct"].contains(request.cmd) {
                 try await refreshIndex(id: id)
-                await enrichShared(id: id)
+                _ = try await jobs.queueEnrichment(id: id)
             }
         } else if MetadataCommands.commands.contains(request.cmd) {
             value = try await MetadataCommands.handle(request: request, packageURL: package.folderURL)
@@ -107,7 +139,7 @@ public actor ExtendedCommandRouter {
                 manifest.title = metadata.title
                 try package.writeManifest(manifest)
                 try await refreshIndex(id: id)
-                await enrichShared(id: id)
+                _ = try await jobs.queueEnrichment(id: id)
             }
         } else {
             throw ControlFailure(code: "unknown-command")
@@ -146,13 +178,6 @@ public actor ExtendedCommandRouter {
             createdAt: manifest.createdAt ?? "", durationMs: manifest.clock?.durationNs.map { $0 / 1_000_000 },
             status: manifest.status.rawValue, shareURL: shareURL,
             transcriptState: FileManager.default.fileExists(atPath: transcript.path) ? "done" : "none"))
-    }
-
-    private func enrichShared(id: String) async {
-        // A failed enrichment never turns local transcription into a failure.
-        // The durable jobs layer records/retries this optional remote operation.
-        _ = try? await sharing.forward(ControlRequest(id: UUID().uuidString, cmd: "share.enrich",
-                                                    args: .object(["id": .string(id)])), timeout: 30)
     }
 
     private func resolve(_ id: String) throws -> RecordingPackage {

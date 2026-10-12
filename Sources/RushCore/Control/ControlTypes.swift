@@ -351,6 +351,8 @@ public enum ControlEventKind: String, Codable, Sendable {
     case ready = "ready"
     case cameraPreview = "camera-preview"
     case countdown = "countdown"
+    case teleprompterProgress = "teleprompter-progress"
+    case jobChanged = "job-changed"
 }
 
 /// One NDJSON event line on the socket. `id` is the originating request's

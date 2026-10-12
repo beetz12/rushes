@@ -129,7 +129,10 @@ func parseCLI(_ arguments: [String]) -> CLIInvocation {
     } else if command == "selftest", !rest.isEmpty {
         invocation.command = "selftest \(rest[0])"
         parseArguments(Array(rest.dropFirst()), into: &invocation)
-    } else if ["permissions", "camera", "edit", "meta", "transcript", "captions", "chapters", "mcp"].contains(command), !rest.isEmpty {
+    } else if command == "camera", rest.count >= 2, rest[0] == "blur" {
+        invocation.command = "camera blur \(rest[1])"
+        parseArguments(Array(rest.dropFirst(2)), into: &invocation)
+    } else if ["permissions", "camera", "edit", "meta", "transcript", "captions", "chapters", "mcp", "teleprompter", "jobs", "library", "drawing"].contains(command), !rest.isEmpty {
         invocation.command = "\(command) \(rest[0])"
         parseArguments(Array(rest.dropFirst()), into: &invocation)
     } else if command == "analyze", !rest.isEmpty {
@@ -150,7 +153,7 @@ func parseCLI(_ arguments: [String]) -> CLIInvocation {
 func parseArguments(_ words: [String], into invocation: inout CLIInvocation) {
     let valueFlags: Set<String> = [
         "--display", "--window", "--camera", "--mic", "--duration",
-        "--countdown", "--title", "--id", "--limit",
+        "--countdown", "--title", "--id", "--limit", "--query",
         "--seconds", "--pause-at", "--area", "--cursor", "--permission", "--track", "--muted",
         "--preset", "--output", "--format", "--locale", "--summary", "--chapters", "--args", "--edit",
         "--word-ids", "--word-id", "--text", "--start-ms", "--end-ms", "--at-ms", "--speed", "--clip-id", "--layout",
@@ -474,6 +477,7 @@ case "list":
         }
         args["limit"] = .int(value)
     }
+    if let query = invocation.flags["--query"] { args["query"] = .string(query) }
     let response = runRequest(invocation, cmd: "list", args: .object(args))
     printJSON(response.result ?? .object([:]))
     exit(0)
@@ -619,10 +623,12 @@ case "analyze clap":
 
 default:
     let serviceCommand = invocation.command.replacingOccurrences(of: " ", with: ".")
-    if ExtendedCommandRouter.commands.union(LocalAutomationService.commands).contains(serviceCommand) || serviceCommand == "recover" {
+    let routed = ExtendedCommandRouter.commands.union(LocalAutomationService.commands).union(ProductionEffectsCoordinator.commands)
+        .union(["record.geometry", "library.refresh", "library.trash", "library.undoTrash", "drawing.show", "drawing.hide", "drawing.status"])
+    if routed.contains(serviceCommand) || serviceCommand == "recover" {
         var args: [String: JSONValue] = [:]
         if let id = invocation.positional.first { args["id"] = .string(id) }
-        let strings = ["--preset": "preset", "--output": "path", "--format": "format", "--locale": "locale",
+        let strings = ["--id": "id", "--preset": "preset", "--output": "path", "--format": "format", "--locale": "locale",
                        "--title": "title", "--word-id": "wordId", "--text": "text", "--clip-id": "clipId",
                        "--layout": "layout", "--codec": "codec", "--container": "container"]
         for (flag, key) in strings { if let value = invocation.flags[flag] { args[key] = .string(value) } }
@@ -665,7 +671,9 @@ default:
             if let path = args.removeValue(forKey: "path") { args["outputPath"] = path }
         }
         let response = runRequest(invocation, cmd: serviceCommand, args: .object(args), timeout: 1800)
-        if serviceCommand == "transcribe", let format = args["format"]?.string, format != "json" || args["path"] != nil {
+        let transcriptFormat = args["format"]?.string ?? "json"
+        if serviceCommand == "transcribe", transcriptFormat != "json" || args["path"] != nil {
+            let format = transcriptFormat
             var output: [String: JSONValue] = ["id": args["id"] ?? .null, "format": .string(format)]
             if let path = args["path"] { output["outputPath"] = path }
             let exported = runRequest(invocation, cmd: "captions.export", args: .object(output), timeout: 120)

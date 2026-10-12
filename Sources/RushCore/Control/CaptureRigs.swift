@@ -480,6 +480,7 @@ private final class StubCaptureRig: CaptureRig, @unchecked Sendable {
     private let pumpQueue = DispatchQueue(label: "rush.rushcore.control.stubrig")
     private let stateLock = NSLock()
     private var epochHostNs: Int64?
+    private var inputClock: SessionClock?
     private var pump: DispatchSourceTimer?
     /// Where each audio track's next synthetic buffer starts, on the host clock.
     private var nextAudioHostNs: [TrackKind: Int64] = [:]
@@ -521,6 +522,7 @@ private final class StubCaptureRig: CaptureRig, @unchecked Sendable {
     private func setEpoch(_ epochHostNs: Int64) {
         stateLock.lock()
         self.epochHostNs = epochHostNs
+        inputClock = .gating(nowNs: epochHostNs)
         for kind in [TrackKind.microphone, .systemAudio] {
             nextAudioHostNs[kind] = epochHostNs
         }
@@ -528,6 +530,10 @@ private final class StubCaptureRig: CaptureRig, @unchecked Sendable {
             nextVideoHostNs[kind] = epochHostNs
         }
         stateLock.unlock()
+    }
+
+    func adoptClock(_ clock: SessionClock) async {
+        stateLock.withLock { inputClock = clock }
     }
 
     private func installPump(_ timer: DispatchSourceTimer) {
@@ -591,7 +597,7 @@ private final class StubCaptureRig: CaptureRig, @unchecked Sendable {
     /// tolerance of the manifest duration even when the stop's actor hop
     /// stretches under load.
     private func pumpOnce(pinFinalVideoFrame: Bool = false) {
-        guard let epoch = currentEpoch() else { return }
+        guard currentEpoch() != nil else { return }
         let now = Int64(DispatchTime.now().uptimeNanoseconds)
 
         for (kind, writer) in writers {
@@ -630,8 +636,8 @@ private final class StubCaptureRig: CaptureRig, @unchecked Sendable {
                 advanceAudioCursor(kind, to: cursor)
             }
         }
-        if let inputFile {
-            let mediaMs = Double(now - epoch) / 1_000_000
+        if let inputFile, let clock = stateLock.withLock({ inputClock }), !clock.isPaused(atHostNs: now) {
+            let mediaMs = Double(clock.mediaTimeNs(atHostNs: now)) / 1_000_000
             try? inputFile.append(InputEventLine(
                 t: mediaMs, k: InputEventLine.Kind.move, x: 0.5, y: 0.5))
         }

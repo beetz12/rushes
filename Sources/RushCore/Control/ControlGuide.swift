@@ -97,9 +97,25 @@ public struct ControlGuide: Codable, Equatable, Sendable {
             version: version,
             protocolVersion: "1",
             socket: socketPath,
-            commands: commandDocs() + ExtendedCommandRouter.commandDocs,
+            commands: commandDocs() + productionCommandDocs() + ExtendedCommandRouter.commandDocs,
             events: eventDocs(),
             exitCodes: exitDocs())
+    }
+
+    private static func productionCommandDocs() -> [CommandDoc] {
+        var docs = [CommandDoc(name: "record.geometry", cli: ["record geometry"], summary: "Read current captured content bounds in global screen points without acquiring a device.", usage: "rushes record geometry", result: "{mode,rect:{x,y,width,height},displayID?}|null")]
+        for name in ProductionEffectsCoordinator.commands.sorted() {
+            let camera = name.hasPrefix("camera.")
+            var params: [ParamDoc] = []
+            if camera { params.append(.init(name: "id", type: "string", description: "Optional recording ULID; omit for new-recording defaults.")) }
+            if name.hasSuffix("set") || name.hasSuffix("start") {
+                params.append(.init(name: "enabled", type: "boolean", required: name == "camera.blur.set", description: "Enable the effect; live voice consumes only the recording microphone."))
+                if camera { params.append(.init(name: "radius", type: "number", description: "Blur radius from 1 through 80 pixels.")) }
+                else { params += [.init(name: "script", type: "string", description: "Script of at most 32768 characters."), .init(name: "locale", type: "string", description: "Speech language identifier.")] }
+            }
+            docs.append(.init(name: name, cli: [name.replacingOccurrences(of: ".", with: " ")], summary: camera ? "Set or inspect local camera blur; preserve raw masters and protect composed output." : "Configure local voice following without opening another microphone.", usage: "rushes \(name.replacingOccurrences(of: ".", with: " ")) [--args JSON]", params: params, result: "Validated settings and current service state."))
+        }
+        return docs
     }
 
     private static func commandDocs() -> [CommandDoc] {
@@ -110,7 +126,7 @@ public struct ControlGuide: Codable, Equatable, Sendable {
             CommandDoc(name: "library.trash", cli: [], summary: "Move a finalized recording package to macOS Trash with a five-second undo.", usage: "socket library.trash {id:string}", params: [.init(name: "id", type: "string", required: true, description: "Recording ULID.")], result: "{id,undoToken,undoExpiresAt,undoWindowMs,trashedPath}"),
             CommandDoc(name: "library.undoTrash", cli: [], summary: "Restore one recording within its five-second undo window; never overwrite an occupied path.", usage: "socket library.undoTrash {token:string}", params: [.init(name: "token", type: "string", required: true, description: "Undo token returned by library.trash.")], result: "{id,restored:true}"),
             CommandDoc(name: "library.refresh", cli: [], summary: "Rebuild library cache after a reversible move or restore; manifests remain authoritative.", usage: "socket library.refresh", result: "{recordings:[index rows]}"),
-            CommandDoc(name: "mcp.enable", cli: ["mcp enable"], summary: "Enable private loopback MCP; read-only unless allowMutations is explicitly true.", usage: "rushes mcp enable [--args FILE]", params: [.init(name: "allowMutations", type: "boolean", description: "Explicitly permit recording/edit/export/share mutations."), .init(name: "port", type: "integer", description: "0 requests an available loopback port.")], result: "{enabled,allowMutations,url,token}; token only returned on enable"),
+            CommandDoc(name: "mcp.enable", cli: ["mcp enable"], summary: "Enable private loopback MCP; read-only unless allowMutations is explicitly true.", usage: "rushes mcp enable [--args JSON]", params: [.init(name: "allowMutations", type: "boolean", description: "Explicitly permit recording/edit/export/share mutations."), .init(name: "port", type: "integer", description: "0 requests an available loopback port.")], result: "{enabled,allowMutations,url,token}; token only returned on enable"),
             CommandDoc(name: "mcp.disable", cli: ["mcp disable"], summary: "Stop loopback MCP and disable restoration on next launch.", usage: "rushes mcp disable", result: "{enabled:false}"),
             CommandDoc(name: "mcp.status", cli: ["mcp status"], summary: "Inspect local automation state without revealing the credential.", usage: "rushes mcp status", result: "{enabled,allowMutations,url?}"),
             CommandDoc(name: "url.open", cli: [], summary: "Validate and execute a closed-list rushes:// automation route.", usage: "socket url.open {url:string}", result: "underlying command result"),

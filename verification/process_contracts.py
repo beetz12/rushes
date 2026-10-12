@@ -138,7 +138,7 @@ class Runner:
 
     def positive(self):
         with Engine(self, "positive-audio") as engine:
-            result = engine.cli(["record", "start", "--system-audio", "--duration", "2", "--wait"])
+            result = engine.cli(["record", "start", "--display", "main", "--system-audio", "--duration", "2", "--wait"])
             assert result["exit"] == 0, result
             done = [json.loads(line) for line in result["stdout"].splitlines()
                     if json.loads(line).get("event") == "done"][-1]["result"]
@@ -155,7 +155,7 @@ class Runner:
 
     def pause(self):
         with Engine(self, "pause-audio") as engine:
-            start = engine.request("record.start", {"systemAudio": True})
+            start = engine.request("record.start", {"display": "main", "systemAudio": True})
             assert start["ok"], start
             time.sleep(.8)
             assert engine.request("record.pause")["ok"]
@@ -197,7 +197,9 @@ class Runner:
         def mutate(package, manifest):
             (package / manifest["tracks"][0]["file"]).write_bytes(b"deliberately not media")
         root, package, ident = self.fixture("corruption", mutate)
-        decoder = self.command([str(self.probe), str(package / "system.mov")],
+        mutated_manifest = json.loads((package / "manifest.json").read_text())
+        damaged_file = package / mutated_manifest["tracks"][0]["file"]
+        decoder = self.command([str(self.probe), str(damaged_file)],
                                package.parent / "negative-decode.json")
         assert decoder["exit"] == 1 and not json.loads(decoder["stdout"])[0]["ok"], decoder
         with Engine(self, "corruption-engine", root) as engine:
@@ -235,7 +237,7 @@ class Runner:
     def invalid_duration(self):
         with Engine(self, "huge-duration") as engine:
             try:
-                reply = engine.request("record.start", {"systemAudio": True, "duration": 1e30})
+                reply = engine.request("record.start", {"display": "main", "systemAudio": True, "duration": 1e30})
             except EOFError:
                 engine.process.wait(timeout=10)
                 raise AssertionError(f"finite untrusted duration 1e30 crashes engine exit={engine.process.returncode}; {engine.base / 'engine.stderr'}")
@@ -259,7 +261,7 @@ class Runner:
 
     def wrong_type(self):
         with Engine(self, "wrong-type") as engine:
-            reply = engine.request("record.start", {"systemAudio": True, "duration": "bad"})
+            reply = engine.request("record.start", {"display": "main", "systemAudio": True, "duration": "bad"})
             if reply["ok"]:
                 engine.request("record.stop")
             assert not reply["ok"], {"contract": "duration of wrong JSON type must refuse", "reply": reply}
@@ -268,7 +270,7 @@ class Runner:
     def invalid_countdown(self):
         with Engine(self, "huge-countdown") as engine:
             try:
-                reply = engine.request("record.start", {"systemAudio": True, "countdownSeconds": 1e30})
+                reply = engine.request("record.start", {"display": "main", "systemAudio": True, "countdownSeconds": 1e30})
             except EOFError:
                 engine.process.wait(timeout=10)
                 raise AssertionError(f"untrusted countdown 1e30 crashes engine exit={engine.process.returncode}; {engine.base / 'engine.stderr'}")
@@ -277,7 +279,7 @@ class Runner:
 
     def recovery(self):
         engine = Engine(self, "crash-recovery")
-        start = engine.request("record.start", {"systemAudio": True})
+        start = engine.request("record.start", {"display": "main", "systemAudio": True})
         assert start["ok"], start
         package = Path(start["result"]["packagePath"])
         time.sleep(3.3)

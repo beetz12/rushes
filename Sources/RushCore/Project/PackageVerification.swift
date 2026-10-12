@@ -41,6 +41,7 @@ public struct PackageVerifier: Sendable {
     /// Verifies one package. Read-only: nothing on disk is modified.
     public func verify(_ package: RecordingPackage) async -> Report {
         var packageIssues: [String] = []
+        if Task.isCancelled { return Report(packageID: package.id, ok: false, trackChecks: [], issues: ["verification cancelled"]) }
 
         let manifest: RecordingManifest
         do {
@@ -74,6 +75,7 @@ public struct PackageVerifier: Sendable {
 
         var checks: [Report.TrackCheck] = []
         for track in manifest.tracks {
+            if Task.isCancelled { packageIssues.append("verification cancelled"); break }
             checks.append(
                 await checkTrack(track, in: package, manifestDuration: manifestDurationSeconds, cameraLost: manifest.warnings.contains { $0.code == "camera-lost" }))
         }
@@ -159,6 +161,7 @@ public struct PackageVerifier: Sendable {
             let type: AVMediaType = track.kind.carriesVideo ? .video : .audio
             let streams = try await asset.loadTracks(withMediaType: type)
             for stream in streams {
+                try Task.checkCancellation()
                 let reader = try AVAssetReader(asset: asset)
                 let settings: [String: Any] = track.kind.carriesVideo
                     ? [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange]
@@ -176,6 +179,7 @@ public struct PackageVerifier: Sendable {
                 }
                 var samples = 0
                 while let sample = output.copyNextSampleBuffer() {
+                    if Task.isCancelled { reader.cancelReading(); throw CancellationError() }
                     samples += CMSampleBufferGetNumSamples(sample)
                 }
                 if reader.status != .completed || samples == 0 {

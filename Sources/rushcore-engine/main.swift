@@ -106,34 +106,24 @@ do {
 }
 
 let server = ControlServer(socketPath: flags.socketPath, handler: controller)
-do {
-    try server.start()
-} catch {
-    printEngineError("socket-failed", String(describing: error), status: 1)
-}
-
-// Launch-time recovery of interrupted recordings, then the index rebuild
-// (docs/PLAN.md, Crash safety and recovery: recovery never deletes
-// footage; the manifest stays the source of truth).
+// The socket/ready handshake follows recovery and cache rebuild. Clients
+// cannot observe an empty pre-rebuild library or start a take during recovery.
 Task {
     await controller.prepare()
+    do { try server.start() }
+    catch { printEngineError("socket-failed", String(describing: error), status: 1) }
+    var readyObject: [String: String] = [
+        "event": ControlEventKind.ready.rawValue,
+        "socket": flags.socketPath.path,
+        "version": engineVersion,
+    ]
+    if flags.captureStub { readyObject["capture"] = "stub" }
+    do {
+        var data = try JSONSerialization.data(withJSONObject: readyObject, options: [.sortedKeys, .withoutEscapingSlashes])
+        data.append(0x0A)
+        FileHandle.standardOutput.write(data)
+    } catch { printEngineError("ready-encoding-failed", String(describing: error), status: 1) }
 }
-
-// One NDJSON ready line on the engine's own stdout, carrying the socket
-// path so a launcher never guesses it: the handshake the shell (and tests)
-// wait for.
-var readyObject: [String: String] = [
-    "event": ControlEventKind.ready.rawValue,
-    "socket": flags.socketPath.path,
-    "version": engineVersion,
-]
-if flags.captureStub {
-    readyObject["capture"] = "stub"
-}
-let readyData = try! JSONSerialization.data(
-    withJSONObject: readyObject, options: [.sortedKeys, .withoutEscapingSlashes])
-print(String(data: readyData, encoding: .utf8)!)
-fflush(stdout)
 
 // MARK: - Signals
 

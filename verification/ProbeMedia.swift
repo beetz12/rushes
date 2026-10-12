@@ -17,6 +17,32 @@ struct ProbeMedia {
                 for track in tracks {
                     let type = track.mediaType
                     guard type == .video || type == .audio else { continue }
+                    // VideoToolbox may omit presentation duration on decoded
+                    // buffers. Ground that field in the same encoded packet's
+                    // finite container timing, rather than inventing a frame rate.
+                    var encodedDurations: [Int64: Double] = [:]
+                    var timingScale: CMTimeScale = 1
+                    if type == .video {
+                        timingScale = try await track.load(.naturalTimeScale)
+                        let packetReader = try AVAssetReader(asset: asset)
+                        let packets = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+                        packetReader.add(packets)
+                        guard packetReader.startReading() else { throw packetReader.error ?? ProbeError.start }
+                        while let packet = packets.copyNextSampleBuffer() {
+                            // AVFoundation also emits zero-sample segment markers;
+                            // they have no media timing or payload to validate.
+                            guard CMSampleBufferGetNumSamples(packet) > 0 else { continue }
+                            let stamp = packet.presentationTimeStamp
+                            let interval = packet.duration
+                            guard stamp.seconds.isFinite, interval.isValid, interval.seconds.isFinite, interval.seconds >= 0 else {
+                                throw ProbeError.timing
+                            }
+                            if interval.seconds > 0 {
+                                encodedDurations[CMTimeConvertScale(stamp, timescale: timingScale, method: .default).value] = interval.seconds
+                            }
+                        }
+                        guard packetReader.status == .completed, !encodedDurations.isEmpty else { throw ProbeError.timing }
+                    }
                     let reader = try AVAssetReader(asset: asset)
                     let settings: [String: Any] = type == .video
                         ? [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
@@ -35,8 +61,14 @@ struct ProbeMedia {
                     var videoSize: [Int]?
                     while let sample = output.copyNextSampleBuffer() {
                         let pts = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-                        let sampleDuration = CMSampleBufferGetDuration(sample).seconds
-                        guard pts.isFinite, sampleDuration.isFinite else { throw ProbeError.timing }
+                        let durationValue = CMSampleBufferGetDuration(sample)
+                        let sampleDuration: Double
+                        if type == .video, durationValue == .invalid {
+                            let key = CMTimeConvertScale(sample.presentationTimeStamp, timescale: timingScale, method: .default).value
+                            guard let encoded = encodedDurations[key] else { throw ProbeError.timing }
+                            sampleDuration = encoded
+                        } else { sampleDuration = durationValue.seconds }
+                        guard pts.isFinite, sampleDuration.isFinite, sampleDuration >= 0 else { throw ProbeError.timing }
                         if let last, pts < last { throw ProbeError.order }
                         if let previousEnd { maximumGap = max(maximumGap, pts - previousEnd) }
                         if type == .video, CMSampleBufferGetImageBuffer(sample) == nil {
@@ -72,7 +104,10 @@ struct ProbeMedia {
                                                 "sampleEnd": end, "maximumGap": maximumGap]
                     if let firstPixelBGRA { detail["firstCenterBGRA"] = firstPixelBGRA }
                     if let videoSize { detail["videoSize"] = videoSize }
-                    if type == .video { detail["nominalFrameRate"] = try await track.load(.nominalFrameRate) }
+                    if type == .video {
+                        detail["nominalFrameRate"] = try await track.load(.nominalFrameRate)
+                        detail["durationFallback"] = "matching finite encoded packet only when decoded duration is exact kCMTimeInvalid"
+                    }
                     decoded.append(detail)
                 }
                 guard duration.isFinite, !decoded.isEmpty else { throw ProbeError.empty }
