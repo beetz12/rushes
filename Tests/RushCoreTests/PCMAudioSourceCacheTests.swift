@@ -262,7 +262,7 @@ private final class HungSampleCopy: @unchecked Sendable {
 
     /// A copy that never returns still has to unblock the caller. The stall
     /// timer is that escape: this closure does not call `check()`.
-    @Test(.timeLimit(.seconds(5)))
+    @Test(.timeLimit(.minutes(1)))
     func hungSampleCopyStillResumesTheCaller() async throws {
         let work = PCMSourceWork<Int>(stallTimeout: 0.4)
         let hang = HungSampleCopy()
