@@ -312,12 +312,29 @@ final class EngineHarness: @unchecked Sendable {
         boot()
     }
 
-    /// The stub engine can exit after a take on the hosted runner (the
-    /// process is gone and the socket no longer answers). Later CLI calls
-    /// use the same recordings root and index, so boot another one instead
-    /// of failing the suite with `engine-unreachable`.
+    /// The stub engine can exit after a take on the hosted runner. Later CLI
+    /// calls use the same recordings root and index, so boot another one
+    /// instead of failing the suite.
     private func ensureRunning() {
         if process?.isRunning == true { return }
+        boot()
+    }
+
+    /// Exit 4 means the socket never answered or the engine closed it.
+    /// `isRunning` can still be true while shutdown is stuck, so replace
+    /// the process before the retry.
+    private func replaceEngine() {
+        if let process, process.isRunning {
+            process.terminate()
+            let deadline = Date().addingTimeInterval(3)
+            while process.isRunning, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            if process.isRunning {
+                kill(process.processIdentifier, SIGKILL)
+                process.waitUntilExit()
+            }
+        }
         boot()
     }
 
@@ -388,13 +405,11 @@ final class EngineHarness: @unchecked Sendable {
     ) throws -> (status: Int32, stdout: String, stderr: String) {
         ensureRunning()
         let result = try runCLIOnce(arguments, timeout: timeout)
-        // Under the full suite's parallel load a connect can be refused
-        // transiently (exit 4) while the engine is mid-catalog-query; one
-        // bounded retry keeps the integration test about the CLI, not about
-        // machine load. A dead engine is booted again first.
+        // A connect can be refused while the engine is busy, or the process
+        // can stay up after it has closed the socket. Replace it and retry
+        // once so the test is about the CLI, not a stuck stub engine.
         if result.status == 4 {
-            Thread.sleep(forTimeInterval: 2)
-            ensureRunning()
+            replaceEngine()
             return try runCLIOnce(arguments, timeout: timeout)
         }
         return result
