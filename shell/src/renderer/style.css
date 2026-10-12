@@ -1327,3 +1327,10 @@ textarea:focus-visible {
   color: #a54535;
   margin-top: 5px;
 }
+.share-access { border-top: 1px solid #dfe3eb; margin-top: 18px; padding-top: 12px; min-width: 0; grid-column: 1/-1; }
+.share-access input { min-width: 0; max-width: 100%; }
+.share-access .edit-tools { flex-wrap: wrap; }
+.feedback-comments { max-height: 240px; overflow: auto; overflow-wrap: anywhere; }
+.feedback-comments article { border-top: 1px solid #dfe3eb; padding: 10px 0; }
+.feedback-comments p { margin: 6px 0; }
+.feedback-reaction { font-size: 12px; }

@@ -12,6 +12,7 @@ import {
   clipboard,
   screen,
   safeStorage,
+  Notification,
 } from 'electron';
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -24,6 +25,8 @@ import { z } from 'zod';
 import { bubbleForCapture, globalCaptureArea } from '../shared/geometry';
 import { EngineSupervisor } from './engine';
 import { SharingService } from './sharing';
+import { createShareDispatcher } from './share-dispatch';
+import { AutoShare, ViewNotifications } from './share-lifecycle';
 import { atomicJSON, atomicBytes } from './atomic';
 import { startShellServer } from './shell-server';
 import { MediaRegistry, parseRange, mimeType } from './media';
@@ -32,6 +35,7 @@ import {
   windowSchema,
   recordingOptionsSchema,
   cloudSettingsSchema,
+  shareCommands,
   defaultOptions,
   type RecordingOptions,
   type CloudSettings,
@@ -70,6 +74,8 @@ let promptScript = '';
 let promptEnabled = false;
 let drawingEnabled = false;
 let cloudSettings: CloudSettings = { provider: 'none' };
+let cloudGeneration = 0;
+let viewNotifications: ViewNotifications | undefined;
 const uiFile = join(__dirname, '../renderer/index.html');
 const devURL = app.isPackaged
   ? undefined
@@ -499,6 +505,8 @@ async function saveCloud(value: unknown) {
     safeStorage.encryptString(JSON.stringify(parsed)),
   );
   cloudSettings = parsed;
+  cloudGeneration++;
+  if (engineReady) void viewNotifications?.poll();
   const summary = {
     provider: parsed.provider,
     configured: parsed.provider !== 'none',
@@ -879,6 +887,22 @@ async function ready() {
     if (!['http:', 'https:'].includes(new URL(url).protocol)) throw new Error('Invalid link');
     clipboard.writeText(url);
   });
+  const desktopNotification = (title: string, body: string) => {
+    if (!quitting && Notification.isSupported()) new Notification({ title, body }).show();
+  };
+  const shareEvent = (event: Record<string, unknown>) => {
+    broadcast(event);
+    if (event.event === 'share-progress' && event.state === 'failed')
+      desktopNotification(
+        'Sharing needs a retry',
+        'Your recording is kept on this Mac. Use Copy share link to retry.',
+      );
+    if (event.event === 'share-progress' && event.state === 'ready') void viewNotifications?.poll();
+    if (event.event === 'share-link-copied')
+      desktopNotification('Share link copied', 'The video is being prepared in the background.');
+    if (event.code === 'auto-share-failed')
+      desktopNotification('Automatic sharing failed', String(event.message));
+  };
   const shares = new SharingService(
     supervisor.client,
     provider,
@@ -888,26 +912,41 @@ async function ready() {
         : cloudSettings.provider === 'worker'
           ? `worker:${cloudSettings.workerURL}`
           : 'none',
-    broadcast,
+    shareEvent,
+    () => cloudGeneration,
   );
   handle('rushes:share', async (value) => {
     const result = await shares.share(z.string().min(1).max(200).parse(value));
     clipboard.writeText(result.url);
     return result;
   });
-  await startShellServer(join(userDir, 'shell.sock'), async (cmd, args) => {
-    if (cmd === 'share.configuration') return persistedCloudSummary();
-    if (cmd === 'share.configure') return saveCloud(args);
-    if (cmd === 'share.setup') return (await provider()).setupCheck();
-    const id = z.string().min(1).max(200).parse(args.id);
-    if (cmd === 'share') {
-      const result = await shares.share(id, args.wait === true);
-      clipboard.writeText(result.url);
-      return result;
-    }
-    if (cmd === 'share.enrich') return shares.enrich(id);
-    return shares.unshare(id);
+  const dispatchShare = createShareDispatcher(shares, {
+    configuration: persistedCloudSummary,
+    configure: saveCloud,
+    setup: async () => (await provider()).setupCheck(),
+    copy: (url) => {
+      clipboard.writeText(url);
+      void viewNotifications?.poll();
+    },
   });
+  handle('rushes:share-command', (value) => {
+    const request = z
+      .object({ cmd: z.enum(shareCommands), args: z.record(z.string(), z.json()).default({}) })
+      .strict()
+      .parse(value);
+    return dispatchShare(request.cmd, request.args);
+  });
+  await startShellServer(join(userDir, 'shell.sock'), dispatchShare);
+  const autoShare = new AutoShare(
+    (id) => shares.share(id),
+    (url) => clipboard.writeText(url),
+    shareEvent,
+  );
+  viewNotifications = new ViewNotifications(
+    () => shares.feedbackSnapshots(),
+    broadcast,
+    desktopNotification,
+  );
   supervisor.client.on('event', async (e) => {
     broadcast(e);
     if (e.event === 'recording-started') {
@@ -933,6 +972,9 @@ async function ready() {
     }
     if (e.event === 'state-changed' && typeof e.state === 'string') state = e.state;
     if (e.event === 'recording-stopped') {
+      const stoppedId = e.recordingId ?? currentId;
+      if (typeof stoppedId === 'string')
+        void autoShare.recordingStopped(stoppedId, options.autoShare);
       state = 'idle';
       broadcast({ event: 'camera-preview-cleared' });
       void hideDrawing().catch(() => {});
@@ -978,6 +1020,7 @@ async function ready() {
       if (promptEnabled) void showTeleprompter().catch(() => {});
     }
     broadcast({ event: 'engine-ready' });
+    viewNotifications.start();
     if (cloudSettings.provider !== 'none')
       void shares
         .resumePending()
@@ -1186,6 +1229,7 @@ app.on('before-quit', (event) => {
   void supervisor
     .quit()
     .then(async () => {
+      viewNotifications?.stop();
       await writeOptions().catch((error) =>
         console.error('[Rushes] Could not save window positions', String(error)),
       );

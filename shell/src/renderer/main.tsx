@@ -6,6 +6,7 @@ import {
   countdownChoices,
   countdownFromSelection,
   type RecordingOptions,
+  type SharePolicyPatch,
 } from '../shared/contracts';
 import {
   CircleDot,
@@ -36,6 +37,7 @@ import {
   RecordingJobs,
 } from './extras';
 import './style.css';
+import { ShareAccess } from './share-access';
 document.documentElement.dataset.view = location.hash.slice(1) || 'recorder';
 const api = window.rushes;
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -961,6 +963,8 @@ function Review({ id, back, run, setNote, trashed }: any) {
     [speed, setSpeed] = useState(1),
     [playing, setPlaying] = useState(false),
     [link, setLink] = useState(''),
+    [sharePolicyDraft, setSharePolicyDraft] = useState<SharePolicyPatch>({}),
+    [shareBusy, setShareBusy] = useState(false),
     [shareStage, setShareStage] = useState(''),
     [sharePercent, setSharePercent] = useState(0),
     [exportBusy, setExportBusy] = useState(false),
@@ -992,6 +996,23 @@ function Review({ id, back, run, setNote, trashed }: any) {
       }),
     [id],
   );
+  useEffect(() => {
+    let live = true;
+    setLink('');
+    setShareStage('');
+    setSharePolicyDraft({});
+    void api
+      .shareStatus(id)
+      .then((status) => {
+        if (!live) return;
+        if (status.url) setLink(status.url);
+        if (!['not-shared', 'unshared'].includes(status.state)) setShareStage(status.state);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [id]);
   const reload = useCallback(async () => {
     const show = await api.request('show', { id });
     setRecording(show);
@@ -1888,33 +1909,43 @@ function Review({ id, back, run, setNote, trashed }: any) {
           </button>
           <button
             className="primary full-width"
+            disabled={shareBusy}
             onClick={() =>
               run(async () => {
-                await api.request('edit.set', {
-                  id,
-                  layout,
-                  bubbleSize,
-                  bubbleX: bubbleCenter[0],
-                  bubbleY: bubbleCenter[1],
-                  bubbleVisible,
-                  shape: bubbleShape,
-                  mirror,
-                  micGain,
-                  systemGain,
-                  title,
-                  burnIn,
-                });
-                await api.request('edit.save', { id });
-                const r = await api.share(id);
-                setLink(r.url);
-                setShareStage((previous) =>
-                  previous === 'ready' ? 'ready' : (r.state ?? 'processing'),
-                );
-                setNote(
-                  r.state === 'ready'
-                    ? 'Share link copied. Video is ready.'
-                    : 'Share link copied. The video is being prepared.',
-                );
+                setShareBusy(true);
+                try {
+                  await api.request('edit.set', {
+                    id,
+                    layout,
+                    bubbleSize,
+                    bubbleX: bubbleCenter[0],
+                    bubbleY: bubbleCenter[1],
+                    bubbleVisible,
+                    shape: bubbleShape,
+                    mirror,
+                    micGain,
+                    systemGain,
+                    title,
+                    burnIn,
+                  });
+                  await api.request('edit.save', { id });
+                  const r = await api.share(
+                    id,
+                    Object.keys(sharePolicyDraft).length ? sharePolicyDraft : undefined,
+                  );
+                  setSharePolicyDraft({});
+                  setLink(r.url);
+                  setShareStage((previous) =>
+                    previous === 'ready' ? 'ready' : (r.state ?? 'processing'),
+                  );
+                  setNote(
+                    r.state === 'ready'
+                      ? 'Share link copied. Video is ready.'
+                      : 'Share link copied. The video is being prepared.',
+                  );
+                } finally {
+                  setShareBusy(false);
+                }
               })
             }
           >
@@ -1931,6 +1962,14 @@ function Review({ id, back, run, setNote, trashed }: any) {
             </p>
           )}
           {link && <input aria-label="Share link" readOnly value={link} />}
+          <ShareAccess
+            id={id}
+            link={link}
+            draft={sharePolicyDraft}
+            change={setSharePolicyDraft}
+            run={run}
+            setNote={setNote}
+          />
           <p className="fine-print">
             Sharing uses your configured bucket or Worker. Setup in Settings.
           </p>
@@ -2034,8 +2073,20 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
             </span>
           </div>
           <p className="muted">
-            Publish a video when you choose Copy share link. Credentials are encrypted with macOS
-            secure storage.
+            Share with Copy share link, or enable automatic sharing below. Credentials are encrypted
+            with macOS secure storage.
+          </p>
+          <label className="check-label">
+            <input
+              type="checkbox"
+              checked={options.autoShare === true}
+              onChange={(event) => updateOptions({ autoShare: event.target.checked })}
+            />
+            Automatically share and copy the link after Stop
+          </label>
+          <p className="fine-print">
+            Off by default. Automatic links are public. Set passwords and expiry for individual
+            links in Review.
           </p>
           <label className="field">
             Share provider

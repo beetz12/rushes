@@ -28,7 +28,12 @@ const api: RushesAPI = {
   cloudSettings: () => invoke('rushes:cloud-settings'),
   saveCloudSettings: (settings) => invoke('rushes:save-cloud', settings),
   testCloud: () => invoke('rushes:test-cloud'),
-  share: (id) => invoke('rushes:share', id),
+  share: (id, policy) => invoke('rushes:share-command', { cmd: 'share', args: { id, ...policy } }),
+  shareStatus: (id) => invoke('rushes:share-command', { cmd: 'share.status', args: { id } }),
+  getSharePolicy: (id) => invoke('rushes:share-command', { cmd: 'share.policy.get', args: { id } }),
+  setSharePolicy: (id, policy) =>
+    invoke('rushes:share-command', { cmd: 'share.policy.set', args: { id, ...policy } }),
+  shareFeedback: (id) => invoke('rushes:share-command', { cmd: 'share.feedback', args: { id } }),
   copyLink: (url) => invoke('rushes:copy-link', url),
   copyText: (text) => invoke('rushes:copy-text', text),
   drawing: (action, options = {}) => invoke('rushes:drawing', { action, ...options }),

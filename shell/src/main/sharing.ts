@@ -1,10 +1,25 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { atomicJSON } from './atomic';
+import {
+  sharePolicySchema,
+  sharePolicyPatchSchema,
+  shareFeedbackSchema,
+  type SharePolicy,
+  type SharePolicyPatch,
+  type ShareFeedback,
+  type ShareStatus,
+} from '../shared/contracts';
 type Reservation = { id: string; url: string; manifest: Record<string, any> };
 type Asset = { file: string; bytes: number; sha256: string; kind: string };
 export interface ShareProvider {
-  reserve(input: { id?: string; title: string; durationMs?: number }): Promise<Reservation>;
+  reserve(input: {
+    id?: string;
+    title: string;
+    durationMs?: number;
+    password?: string;
+    expiresAt?: string;
+  }): Promise<Reservation>;
   upload(
     reservation: Reservation,
     input: {
@@ -32,6 +47,9 @@ export interface ShareProvider {
   updateMetadata(reservation: Reservation, metadata: Record<string, unknown>): Promise<Reservation>;
   delete(reservation: Reservation): Promise<void>;
   setupCheck(): Promise<unknown>;
+  getPolicy?(id: string): Promise<SharePolicy>;
+  updatePolicy?(id: string, input: SharePolicyPatch): Promise<SharePolicy>;
+  feedback?(id: string): Promise<ShareFeedback>;
 }
 type Snapshot = {
   id: string;
@@ -82,6 +100,7 @@ export class SharingService {
     private provider: () => Promise<ShareProvider>,
     private providerIdentity: () => string,
     private notify: (event: Record<string, unknown>) => void,
+    private configurationVersion: () => unknown = providerIdentity,
   ) {}
   private async read(path: string): Promise<State | undefined> {
     try {
@@ -103,24 +122,169 @@ export class SharingService {
         { code: 'share-provider-mismatch' },
       );
   }
-  private async prepare(id: string) {
+  async status(id: string): Promise<ShareStatus> {
+    const show = await this.engine.request('show', { id });
+    const state = await this.read(join(show.packagePath, 'share', 'state.json'));
+    if (!state) return { id, state: 'not-shared' };
+    return {
+      id,
+      state: state.state,
+      providerMatches: state.provider === this.providerIdentity(),
+      ...(state.state === 'unshared' ? {} : { url: state.reservation.url }),
+    };
+  }
+  private async activeShare(id: string) {
+    const identity = this.providerIdentity();
+    const version = this.configurationVersion();
+    const show = await this.engine.request('show', { id });
+    const state = await this.read(join(show.packagePath, 'share', 'state.json'));
+    if (!state || state.state === 'unshared')
+      throw Object.assign(new Error('This recording has no active share.'), {
+        code: 'share-not-shared',
+      });
+    this.checkProvider(state, identity);
+    const provider = await this.provider();
+    this.checkProvider(state);
+    this.checkConfiguration(version);
+    return { state, provider, version };
+  }
+  private checkConfiguration(version: unknown) {
+    if (version !== this.configurationVersion())
+      throw Object.assign(new Error('Sharing settings changed. Retry with the current provider.'), {
+        code: 'share-provider-mismatch',
+      });
+  }
+  private unsupported() {
+    return Object.assign(
+      new Error('This sharing provider does not support link access or feedback.'),
+      { code: 'share-feature-unsupported' },
+    );
+  }
+  private capabilityError(error: unknown, feature: 'policy' | 'feedback') {
+    if (['SHARE_FEATURE_UNSUPPORTED', 'share-feature-unsupported'].includes((error as any)?.code))
+      return this.unsupported();
+    // Owner APIs may echo request diagnostics. Never expose a password or bearer token.
+    return Object.assign(
+      new Error(
+        `Could not ${feature === 'policy' ? 'read or update link access' : 'load viewer feedback'}. Try again.`,
+      ),
+      { code: `share-${feature}-failed` },
+    );
+  }
+  async getPolicy(id: string): Promise<SharePolicy> {
+    const { state, provider, version } = await this.activeShare(id);
+    if (!provider.getPolicy) throw this.unsupported();
+    let result;
+    try {
+      result = sharePolicySchema.parse(await provider.getPolicy(state.reservation.id));
+    } catch (error) {
+      throw this.capabilityError(error, 'policy');
+    }
+    this.checkProvider(state);
+    this.checkConfiguration(version);
+    return result;
+  }
+  async updatePolicy(id: string, input: SharePolicyPatch): Promise<SharePolicy> {
+    const patch = sharePolicyPatchSchema.parse(input);
+    const { state, provider, version } = await this.activeShare(id);
+    if (!provider.updatePolicy) throw this.unsupported();
+    let result;
+    try {
+      result = sharePolicySchema.parse(await provider.updatePolicy(state.reservation.id, patch));
+    } catch (error) {
+      throw this.capabilityError(error, 'policy');
+    }
+    this.checkProvider(state);
+    this.checkConfiguration(version);
+    // Policy lives at the provider. Keep the reservation, published edit and captions untouched.
+    return result;
+  }
+  async feedback(id: string): Promise<ShareFeedback> {
+    const { state, provider, version } = await this.activeShare(id);
+    if (!provider.feedback) throw this.unsupported();
+    let result;
+    try {
+      result = shareFeedbackSchema.parse(await provider.feedback(state.reservation.id));
+    } catch (error) {
+      throw this.capabilityError(error, 'feedback');
+    }
+    this.checkProvider(state);
+    this.checkConfiguration(version);
+    return result;
+  }
+  async feedbackSnapshots() {
+    const identity = this.providerIdentity();
+    const version = this.configurationVersion();
+    const list = await this.engine.request('list', { limit: 1000 });
+    const snapshots: Array<{ key: string; id: string; title: string; feedback: ShareFeedback }> =
+      [];
+    for (const row of list.recordings ?? []) {
+      try {
+        const state = await this.read(join(row.folder, 'share', 'state.json'));
+        if (!state || state.state === 'unshared' || state.provider !== identity) continue;
+        const feedback = await this.feedback(row.id);
+        if (identity !== this.providerIdentity() || version !== this.configurationVersion())
+          return [];
+        snapshots.push({
+          key: `${identity}:${String(version)}:${state.reservation.id}`,
+          id: row.id,
+          title: row.title ?? 'Your recording',
+          feedback,
+        });
+      } catch (error) {
+        if ((error as any).code !== 'share-feature-unsupported')
+          this.notify({
+            event: 'warning',
+            code: 'share-feedback-poll-failed',
+            id: row.id,
+            message: 'Viewer feedback could not be refreshed. The last view count is kept.',
+          });
+      }
+    }
+    return identity === this.providerIdentity() && version === this.configurationVersion()
+      ? snapshots
+      : [];
+  }
+  private async prepare(id: string, policy?: SharePolicyPatch) {
     const current = this.reserving.get(id);
     if (current) return current;
     const operation = (async () => {
       const show = await this.engine.request('show', { id }),
         path = join(show.packagePath, 'share', 'state.json');
       const identity = this.providerIdentity(),
+        version = this.configurationVersion(),
         provider = await this.provider();
       const existing = await this.read(path);
       if (existing && existing.state !== 'unshared') this.checkProvider(existing, identity);
+      if (
+        policy &&
+        (!identity.startsWith('worker:') || !provider.getPolicy || !provider.updatePolicy)
+      )
+        throw this.unsupported();
+      if (policy && existing && existing.state !== 'unshared') {
+        try {
+          await provider.updatePolicy!(existing.reservation.id, policy);
+        } catch (error) {
+          throw this.capabilityError(error, 'policy');
+        }
+      }
       this.notify({ event: 'share-progress', id, state: 'reserving' });
+      const reserve = async () => {
+        try {
+          return await provider.reserve({
+            title: show.manifest.title ?? 'Untitled recording',
+            durationMs: Math.round((show.manifest.clock?.durationNs ?? 0) / 1e6),
+            ...(policy?.password ? { password: policy.password } : {}),
+            ...(policy?.expiresAt ? { expiresAt: policy.expiresAt } : {}),
+          });
+        } catch (error) {
+          if (policy) throw this.capabilityError(error, 'policy');
+          throw error;
+        }
+      };
       const reservation =
-        existing && existing.state !== 'unshared'
-          ? existing.reservation
-          : await provider.reserve({
-              title: show.manifest.title ?? 'Untitled recording',
-              durationMs: Math.round((show.manifest.clock?.durationNs ?? 0) / 1e6),
-            });
+        existing && existing.state !== 'unshared' ? existing.reservation : await reserve();
+      this.checkConfiguration(version);
       const state: State = {
         ...existing,
         schema: 'rushes.shell-share/1',
@@ -137,7 +301,17 @@ export class SharingService {
     this.reserving.set(id, operation);
     return operation;
   }
-  async share(id: string, wait = false): Promise<{ url: string; state: 'processing' | 'ready' }> {
+  async share(
+    id: string,
+    wait = false,
+    input?: SharePolicyPatch,
+  ): Promise<{ url: string; state: 'processing' | 'ready' }> {
+    const policy = input ? sharePolicyPatchSchema.parse(input) : undefined;
+    // A supplied policy is never ignored by a deduplicated/background share.
+    if (policy && (this.running.has(id) || this.reserving.has(id))) {
+      await this.reserving.get(id);
+      await this.updatePolicy(id, policy);
+    }
     const existing = this.running.get(id);
     if (existing) {
       if (existing.kind === 'enrich') {
@@ -148,9 +322,10 @@ export class SharingService {
       const show = await this.engine.request('show', { id });
       const state = await this.read(join(show.packagePath, 'share', 'state.json'));
       if (!state) throw new Error('Share reservation is unavailable');
+      this.checkProvider(state);
       return { url: state.reservation.url, state: 'processing' };
     }
-    const prepared = await this.prepare(id);
+    const prepared = await this.prepare(id, policy);
     let job = this.running.get(id);
     if (!job) {
       const abort = new AbortController();

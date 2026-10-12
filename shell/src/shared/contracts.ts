@@ -114,6 +114,7 @@ export const recordingOptionsSchema = z.object({
   camera: z.string().max(300),
   mic: z.string().max(300),
   systemAudio: z.boolean(),
+  autoShare: z.boolean().default(false),
   countdownSeconds: countdownSecondsSchema,
   bubbleSize: z.union([z.literal(160), z.literal(200), z.literal(280)]),
   cursor: z.enum(['baked', 'data']).optional(),
@@ -135,6 +136,7 @@ export const defaultOptions: RecordingOptions = {
   camera: 'none',
   mic: 'none',
   systemAudio: false,
+  autoShare: false,
   countdownSeconds: 3,
   bubbleSize: 200,
 };
@@ -158,6 +160,60 @@ export const cloudSettingsSchema = z.discriminatedUnion('provider', [
   }),
 ]);
 export type CloudSettings = z.infer<typeof cloudSettingsSchema>;
+export const shareCommands = [
+  'share',
+  'share.setup',
+  'unshare',
+  'share.enrich',
+  'share.configure',
+  'share.configuration',
+  'share.status',
+  'share.policy.get',
+  'share.policy.set',
+  'share.feedback',
+] as const;
+export type ShareCommand = (typeof shareCommands)[number];
+export const sharePolicySchema = z.object({
+  protected: z.boolean(),
+  expiresAt: z.iso.datetime({ offset: true }).nullable(),
+});
+export const sharePolicyPatchSchema = z
+  .object({
+    password: z.string().min(8).max(1024).nullable().optional(),
+    expiresAt: z.iso
+      .datetime({ offset: true })
+      .refine((value) => Date.parse(value) > Date.now(), 'Expiry must be in the future')
+      .nullable()
+      .optional(),
+  })
+  .strict();
+export const shareFeedbackSchema = z.object({
+  views: z.number().int().nonnegative(),
+  comments: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      body: z.string(),
+      timestampMs: z.number().nonnegative(),
+      createdAt: z.string(),
+    }),
+  ),
+  reactions: z.array(
+    z.object({
+      kind: z.enum(['like', 'love', 'celebrate']),
+      count: z.number().int().nonnegative(),
+    }),
+  ),
+});
+export type SharePolicy = z.infer<typeof sharePolicySchema>;
+export type SharePolicyPatch = z.infer<typeof sharePolicyPatchSchema>;
+export type ShareFeedback = z.infer<typeof shareFeedbackSchema>;
+export type ShareStatus = {
+  id: string;
+  state: 'not-shared' | 'processing' | 'ready' | 'failed' | 'unshared';
+  url?: string;
+  providerMatches?: boolean;
+};
 export type EngineEvent = { event: string; [key: string]: unknown };
 export interface RushesAPI {
   request(cmd: string, args?: Record<string, unknown>): Promise<any>;
@@ -185,7 +241,11 @@ export interface RushesAPI {
   }>;
   saveCloudSettings(settings: CloudSettings): Promise<void>;
   testCloud(): Promise<any>;
-  share(id: string): Promise<{ url: string; state?: string }>;
+  share(id: string, policy?: SharePolicyPatch): Promise<{ url: string; state?: string }>;
+  shareStatus(id: string): Promise<ShareStatus>;
+  getSharePolicy(id: string): Promise<SharePolicy>;
+  setSharePolicy(id: string, policy: SharePolicyPatch): Promise<SharePolicy>;
+  shareFeedback(id: string): Promise<ShareFeedback>;
   copyLink(url: string): Promise<void>;
   copyText(text: string): Promise<void>;
   drawing(

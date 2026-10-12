@@ -2,17 +2,11 @@ import { createServer, createConnection, type Server } from 'node:net';
 import { lstat, unlink, chmod, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { z } from 'zod';
+import { shareCommands } from '../shared/contracts';
 const schema = z
   .object({
     id: z.string().min(1).max(200),
-    cmd: z.enum([
-      'share',
-      'share.setup',
-      'unshare',
-      'share.enrich',
-      'share.configure',
-      'share.configuration',
-    ]),
+    cmd: z.enum(shareCommands),
     args: z.record(z.string(), z.json()).default({}),
   })
   .strict();
@@ -39,6 +33,7 @@ export async function startShellServer(
     if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e;
   }
   const server = createServer((socket) => {
+    socket.setEncoding('utf8');
     let buffer = '';
     socket.on('error', () => {});
     socket.on('data', (data) => {
