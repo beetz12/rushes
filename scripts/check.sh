@@ -7,7 +7,29 @@ echo "== swift build =="
 swift build
 
 echo "== swift test =="
-swift test
+# A pipe fully buffers swift test, so a long suite prints nothing until it
+# exits. A pty makes that output line-buffered and preserves the exit code.
+python3 - <<'PY'
+import os, sys
+pid, fd = os.forkpty()
+if pid == 0:
+    try:
+        os.execvp("swift", ["swift", "test"])
+    except OSError as error:
+        sys.stderr.write(f"swift test failed to start: {error}\n")
+        os._exit(127)
+while True:
+    try:
+        chunk = os.read(fd, 4096)
+    except OSError:
+        break
+    if not chunk:
+        break
+    os.write(sys.stdout.buffer.fileno(), chunk)
+    sys.stdout.buffer.flush()
+_, status = os.waitpid(pid, 0)
+sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
+PY
 
 clean_paths=(Sources Tests)
 for surface in shell cloud viewer worker; do
