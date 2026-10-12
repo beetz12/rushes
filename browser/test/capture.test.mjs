@@ -119,7 +119,9 @@ test('durable backups, ordered/idempotent appends, journal-gap recovery and dige
     const store = await createDraftStore(backup), id = 'storage-fixture';
     const manifest = { schema: 'rushes.browser-recording/1', id, title: 'Storage fixture', createdAt: new Date().toISOString(), mode: 'screen', state: 'recording', durationMs: 0, epochMs: 1,
       tracks: [{ kind: 'screen', mimeType: 'video/webm', startOffsetMs: 0, chunks: [], bytes: 0 }], pauses: [], events: [], bubble: { x: 0, y: 0, size: 180 }, lastCheckpointMs: 0, persistent: false, backupFolder: true };
-    await store.create(manifest); const data = new Blob(['first durable bytes'], { type: 'video/webm' });
+    await store.create(manifest);
+    let duplicateCode; try { await store.create(manifest); } catch (error) { duplicateCode = error.code; }
+    const data = new Blob(['first durable bytes'], { type: 'video/webm' });
     const descriptor = await store.append(id, 'screen', 0, data, 2000); await store.append(id, 'screen', 0, data, 2000);
     const rejects = [];
     for (const [sequence, blob] of [[0, new Blob(['conflicting bytes'])], [2, data]]) {
@@ -136,9 +138,9 @@ test('durable backups, ordered/idempotent appends, journal-gap recovery and dige
     let checksumFailed = false; try { await store.readChunk(id, descriptor); } catch { checksumFailed = true; }
     const corrupt = await (await createDraftStore()).load(id);
     const retained = await (await folder.getFileHandle('screen-00000.bin')).getFile();
-    return { descriptor, rejects, backedBytes: backedBytes.size, backedManifest, recovered, checksumFailed, corrupt, retained: retained.size };
+    return { descriptor, duplicateCode, rejects, backedBytes: backedBytes.size, backedManifest, recovered, checksumFailed, corrupt, retained: retained.size };
   });
-  assert.deepEqual(result.rejects, [true, true]); assert.equal(result.backedBytes, result.descriptor.bytes);
+  assert.equal(result.duplicateCode, 'DRAFT_EXISTS'); assert.deepEqual(result.rejects, [true, true]); assert.equal(result.backedBytes, result.descriptor.bytes);
   assert.equal(result.backedManifest.tracks[0].chunks.length, 1); assert.equal(result.recovered.tracks[0].chunks.length, 2);
   assert.equal(result.recovered.state, 'interrupted'); assert.ok(result.recovered.recoveryNote.includes('uncheckpointed'));
   assert.equal(result.checksumFailed, true); assert.ok(result.corrupt.recoveryNote.includes('Checksum mismatch')); assert.ok(result.retained > 0);
@@ -241,3 +243,19 @@ test('a second tab observes a live draft without marking it interrupted or start
     assert.equal(stopped.state, 'complete');
   } finally { await context.close(); }
 });
+
+test('a post-commit backup failure during startup releases its live draft lease and all sources', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { fixture } = await import('/test/capture-fixture.mjs');
+    const { createDraftStore } = await import('/src/capture/storage.ts');
+    const value = await fixture('screen', false); const create = value.store.create;
+    value.store.create = async manifest => { await create(manifest); throw new DOMException('Synthetic initial folder checkpoint denied', 'NotAllowedError'); };
+    let error = ''; try { await value.session.start(); } catch (failed) { error = failed.message; }
+    const manifest = await value.session.stop(); const lease = (await navigator.locks.query()).held.some(lock => lock.name === `rushes-active-${value.id}`);
+    const saved = await (await createDraftStore()).load(value.id);
+    const ended = value.feeds[0].getTracks().every(track => track.readyState === 'ended'); await value.cleanup();
+    return { error, manifest, saved, lease, ended };
+  });
+  assert.ok(result.error.includes('checkpoint denied')); assert.equal(result.manifest.state, 'interrupted');
+  assert.equal(result.saved.state, 'interrupted'); assert.equal(result.lease, false); assert.equal(result.ended, true);
+}));

@@ -290,7 +290,18 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
             else if (camera && state === 'recording' && performance.now() - lastProgress > 15_000)
               fail('Video frames stopped arriving. The saved portion is being finalized.');
           }, 1000);
-        } catch (error) { fail(messageOf(error)); release(); throw error; }
+        } catch (error) {
+          release();
+          // A folder failure can reject create after OPFS and its lease commit.
+          // Inspect that primary draft so terminal cleanup releases the live lease.
+          if (!created && (error as { code?: unknown } | null)?.code !== 'DRAFT_EXISTS') {
+            try {
+              const saved = await limited(inputs.store.load(inputs.id), 5000, 'Inspecting the failed draft timed out.');
+              if (saved.createdAt === manifest.createdAt && saved.epochMs === 0) created = true;
+            } catch { /* No acknowledged primary draft; reload still retains any late closed writes. */ }
+          }
+          fail(messageOf(error)); throw error;
+        }
       },
       async pause() {
         if (state !== 'recording') throw new Error('Only an active take can be paused.');

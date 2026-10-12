@@ -106,3 +106,17 @@ at most 47.813 ms across its beginning/middle/end sample points. The complete lo
 is `~/.goal-loop/loom-clone/host/2026-10-12-browser/capture/rushes-capture-release.log`.
 The final build exited 0; the explicit clean scan's first line was 0; whitespace
 check exited 0. These are slice observations, not an independent M1 release verdict.
+
+## Startup checkpoint repair
+
+A folder error can reject create after OPFS already commits. Creation now releases
+its live lease on a rejected initial backup. Capture inspects only its own initial
+primary manifest after rejection, terminally marks that draft interrupted, and
+releases sources. A duplicate-id create uses DRAFT_EXISTS and is never adopted or
+rewritten by this cleanup. The regression uses a committed primary draft followed
+by an initial folder failure and proves its lease is gone and sources are ended.
+
+The fresh full suite after this repair exited 0: 11 tests, 11 pass, 0 fail. One
+intermediate run was invalidated when the maker edited storage during the Vite
+fixture, triggering a page navigation; its execution-context failure is retained.
+The exact command was rerun with source unchanged, and all eleven cases passed.

@@ -139,11 +139,12 @@ export async function createDraftStore(backup?: FileSystemDirectoryHandle): Prom
   return {
     create: manifest => serialized(manifest.id, async () => {
       inspectManifest(manifest, manifest.id);
-      try { await directory(manifest.id); throw new Error('A draft with this identifier already exists.'); }
+      try { await directory(manifest.id); throw Object.assign(new Error('A draft with this identifier already exists.'), { code: 'DRAFT_EXISTS' }); }
       catch (error) { if (!(error instanceof DOMException && error.name === 'NotFoundError')) throw error; }
       const folder = await directory(manifest.id, true);
       await checkpoint(folder, manifest); await acquireLease(manifest.id);
-      await backupCheckpoint(manifest);
+      try { await backupCheckpoint(manifest); }
+      catch (error) { releaseLease(manifest.id); throw error; }
     }),
     save: manifest => serialized(manifest.id, async () => {
       inspectManifest(manifest, manifest.id);
