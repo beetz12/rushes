@@ -171,7 +171,6 @@ public final class TrackWriter: @unchecked Sendable {
                 if !sessionBegun { backend.startSession(); sessionBegun = true }
                 if backend.isReadyForMoreMediaData, backend.appendVideoFrame(cached, mediaTimeNs: 0) {
                     noteVideoAppended(pixelBuffer: cached, mediaTimeNs: 0)
-                    cachedPreGatePixelBuffer = nil
                 }
             }
         }
@@ -213,8 +212,10 @@ public final class TrackWriter: @unchecked Sendable {
 
             if hostNs < clock.epochNs {
                 // Newest pre-gate frame wins; it is written at media time
-                // zero when the gate opens (docs/PLAN.md, Frame at zero).
-                cachedPreGatePixelBuffer = pixelBuffer
+                // zero only before any footage has been accepted. A delayed
+                // warm-up callback after that cannot rewind the movie to zero.
+                if wroteAnySample { framesDropped += 1 }
+                else { cachedPreGatePixelBuffer = pixelBuffer }
                 return
             }
             if clock.isPaused(atHostNs: hostNs) { framesSuppressedByPause += 1; return }
@@ -259,10 +260,9 @@ public final class TrackWriter: @unchecked Sendable {
             }
             // The cached pre-gate frame lands at zero ahead of the first
             // post-gate frame (skipped when that frame is itself at zero).
-            if let cached = cachedPreGatePixelBuffer, front.mediaTimeNs > 0 {
+            if let cached = cachedPreGatePixelBuffer, !wroteAnySample, front.mediaTimeNs > 0 {
                 guard backend.appendVideoFrame(cached, mediaTimeNs: 0) else { return }
                 noteVideoAppended(pixelBuffer: cached, mediaTimeNs: 0)
-                cachedPreGatePixelBuffer = nil
             }
             // Presentation times must be strictly increasing.
             guard front.mediaTimeNs > (lastVideoMediaNs ?? Int64.min) else {
@@ -280,6 +280,9 @@ public final class TrackWriter: @unchecked Sendable {
     private func noteVideoAppended(pixelBuffer: CVPixelBuffer, mediaTimeNs: Int64) {
         framesWritten += 1
         wroteAnySample = true
+        // Includes a first live frame at zero while the encoder was busy at
+        // gate opening: that real frame supersedes the warm-up cache forever.
+        cachedPreGatePixelBuffer = nil
         if firstMediaTimeNs == nil { firstMediaTimeNs = mediaTimeNs }
         lastVideoMediaNs = mediaTimeNs
         lastReportedMediaNs = mediaTimeNs
