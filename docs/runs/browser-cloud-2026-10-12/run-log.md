@@ -1,5 +1,17 @@
 # Browser build evidence log
 
+Credential rotation completed at21:35UTC: David supplied the replacement JSON
+and confirmed the original was disabled/deleted. Root privately validated exact
+project/client/origin/callback and that the secret differs from the quarantined
+original, moved the supplied download into the0700 host configuration directory
+with0600 mode, and displayed no credential values. After a provider-page reload,
+Google shows exactly one enabled secret, created2026-10-12 at17:31:15 EDT, and no
+old/disabled row. This resolves the earlier rotation hold below. The replacement
+is not yet bound to a deployed Worker or used for an application login; those
+provider/release gates remain separate. Chrome's stale extension connection was
+recovered with a new official connected Chrome tab, without an update, alternate
+profile, native fallback or raw-CDP use.
+
 Research reassessment after the bounded180s diagnostic: the same retained native
 MJPEG file and unchanged565fdf4 production source completed19 protected diagnostic
 checks with zero extra readers. Three video decodes were179.964s with gaps<=95ms;
