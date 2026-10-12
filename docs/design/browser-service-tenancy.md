@@ -1,0 +1,11 @@
+# Original browser service design
+
+Rushes uses a separate commercial Worker, private raw bucket, and relational account store. The browser presents an opaque session; the server derives its tenant and every object prefix. Google state and nonce are single-use, token claims and RSA signatures are checked, and mutating account requests require an origin check and CSRF secret.
+
+Each raw chunk has a unique tenant, recording, track and sequence. A database trigger reserves its maximum byte count before issuing a signed capability. The bounded PUT checks the capability, exact bytes and digest, then reads persisted metadata before acknowledging. Retrying the same digest is safe; replacement content conflicts. Database triggers convert reserved bytes to accepted bytes and prevent concurrent requests from exceeding the tenant ceiling.
+
+Finalization reserves a full ten-minute upload and library slot in one database transaction. Client timestamps do not decide quota. The server creates a private Stream tus resource, saves its trusted UID association before returning the upload URL, and exposes readiness only after provider status and duration checks. Provider uncertainty retains the reservation and fails closed. Deletion revokes access first, then verifies provider absence and an exact tenant recording bucket prefix before releasing storage counters.
+
+Paid access comes from server-selected Stripe subscriptions and reconciled paid invoices. Raw signed webhooks claim durable events, retrieve current state rather than trusting event order, and remain retryable after provider failures. Checkout redirects carry no authority. Delivery grants reserve the full clip duration, have short expiry and bounded concurrent issuance, and stop at the configured kill switch. Signed-token replay and delayed analytics remain residual provider spend exposure rather than a promised invoice ceiling.
+
+Cleanup selects trusted relational ownership, retires stale raw bytes and abandoned uploads, and removes hosted videos after cancellation export grace. It records failure for retry; missing configuration never enables a fake authentication, payment or media path. Local capture and static assets remain available independently.
