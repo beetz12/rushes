@@ -111,7 +111,7 @@ export function countdownFromSelection(value: string): CountdownSeconds | undefi
   return countdownSecondsSchema.parse(Number(selection.data));
 }
 export const recordingOptionsSchema = z.object({
-  mode: z.enum(['display', 'window', 'area']),
+  mode: z.enum(['display', 'window', 'area', 'camera-only']),
   source: z.string().max(300),
   camera: z.string().max(300),
   mic: z.string().max(300),
@@ -144,6 +144,49 @@ export const defaultOptions: RecordingOptions = {
   countdownSeconds: 3,
   bubbleSize: 200,
 };
+// The native engine represents camera-only with an absent screen target.
+export function recordingStartArguments(raw: RecordingOptions): Record<string, unknown> {
+  const options = recordingOptionsSchema.parse(raw);
+  if (options.mode === 'camera-only' && options.camera === 'none')
+    throw new Error('Choose a camera for a camera-only recording.');
+  const args: Record<string, unknown> = {
+    camera: options.camera,
+    mic: options.mic,
+    systemAudio: options.mode === 'camera-only' ? false : options.systemAudio,
+    countdownSeconds: options.countdownSeconds,
+  };
+  if (options.mode === 'camera-only') return args;
+  args.cursor = options.cursor ?? 'baked';
+  if (options.mode === 'window') {
+    if (!options.source) throw new Error('Choose a window to record.');
+    args.window = options.source;
+  } else args.display = options.source;
+  if (options.mode === 'area') {
+    if (!options.area) throw new Error('Select a recording area first.');
+    args.area = options.area;
+  }
+  return args;
+}
+export const exportPresetSchema = z.enum([
+  'share',
+  'full',
+  'youtube',
+  'youtube-source',
+  'audio',
+  'audio-wav',
+  'editor-tracks',
+  'srt',
+  'vtt',
+  'txt',
+  'thumbnail',
+  'diagnostics',
+  'chapters',
+]);
+export type ExportPreset = z.infer<typeof exportPresetSchema>;
+export type ExportOutput = 'combined' | 'separate';
+export function selectedExportPreset(output: ExportOutput, format: ExportPreset): ExportPreset {
+  return output === 'separate' ? 'editor-tracks' : format;
+}
 export const cloudSettingsSchema = z.discriminatedUnion('provider', [
   z.object({ provider: z.literal('none') }),
   z.object({

@@ -6,7 +6,11 @@ import {
   defaultOptions,
   countdownChoices,
   countdownFromSelection,
+  recordingStartArguments,
+  selectedExportPreset,
   type RecordingOptions,
+  type ExportPreset,
+  type ExportOutput,
   type SharePolicyPatch,
 } from '../shared/contracts';
 import {
@@ -48,6 +52,7 @@ import {
 } from '../shared/review-draft';
 import { ZoomEditor } from './zoom-editor';
 import { OnboardingTour } from './onboarding-tour';
+import { CountdownAudio } from './countdown-audio';
 document.documentElement.dataset.view = location.hash.slice(1) || 'recorder';
 const api = window.rushes;
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -94,6 +99,7 @@ function App() {
   const [permissions, setPermissions] = useState<any>({});
   const [preview, setPreview] = useState('');
   const [countdown, setCountdown] = useState<number | null>(null);
+  const countdownAudio = useMemo(() => new CountdownAudio(), []);
   const [guideTarget, setGuideTarget] = useState<string | null>(null);
   const guideStep = useCallback((target: string | null) => setGuideTarget(target), []);
   const [presets, setPresets] = useState<Record<string, RecordingOptions>>({}),
@@ -115,7 +121,8 @@ function App() {
     try {
       const p = await api.request('permissions.check');
       setPermissions(p);
-      if (p.screen === 'granted') setTargets(await api.request('targets'));
+      // Native targets omits ungranted screens but still lists cameras/mics.
+      setTargets(await api.request('targets'));
     } catch (e) {
       setError(String(e), (e as { code?: string })?.code);
     }
@@ -140,6 +147,7 @@ function App() {
       if (e.event === 'engine-reconnected') {
         setStatus(e.status ?? { state: e.state });
         setCountdown(null);
+        countdownAudio.cancel();
         if (isConnectionErrorCode(errorCode.current)) setError('');
         setNote('Native engine connection restored.');
       }
@@ -156,13 +164,24 @@ function App() {
           recording: { recordingID: e.recordingId, elapsedMediaNs: 0 },
         });
         setCountdown(null);
+        countdownAudio.cancel();
       }
       if (e.event === 'recording-stopped') {
         setStatus({ state: 'idle' });
         setCountdown(null);
+        countdownAudio.cancel();
       }
-      if (e.event === 'countdown')
-        setCountdown(Number((e.result as any)?.remaining ?? e.remaining));
+      if (e.event === 'countdown') {
+        const remaining = Number((e.result as any)?.remaining ?? e.remaining);
+        setCountdown(remaining);
+        if (remaining <= 0) countdownAudio.cancel();
+        if (view === 'recorder' && typeof e.tick === 'number')
+          void countdownAudio.tick(e.tick).catch(() => {});
+      }
+      if (e.event === 'countdown-cleared') {
+        setCountdown(null);
+        countdownAudio.cancel();
+      }
       if (e.event === 'window-anchor')
         setOptions((previous) => ({
           ...previous,
@@ -189,6 +208,7 @@ function App() {
     return () => {
       off();
       clearInterval(timer);
+      countdownAudio.close();
     };
   }, [refresh]);
   const updateOptions = (change: Partial<RecordingOptions>) => {
@@ -207,19 +227,8 @@ function App() {
   const start = () =>
     run(async () => {
       await api.saveOptions(options);
-      const args: any = {
-        camera: options.camera,
-        mic: options.mic,
-        systemAudio: options.systemAudio,
-        countdownSeconds: options.countdownSeconds,
-        cursor: options.cursor ?? 'baked',
-      };
-      if (options.mode === 'window') args.window = options.source;
-      else args.display = options.source;
-      if (options.mode === 'area') {
-        if (!options.area) throw new Error('Select a recording area first.');
-        args.area = options.area;
-      }
+      const args = recordingStartArguments(options);
+      if (options.countdownSeconds) await countdownAudio.prepare().catch(() => {});
       setCountdown(options.countdownSeconds ? 0 : null);
       try {
         const r = await api.request('record.start', args);
@@ -228,6 +237,7 @@ function App() {
         return r;
       } finally {
         setCountdown(null);
+        countdownAudio.cancel();
       }
     });
   const control = (cmd: string, args: any = {}) =>
@@ -268,6 +278,29 @@ function App() {
       }
       if (await updateOptions({ camera })) await api.request('camera.preview.start', { camera });
     });
+  const chooseMode = (mode: RecordingOptions['mode']) => {
+    if (mode !== 'camera-only')
+      return updateOptions({
+        mode,
+        source:
+          mode === 'window'
+            ? (targets.windows[0]?.id ?? '')
+            : (targets.displays.find((d: any) => d.isMain)?.id ?? 'main'),
+      });
+    return run(async () => {
+      const camera =
+        options.camera === 'none' ? (targets.cameras[0]?.id ?? 'default') : options.camera;
+      setPreview('');
+      if (!(await updateOptions({ mode, camera, systemAudio: false }))) return;
+      if (permissions.camera !== 'granted') {
+        await api.request(
+          permissions.camera === 'denied' ? 'permissions.settings' : 'permissions.request',
+          { permission: 'camera' },
+        );
+        await refresh();
+      } else await api.request('camera.preview.start', { camera });
+    });
+  };
   if (view === 'bubble')
     return (
       <div
@@ -344,16 +377,18 @@ function App() {
           <Icon name="mic" />
           {micMuted && <small>×</small>}
         </button>
-        <button
-          title={systemMuted ? 'Unmute system audio' : 'Mute system audio'}
-          onClick={() => {
-            setSystemMuted(!systemMuted);
-            void control('record.mute', { track: 'systemAudio', muted: !systemMuted });
-          }}
-        >
-          <Icon name="screen" />
-          {systemMuted && <small>×</small>}
-        </button>
+        {options.mode !== 'camera-only' && options.systemAudio && (
+          <button
+            title={systemMuted ? 'Unmute system audio' : 'Mute system audio'}
+            onClick={() => {
+              setSystemMuted(!systemMuted);
+              void control('record.mute', { track: 'systemAudio', muted: !systemMuted });
+            }}
+          >
+            <Icon name="screen" />
+            {systemMuted && <small>×</small>}
+          </button>
+        )}
         <button title="Voice teleprompter" onClick={() => run(() => api.window('teleprompter'))}>
           Aa
         </button>
@@ -462,7 +497,7 @@ function App() {
                   <p className="eyebrow">MAKE SOMETHING CLEAR</p>
                   <h1>A little video goes a long way.</h1>
                   <p className="subtitle">
-                    Record your screen with an optional camera. Keep every track.
+                    Record your screen, your camera, or both. Keep every track.
                   </p>
                 </div>
                 <button
@@ -473,8 +508,16 @@ function App() {
                   <Icon name="refresh" />
                 </button>
               </div>
-              {(permissions.screen !== 'granted' || guideTarget === 'permissions') && (
-                <PermissionPanel permissions={permissions} refresh={refresh} run={run} />
+              {((options.mode !== 'camera-only' && permissions.screen !== 'granted') ||
+                (options.camera !== 'none' && permissions.camera !== 'granted') ||
+                (options.mic !== 'none' && permissions.microphone !== 'granted') ||
+                guideTarget === 'permissions') && (
+                <PermissionPanel
+                  permissions={permissions}
+                  refresh={refresh}
+                  run={run}
+                  screenRequired={options.mode !== 'camera-only'}
+                />
               )}
               <div className="presets-row">
                 <select
@@ -529,44 +572,44 @@ function App() {
                       ['display', 'Entire screen'],
                       ['window', 'A window'],
                       ['area', 'Select area'],
+                      ['camera-only', 'Camera only'],
                     ].map(([mode, label]) => (
                       <button
                         key={mode}
                         className={options.mode === mode ? 'selected' : ''}
-                        onClick={() =>
-                          updateOptions({
-                            mode: mode as any,
-                            source:
-                              mode === 'window'
-                                ? (targets.windows[0]?.id ?? '')
-                                : (targets.displays.find((d: any) => d.isMain)?.id ?? 'main'),
-                          })
-                        }
+                        disabled={active || busy || countdown !== null}
+                        onClick={() => chooseMode(mode as RecordingOptions['mode'])}
                       >
-                        <Icon name="screen" size={18} />
+                        <Icon name={mode === 'camera-only' ? 'camera' : 'screen'} size={18} />
                         {label}
                       </button>
                     ))}
                   </div>
-                  <div className="studio-preview">
+                  <div
+                    className={`studio-preview ${options.mode === 'camera-only' ? 'camera-only-preview' : ''}`}
+                  >
                     <div className="screen-symbol">
-                      <Icon name="screen" size={50} />
+                      <Icon name={options.mode === 'camera-only' ? 'camera' : 'screen'} size={50} />
                     </div>
                     <h2>
-                      {options.mode === 'window'
-                        ? 'Choose a window'
-                        : options.mode === 'area'
-                          ? 'A focused frame'
-                          : 'Your screen, clearly'}
+                      {options.mode === 'camera-only'
+                        ? 'Just you, on camera'
+                        : options.mode === 'window'
+                          ? 'Choose a window'
+                          : options.mode === 'area'
+                            ? 'A focused frame'
+                            : 'Your screen, clearly'}
                     </h2>
                     <p>
-                      {options.mode === 'area'
-                        ? options.area
-                          ? `${Math.round(options.area.width)} × ${Math.round(options.area.height)} pt selected`
-                          : 'Drag a rectangle around what matters.'
-                        : 'Screen and camera are captured as separate tracks.'}
+                      {options.mode === 'camera-only'
+                        ? 'Screen capture is off. Enabled camera and microphone inputs stay separate.'
+                        : options.mode === 'area'
+                          ? options.area
+                            ? `${Math.round(options.area.width)} × ${Math.round(options.area.height)} pt selected`
+                            : 'Drag a rectangle around what matters.'
+                          : 'Screen and camera are captured as separate tracks.'}
                     </p>
-                    {options.mode === 'area' ? (
+                    {options.mode === 'camera-only' ? null : options.mode === 'area' ? (
                       <button className="secondary" onClick={() => api.window('area')}>
                         Select recording area
                       </button>
@@ -618,6 +661,7 @@ function App() {
                       onChange={(e) => void chooseCamera(e.target.value)}
                     >
                       <option value="none">Camera off</option>
+                      <option value="default">Default camera</option>
                       {targets.cameras.map((c: any) => (
                         <option key={c.id} value={c.id}>
                           {c.name}
@@ -656,11 +700,12 @@ function App() {
                   <label>
                     <span>
                       <Icon name="screen" />
-                      System audio
+                      System audio{' '}
+                      {options.mode === 'camera-only' && <small>· needs screen capture</small>}
                     </span>
                     <select
                       aria-label="System audio"
-                      disabled={active}
+                      disabled={active || options.mode === 'camera-only'}
                       value={String(options.systemAudio)}
                       onChange={(e) => updateOptions({ systemAudio: e.target.value === 'true' })}
                     >
@@ -697,7 +742,10 @@ function App() {
                       className="primary"
                       disabled={
                         busy ||
-                        permissions.screen !== 'granted' ||
+                        (options.mode !== 'camera-only' && permissions.screen !== 'granted') ||
+                        (options.mode === 'camera-only' && options.camera === 'none') ||
+                        (options.camera !== 'none' && permissions.camera !== 'granted') ||
+                        (options.mic !== 'none' && permissions.microphone !== 'granted') ||
                         (options.mode === 'window' && !options.source)
                       }
                       onClick={start}
@@ -757,12 +805,16 @@ function App() {
     </div>
   );
 }
-function PermissionPanel({ permissions, refresh, run }: any) {
+function PermissionPanel({ permissions, refresh, run, screenRequired = true }: any) {
   return (
     <div className="permission-card" data-tour="permissions">
       <div>
         <h3>Choose your recording access.</h3>
-        <p>Screen Recording is required. Microphone and Camera are optional.</p>
+        <p>
+          {screenRequired
+            ? 'Screen Recording is needed for screen capture. Camera and microphone are optional.'
+            : 'Camera access is needed for camera-only recording. Screen Recording can stay off; microphone is optional.'}
+        </p>
       </div>
       <div className="permission-list">
         {[
@@ -773,7 +825,7 @@ function PermissionPanel({ permissions, refresh, run }: any) {
           <div key={key}>
             <span>
               {label}
-              {key !== 'screen' ? ' · optional' : ' · required'}
+              {key === (screenRequired ? 'screen' : 'camera') ? ' · required' : ' · optional'}
             </span>
             <span className="muted">{permissions[key] ?? 'Checking…'}</span>
             {permissions[key] === 'granted' ? (
@@ -1082,7 +1134,8 @@ function Review({ id, back, run, setNote, trashed }: any) {
     [mirror, setMirror] = useState(true),
     [micGain, setMicGain] = useState(1),
     [systemGain, setSystemGain] = useState(0.5),
-    [preset, setPreset] = useState('share'),
+    [preset, setPreset] = useState<ExportPreset>('share'),
+    [exportOutput, setExportOutput] = useState<ExportOutput>('combined'),
     [transcript, setTranscript] = useState<any>(null),
     [tab, setTab] = useState('edit'),
     [selectedWords, setSelectedWords] = useState<string[]>([]),
@@ -1387,7 +1440,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
       setEdit(await autosave.run(() => api.request('edit.cut', { id, cuts })));
       setNote(`${cuts.length} suggested cuts applied.`);
     });
-  const doExport = (exportPreset: string) =>
+  const doExport = (exportPreset: ExportPreset) =>
     run(async () => {
       setExportBusy(true);
       try {
@@ -2101,41 +2154,68 @@ function Review({ id, back, run, setNote, trashed }: any) {
           </button>
           <hr />
           <label className="field">
-            Export format
-            <select value={preset} onChange={(e) => setPreset(e.target.value)}>
-              {[
-                ['share', 'Share MP4 · 1080p'],
-                ['youtube', 'YouTube · 1080p60'],
-                ['youtube-source', 'YouTube · source size at 60fps'],
-                ['full', 'Full quality MOV'],
-                ['editor-tracks', 'Raw original tracks for editing'],
-                ['audio', 'Audio only · M4A'],
-                ['audio-wav', 'Audio only · WAV'],
-                ['diagnostics', 'Diagnostics bundle'],
-                ['thumbnail', 'YouTube thumbnail'],
-                ['vtt', 'WebVTT captions'],
-                ['srt', 'SRT captions'],
-                ['chapters', 'Chapters text'],
-                ['txt', 'Transcript text'],
-              ].map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
+            Export output
+            <select
+              aria-label="Export output"
+              value={exportOutput}
+              onChange={(e) => setExportOutput(e.target.value as ExportOutput)}
+            >
+              <option value="combined">One file · combined video</option>
+              <option value="separate">Separate original files · screen, camera and audio</option>
             </select>
           </label>
-          {preset === 'editor-tracks' && (
+          {exportOutput === 'combined' && (
+            <>
+              <label className="field">
+                Export format
+                <select
+                  aria-label="Export format"
+                  value={preset}
+                  onChange={(e) => setPreset(e.target.value as ExportPreset)}
+                >
+                  {[
+                    ['share', 'Share MP4 · 1080p'],
+                    ['youtube', 'YouTube · 1080p60'],
+                    ['youtube-source', 'YouTube · source size at 60fps'],
+                    ['full', 'Full quality MOV'],
+                    ['audio', 'Audio only · M4A'],
+                    ['audio-wav', 'Audio only · WAV'],
+                    ['diagnostics', 'Diagnostics bundle'],
+                    ['thumbnail', 'YouTube thumbnail'],
+                    ['vtt', 'WebVTT captions'],
+                    ['srt', 'SRT captions'],
+                    ['chapters', 'Chapters text'],
+                    ['txt', 'Transcript text'],
+                  ].map(([value, label]) => (
+                    <option key={value} value={value}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <p className="muted">
+                Video formats combine the camera and screen using your chosen layout.
+              </p>
+            </>
+          )}
+          {exportOutput === 'separate' && (
             <p className="muted">
-              Raw originals for editing. Original camera backgrounds and source audio remain intact.
+              Saves each enabled input to its own file in one folder, plus timing metadata for
+              editing. Full original camera backgrounds and source audio remain intact. Edits apply
+              to combined exports; originals stay unchanged.
             </p>
           )}
           <button
             className="secondary full-width"
             disabled={exportBusy}
-            onClick={() => doExport(preset)}
+            onClick={() => doExport(selectedExportPreset(exportOutput, preset))}
           >
             <Icon name="download" />
-            {exportBusy ? 'Exporting…' : 'Export recording'}
+            {exportBusy
+              ? 'Exporting…'
+              : exportOutput === 'separate'
+                ? 'Save separate original files'
+                : 'Export recording'}
           </button>
           <button
             className="secondary full-width"
