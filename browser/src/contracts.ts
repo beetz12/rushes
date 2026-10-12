@@ -81,3 +81,4 @@ export type FinalizeInput = {
 export type UploadGrant = { uid: string; url: string; expiresAt: string };
 export type ShareInput = { password?: string; expiresAt?: string };
 export type PlaybackGrant = { url: string; expiresAt: string };
+export type ExportGrant = { status: 'processing' } | { status: 'ready'; url: string; expiresAt: string };

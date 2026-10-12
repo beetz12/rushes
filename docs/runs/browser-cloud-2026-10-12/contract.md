@@ -76,9 +76,11 @@ Auth endpoints: GET /auth/google/start, GET /auth/google/callback.
 | POST /api/recordings/:id/chunks/grant | ChunkGrantInput | ChunkGrant |
 | PUT /api/recordings/:id/chunks/:track/:sequence | bytes with Authorization: Upload <token> | {acknowledged:true} |
 | GET /api/recordings/:id/chunks | none | {chunks:ChunkDescriptor[]} |
+| GET /api/recordings/:id/chunks/:track/:sequence | none | Private retained raw bytes |
 | POST /api/recordings/:id/finalize | FinalizeInput | {upload:UploadGrant,state:'uploading'} |
 | POST /api/recordings/:id/process | {} | RecordingDetail |
 | GET /api/recordings/:id/playback | none | PlaybackGrant |
+| POST /api/recordings/:id/export | {} | ExportGrant: processing(202), ready(200) |
 | POST /api/recordings/:id/share | ShareInput | {id:string,url:string,expiresAt:string|null} |
 | DELETE /api/recordings/:id/share | none | {ok:true} |
 | GET /api/shares/:id | none | {id,title,durationMs,passwordRequired:boolean,expiresAt:string|null} |
