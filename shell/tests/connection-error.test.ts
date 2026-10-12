@@ -4,6 +4,7 @@ it('clears verified connection recovery errors by code while preserving recordin
   for (const code of [
     'engine-disconnected',
     'socket-error',
+    'invalid-json',
     'engine-recovery-failed',
     'engine-start-failed',
   ])

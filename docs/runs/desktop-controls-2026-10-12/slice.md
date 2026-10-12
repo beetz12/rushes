@@ -172,3 +172,93 @@ required. The private synthetic export proof from the first shell commit was not
 repeated while root ran its real browser recording; the token extension does not
 change original export or media contents. No public push, install, credentials,
 provider mutation, shared Beads write or shared GUI control occurred.
+
+## Transport repair design, before implementation
+
+Root approved the bounded transport amendment in `8563fea` after successful
+installed recording checks left an invalid-json alert visible. A generated-byte
+socketpair investigation independently demonstrated that the current 250 ms
+send timeout can leave a partial JSON prefix on the stream: 4,096 of 262,217
+fixture bytes were sent before errno 35, and a later reliable event appended to
+that prefix to produce an invalid 4,136-byte JSON line. This is a transport
+defect; it does not establish the installed alert's exact cause or explain the
+earlier native PID change. Installed exit/signal evidence is unavailable.
+
+SocketLineIO will mark a terminal write failure closed and shut down that socket
+while still holding its existing writer lock. Reliable, preview and error
+writers will then refuse any later append to the truncated prefix. The same
+locked close operation will preserve the existing active-reader descriptor hold,
+waking readers before releasing their descriptor; repeated Close remains safe.
+The native process, camera/device lifecycle, recording clock and writers will
+not be stopped by a peer's write failure.
+
+EngineClient will treat malformed NDJSON as terminal for the affected socket:
+clear partial input, reject pending requests, stop parsing trailing messages,
+and destroy the socket. A connection-local failure latch will reject queued
+input until a new connection is established. Existing Supervisor recovery must
+reuse the native process and preserve its cached active take, then validate fresh
+status before emitting engine-reconnected. The invalid-json classification will
+be cleared by the existing UI only after that verified event; neither successful
+syntax parsing nor a TCP/socket connect clears it. No image/message contents
+will be printed or stored by diagnostics; only bounded lengths and error codes
+may be retained. Preview token and payload validation stay strict.
+
+Tests will force real generated-byte socketpair backpressure, observe a partial
+prefix without its newline, and prove subsequent writes are refused. They will
+also cover a blocked reader's descriptor lifetime. Isolated Node socket fixtures
+will inject a malformed line before an apparently valid trailing status/event,
+prove it cannot mutate recording state or settle a pending request as success,
+and verify recovery from held fresh status without launching/killing a sidecar
+or issuing Stop. No physical device, shared GUI or media encoder is required.
+
+## Transport implementation and bounded evidence
+
+SocketLineIO now uses one lock-held close operation for terminal write failure
+and explicit Close. A truncated prefix is followed by stream shutdown, not by a
+new response/event. Reader descriptor holds and repeated Close remain intact.
+EngineClient rejects a malformed JSON line or non-object protocol envelope,
+rejects pending requests, clears partial input, latches that connection as failed,
+and destroys only its socket. New connections reset the latch. Valid object
+envelopes and primitive/null result payloads retain their prior behavior.
+Malformed diagnostics expose only `code`, a fixed message and `lineBytes`.
+
+The connection-error classifier now includes invalid-json; the existing UI's
+verified engine-reconnected callback can clear it. No change was made to the
+Supervisor's fresh-status gate, active take cache, launch/kill behavior, Quit
+finalization holds, native preview tokens, recording clocks or device ownership.
+
+Private proof files under the existing `build` evidence directory:
+
+- `transport-original-probe.json` and `transport-fixed-probe.json` execute the
+  actual original/current SocketLineIO class extracted into standalone Swift
+  generated-byte probes. Original: a **4,096-byte** prefix stayed open, accepted
+  a subsequent **41-byte** event and formed invalid JSON. Fixed: the same prefix
+  ended at EOF, the connection was closed, the next write was rejected and **0
+  later bytes** arrived. Probe sources are retained privately. This is a
+  negative control of the transport defect, not an installed-incident trace.
+- `transport-native.log`: **4 filtered native tests** passed in **0.535 seconds**
+  after successful compilation. The two new tests exercise actual socketpair
+  timeout/prefix/subsequent-write rejection and blocked-reader/descriptor reuse;
+  the two existing descriptor lifetime tests also passed. No media encoder or
+  device was created.
+- `transport-shell.log`: complete shell suite **124 tests in 17 files**, exit
+  0. Seven new parser/socket tests verify malformed input cannot accept trailing
+  replies or alter a cached recording state, missing protocol objects terminate
+  safely, reconnect resets the latch, and primitive/null result payloads remain
+  supported. A held fresh-status recovery leaves both the invalid-json alert and
+  active take intact after reconnect and a valid ordinary event; only verified
+  recording status clears the error. It launches/kills no sidecar and sends no
+  Stop.
+- `transport-build.log`: Node22.22 shell build/typecheck exit 0.
+- `transport-clean.log`: changed source/tests and this slice clean scan first
+  line **0**; `git diff --check` exit 0.
+  `transport-clean-initial.log` retains five standard-library import overlaps
+  from the first scan. Independent namespace aliases replaced that fixture
+  import grouping without opening any reference implementation; the final
+  source scan passed.
+
+Root still owns independent review, the full merged release gate and installed
+verification. The original successful recordings and their exports were neither
+opened nor modified by these generated-byte tests. The native PID change remains
+unattributed. No repository-public push, install, GUI, provider or Beads write
+was performed by this writer.
