@@ -101,3 +101,55 @@ Root separately owns physical screen selection, Windows/browser matrix, maximum
 Google/Stripe/Stream flows, private multi-tenant server attacks, current deployed
 revision and M5 spend/audience approval. This maker's26checks do not substitute for
 those gates. Local-only takes use OPFS plus any chosen backup folder and retain explicit post-Stop Upload. With the optional cloud choice, each durable checkpoint is backed up during recording and composed upload starts after Stop; no silent upload happens without that choice.
+
+## Consolidated independent-review repair
+
+Independent verdict `2a61ab1` identified U1–U4 despite the original26 green
+checks. Its unchanged failed reproductions remain in the private
+`ui/independent` directory. This is the single coordinated repair pass, with no
+service business-code change. Read-only dependency updates: Service7304afb and
+root68c6844 payment-mode/verification-order seam. Root integrates those separately.
+
+- U1: raw PUT now belongs to RushesAPI and obtains its current session CSRF header
+  alongside the Upload capability and same-origin cookie semantics. Provider tus
+  continues to omit CSRF/cookies. Actual compiled Worker + real SQLite tests show
+  missing-CSRF403 with no object, then expired-grant401/fresh-grant200 with exactly
+  one verified R2 object. Grant expiration is derived from the returned timestamp.
+- U2: both camera/microphone acquisitions have per-device revisions, invalidated
+  by explicit off, replacement, mode/start lifetime changes and unmount. Late
+  streams stop immediately; stale completion cannot clear a newer busy state.
+  End events apply only to the current owned device. Actual synthetic-device
+  delayed-switch/off tests cover both devices and genuine React unmount.
+- U3: API session reads and its cached CSRF have transition/read revisions; logout
+  invalidates older work before sending, clears only on confirmed success, and
+  blocks session reads during that transition. React auth epoch guards initial,
+  refresh, library/page and post-upload results. Held session/library responses
+  cannot restore private Sam metadata after sign-out. An older same-user session
+  cannot replace newer CSRF; rejected logout retains the usable current session.
+- U4: retry first reads the mapped recording under current authentication. Ready
+  requires the local draft id/schema/mode and matching original chunk digests,
+  sequences/byte counts. ALREADY_READY, including a provider-expiry race, triggers
+  authenticated read-back/process confirmation rather than unconditional success.
+  Actual Worker fixtures cover ready re-entry, lost committed process response,
+  a ready transition while retrying a provider403, and failed/deleted/wrong-owner
+  or mismatched-local-draft controls. Local bytes/cloud id remain unchanged.
+- Billing labels follow the authoritative test/live/unconfigured mode; test
+  wording appears only in test mode, and unconfigured checkout remains disabled.
+  Only synthetic mode cases were exercised; live billing was never activated.
+
+Final maker checks: Node22.22.0 strict browser build0 and owned source/test/doc
+clean scan first0. `node --test browser/test/ui*.mjs` actual isolated installed
+Chrome155.0.8059.39 on Mac:36/36, zero skipped,45.807s. Complete log
+`/Users/dave/.goal-loop/loom-clone/host/2026-10-12-browser/ui/repair-final.log`.
+The new UI service seam tests require the browser-worker dependency to be built
+first; root's amended umbrella owns that order. Original failed verdict logs and
+maker fixture/setup failures (`repair-ui-first.log`, `repair-ui-second.log`,
+`repair-service.log`) are retained alongside their successful final probes.
+The fixture errors were an unmounted-test widget outside its visible bounds,
+Vite's CJS ReactDOM import shape and a15-minute grant TTL; these were corrected
+without weakening production authorization or success assertions.
+
+The last full media suite completed at approximately17:03:31UTC on2026-10-12
+(log mtime), before root's17:05UTC observer-isolation capture diagnostic. No further
+media run was started during that hold. Maker checks still do not establish live
+provider operation, Windows physical behavior or independent repair acceptance.

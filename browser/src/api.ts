@@ -14,8 +14,11 @@ export function trustedURL(value: string): string {
 }
 export class RushesAPI {
   private csrf: string | null = null;
+  private authRevision = 0;
+  private loggingOut = false;
   constructor(private readonly transport: typeof fetch = globalThis.fetch.bind(globalThis)) {}
-  setSession(session: SessionResponse) { this.csrf = session.csrfToken; }
+  setSession(session: SessionResponse) { this.authRevision++; this.csrf = session.csrfToken; }
+  invalidateSessionReads() { this.authRevision++; }
   async request<T>(path: string, method = 'GET', data?: unknown, signal?: AbortSignal): Promise<T> {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (this.csrf) headers['X-CSRF-Token'] = this.csrf;
@@ -34,12 +37,25 @@ export class RushesAPI {
     if (payload === null) throw new RequestError('INVALID_RESPONSE', 'Rushes returned an unreadable response.');
     return payload as T;
   }
+  async putChunk(value: string, token: string, body: Blob, signal: AbortSignal): Promise<{acknowledged: true}> {
+    const url = new URL(trustedURL(value));
+    if (url.origin !== location.origin) throw new RequestError('UPLOAD_ORIGIN','The raw upload grant has an unexpected origin.');
+    if (!this.csrf || this.loggingOut) throw new RequestError('SIGN_IN_REQUIRED','Sign in again before uploading saved chunks.');
+    const headers = {'X-CSRF-Token':this.csrf,Authorization:`Upload ${token}`,'Content-Type':body.type};
+    const deadline = AbortSignal.timeout(60000);
+    let response: Response;
+    try { response = await this.transport(url.href,{method:'PUT',headers,body,credentials:'same-origin',signal:AbortSignal.any([signal,deadline])}); }
+    catch (error) { if (signal.aborted) throw error; throw new RequestError(deadline.aborted ? 'NETWORK_TIMEOUT' : 'NETWORK','Raw backup could not reach Rushes. Local saved bytes remain available.'); }
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || payload?.acknowledged !== true) throw new RequestError(payload?.error?.code ?? 'CHUNK_UPLOAD',payload?.error?.message ?? 'Raw backup was not acknowledged.',response.status);
+    return {acknowledged:true};
+  }
   config() { return this.request<BrowserConfig>('/api/config'); }
-  async session() { const result = await this.request<SessionResponse>('/api/session'); this.setSession(result); return result; }
-  logout() { return this.request<{ok: true}>('/api/logout', 'POST', {}); }
+  async session() { if (this.loggingOut) throw new RequestError('SESSION_TRANSITION','Sign-out is in progress.'); const revision = ++this.authRevision; const result = await this.request<SessionResponse>('/api/session'); if (revision !== this.authRevision) throw new RequestError('STALE_SESSION','This older account response was ignored.'); this.csrf = result.csrfToken; return result; }
+  async logout() { this.invalidateSessionReads(); this.loggingOut = true; try { const result = await this.request<{ok: true}>('/api/logout', 'POST', {}); this.setSession({user:null,csrfToken:null}); return result; } finally { this.loggingOut = false; } }
   library(cursor?: string) { return this.request<LibraryResponse>(`/api/recordings${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ''}`); }
   create(input: CreateRecordingInput, signal?: AbortSignal) { return this.request<RecordingDetail>('/api/recordings', 'POST', input, signal); }
-  recording(id: string) { return this.request<RecordingDetail>(`/api/recordings/${encodeURIComponent(id)}`); }
+  recording(id: string, signal?: AbortSignal) { return this.request<RecordingDetail>(`/api/recordings/${encodeURIComponent(id)}`, 'GET', undefined, signal); }
   rename(id: string, title: string) { return this.request<RecordingDetail>(`/api/recordings/${encodeURIComponent(id)}`, 'PATCH', { title }); }
   remove(id: string) { return this.request<{state: 'deleting' | 'deleted'}>(`/api/recordings/${encodeURIComponent(id)}`, 'DELETE'); }
   chunks(id: string, signal?: AbortSignal) { return this.request<{chunks: ChunkDescriptor[]}>(`/api/recordings/${encodeURIComponent(id)}/chunks`, 'GET', undefined, signal); }

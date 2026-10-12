@@ -22,6 +22,7 @@ function App() {
   const [config, setConfig] = useState<BrowserConfig | null>(null);
   const [session, setSession] = useState<SessionResponse>({user: null, csrfToken: null});
   const sessionCurrent = useRef<SessionResponse>({user: null,csrfToken:null});
+  const authEpoch = useRef(0);
   const [library, setLibrary] = useState<LibraryResponse | null>(null);
   const [store, setStore] = useState<DraftStore | null>(null);
   const [drafts, setDrafts] = useState<DraftManifest[]>([]);
@@ -45,13 +46,13 @@ function App() {
   const guide = useGuide();
   const onBusy = useCallback((value: boolean) => setCaptureBusy(value), []);
   async function loadDrafts(next = storeCurrent.current) { if (!next) return; setDrafts((await next.list()).sort((a,b) => b.createdAt.localeCompare(a.createdAt))); }
-  const refresh = useCallback(async () => { const current = await api.session(); sessionCurrent.current = current; setSession(current); if (current.user) { const result = await api.library(); if (sessionCurrent.current.user?.id === current.user.id) setLibrary(result); } else setLibrary(null); }, []);
+  const refresh = useCallback(async () => { const revision = ++authEpoch.current; const current = await api.session(); if (revision !== authEpoch.current) return; sessionCurrent.current = current; setSession(current); if (current.user) { const result = await api.library(); if (revision === authEpoch.current && sessionCurrent.current.user?.id === current.user.id) setLibrary(result); } else setLibrary(null); }, []);
   useEffect(() => {
-    let current = true;
+    let current = true; const revision = authEpoch.current;
     void Promise.allSettled([api.config(), api.session()]).then(async ([configResult, sessionResult]) => {
       if (!current) return;
       if (configResult.status === 'fulfilled') setConfig(configResult.value); else setNetworkError('Cloud service is unavailable. Local recording works independently when browser capture and storage are supported.');
-      if (sessionResult.status === 'fulfilled') { sessionCurrent.current = sessionResult.value; setSession(sessionResult.value); if (sessionResult.value.user) try { const result = await api.library(); if (current && sessionCurrent.current.user?.id === sessionResult.value.user?.id) setLibrary(result); } catch (value) { if (current) setNetworkError(errorMessage(value)); } }
+      if (revision === authEpoch.current && sessionResult.status === 'fulfilled') { sessionCurrent.current = sessionResult.value; setSession(sessionResult.value); if (sessionResult.value.user) try { const result = await api.library(); if (current && revision === authEpoch.current && sessionCurrent.current.user?.id === sessionResult.value.user?.id) setLibrary(result); } catch (value) { if (current) setNetworkError(errorMessage(value)); } }
     });
     void createDraftStore().then(async next => { if (!current) return; storeCurrent.current = next; setStore(next); await loadDrafts(next); }).catch(value => { if (current) setStorageError(errorMessage(value)); });
     void navigator.storage?.persisted().then(value => { if (current) setPersistent(value); }).catch(() => {});
@@ -75,16 +76,18 @@ function App() {
   async function requestPersistence() { try { const allowed = await navigator.storage.persist(); setPersistent(allowed); setMessage(allowed ? 'Persistent browser storage granted. Keep downloads or a backup folder for important recordings.' : 'This browser did not grant persistent storage. Choose a backup folder or download your originals after recording.'); } catch (value) { setMessage(errorMessage(value)); } }
   function openDraft(value: DraftManifest) { setDraft(value); setPage('drafts'); setMessage(''); }
   async function completed(value: DraftManifest) { setCaptureBusy(false); setDraft(value); setPage('drafts'); await loadDrafts(); if (value.cloudRecordingId && value.state === 'complete') void startUpload(value); }
-  async function logout() { await api.logout(); uploadController.current?.abort(); liveBackups.current.forEach(lane => { void lane.cancel(); }); liveBackups.current.clear(); api.setSession({user: null,csrfToken: null}); sessionCurrent.current = {user:null,csrfToken:null}; setSession({user:null,csrfToken:null}); setLibrary(null); setMessage('Signed out. Local drafts stay on this browser.'); }
+  async function logout() { authEpoch.current++; uploadController.current?.abort(); liveBackups.current.forEach(lane => { void lane.cancel(); }); liveBackups.current.clear(); await api.logout(); authEpoch.current++; api.setSession({user: null,csrfToken: null}); sessionCurrent.current = {user:null,csrfToken:null}; setSession({user:null,csrfToken:null}); setLibrary(null); setMessage('Signed out. Local drafts stay on this browser.'); }
   const canUpload = !!session.user && !!config?.hostingEnabled && !!config.streamConfigured && !!library?.usage.subscription.canUpload;
   const uploadReason = !session.user ? 'Sign in from Cloud account to host this recording.' : !config?.hostingEnabled || !config.streamConfigured ? 'Cloud hosting is not configured on this deployment yet.' : !library?.usage.subscription.canUpload ? 'Upload access needs an active server-confirmed subscription. Open Cloud account to check billing and usage.' : '';
   async function startUpload(target: DraftManifest | null = draft) {
     if (!store || !target || !canUpload || uploadRunning) return;
+    const revision = authEpoch.current; const owner = sessionCurrent.current.user?.id;
     const id = target.id; const controller = new AbortController(); uploadController.current = controller; uploadingId.current = id;
     setUploadRunning(true); setUploadPaused(false); setMessage('');
     try {
       const lane = liveBackups.current.get(id); if (lane) { await lane.cancel(); liveBackups.current.delete(id); }
       const result = await uploadDraft({api,store,id,signal:controller.signal,onProgress:setUploadProgress});
+      if (revision !== authEpoch.current || owner !== sessionCurrent.current.user?.id) return;
       setMessage(result.state === 'ready' ? 'Your video is ready in the private cloud library.' : 'Upload complete. Cloud processing is still pending; check its status in the cloud library.');
       await refresh();
     } catch (value) {
@@ -125,10 +128,10 @@ function App() {
   useEffect(() => { if (session.user) void retryCleanups(); }, [session.user?.id]);
   async function removeLocal() { if (!store || !draft || !confirm('Delete this local draft and its saved chunks? Download anything you want to keep first. Cloud copies are managed separately.')) return; try { await store.remove(draft.id); setDraft(null); await loadDrafts(); } catch (value) { setMessage(errorMessage(value)); } }
   async function loadMore() {
-    const cursor = library?.nextCursor; const owner = sessionCurrent.current.user?.id;
+    const revision = authEpoch.current; const cursor = library?.nextCursor; const owner = sessionCurrent.current.user?.id;
     if (!cursor || !owner) return;
     const next = await api.library(cursor);
-    if (sessionCurrent.current.user?.id !== owner) return;
+    if (revision !== authEpoch.current || sessionCurrent.current.user?.id !== owner) return;
     setLibrary(current => current ? { ...next, recordings: Array.from(new Map([...current.recordings, ...next.recordings].map(item => [item.id,item])).values()) } : current);
   }
   function navigate(value: Page) { if (captureBusy) return; setPage(value); setDraft(null); }

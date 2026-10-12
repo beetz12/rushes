@@ -15,11 +15,12 @@ async function fixture(options = {}) {
   const store = {load:async()=>structuredClone(manifest),save:async value=>{manifest=structuredClone(value);saved.push(structuredClone(value));},readChunk:async()=>recording,trackBlob:async()=>recording};
   async function transport(url,init={}) {
     const path = new URL(url,location.origin).pathname; const method = init.method ?? 'GET'; requests.push({path,method,headers:init.headers,credentials:init.credentials});
+    if (path === '/api/recordings/remote-1') return json({id:'remote-1',state:'draft',mode:'screen',manifest:null});
     if (path === '/api/recordings') return json({id:'remote-1',state:'draft'});
     if (path.endsWith('/chunks') && options.offline) throw new TypeError('Offline synthetic network');
     if (path.endsWith('/chunks')) return json({chunks:options.conflict ? [{...chunk,sha256:'a'.repeat(64)}] : accepted});
     if (path.endsWith('/chunks/grant')) return json({url:'/api/raw/0',token:'test-capability',expiresAt:new Date(Date.now()+60000).toISOString(),acknowledged:accepted.length>0});
-    if (path === '/api/raw/0') { assert.equal(init.headers.Authorization,'Upload test-capability'); accepted=[chunk]; return json({acknowledged:true}); }
+    if (path === '/api/raw/0') { assert.equal(init.headers.Authorization,'Upload test-capability'); assert.equal(init.headers['X-CSRF-Token'],'csrf-proof'); accepted=[chunk]; return json({acknowledged:true}); }
     if (path.endsWith('/finalize')) return json({state:'uploading',upload:{uid:'provider-1',url:'https://upload.example.test/fixture',expiresAt:new Date(Date.now()+60000).toISOString()}});
     if (path.endsWith('/process')) return json({id:'remote-1',state:'processing'});
     if (method === 'HEAD') {
@@ -92,4 +93,14 @@ test('live offline failure pauses only backup and retry preserves recorded bytes
   const lane=createLiveBackup({...f,id:'local-1',onProgress:()=>{done++;},onError:message=>errors.push(message)});lane.enqueue();await until(()=>errors.length===1);
   for(let checkpoint=0;checkpoint<100;checkpoint++)lane.enqueue();assert.equal(f.manifest.state,'recording');assert.equal((await f.store.trackBlob()).size,9);assert.equal(f.requests.filter(item=>item.path.endsWith('/chunks')).length,1);
   f.options.offline=false;lane.retry();await until(()=>done>0);await lane.cancel();assert.equal(f.requests.filter(item=>item.path==='/api/raw/0').length,1);assert.equal(f.manifest.cloudRecordingId,'remote-1');
+});
+
+test('late session reads cannot restore CSRF after logout and newest same-user session wins',async()=>{
+  let releaseOld;let held=true;const headers=[];
+  const api=new RushesAPI(async(path,init)=>{headers.push(init.headers);if(path==='/api/session'&&held)return new Promise(resolve=>{releaseOld=()=>resolve(json({user:{id:'same-user'},csrfToken:'old-csrf'}));});if(path==='/api/session')return json({user:{id:'same-user'},csrfToken:'new-csrf'});return json({ok:true});});
+  api.setSession({user:{id:'same-user'},csrfToken:'initial-csrf'});const stale=api.session();const rejected=assert.rejects(stale,value=>value.code==='STALE_SESSION');await api.logout();releaseOld();await rejected;await assert.rejects(api.checkout(),value=>value.code==='SIGN_IN_REQUIRED');
+  const older=api.session();const obsolete=assert.rejects(older,value=>value.code==='STALE_SESSION');held=false;await api.session();releaseOld();await obsolete;await api.checkout();assert.equal(headers.at(-1)['X-CSRF-Token'],'new-csrf');
+});
+test('failed logout retains visible usable session instead of claiming successful revocation',async()=>{
+  const api=new RushesAPI(async path=>path==='/api/logout'?json({error:{code:'TEMPORARY',message:'Try again.'}},503):json({url:'https://checkout.stripe.com/test'}));api.setSession({user:{id:'same-user'},csrfToken:'usable-csrf'});await assert.rejects(api.logout(),value=>value.code==='TEMPORARY');await assert.doesNotReject(api.checkout());
 });

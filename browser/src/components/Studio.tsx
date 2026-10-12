@@ -35,6 +35,11 @@ export function Studio({ store, persistent, backupFolder, storageError, chooseBa
   const session = useRef<CaptureSession | null>(null);
   const sources = useRef<MediaStream[]>([]);
   const generation = useRef(0);
+  const deviceRequests = useRef({camera:0,microphone:0});
+  const devicePending = useRef({camera:false,microphone:false});
+  const liveDevices = useRef<{camera?:MediaStream;microphone?:MediaStream}>({});
+  const preparing = useRef(false);
+  function invalidateDevices() { generation.current++; deviceRequests.current.camera++; deviceRequests.current.microphone++; devicePending.current = {camera:false,microphone:false}; }
   const takeId = useRef('');
   const finished = useRef(false);
   const complete = useRef(onComplete); complete.current = onComplete;
@@ -45,9 +50,9 @@ export function Studio({ store, persistent, backupFolder, storageError, chooseBa
   const active = ['recording','paused','stopping'].includes(status);
   const capability = captureCapabilities();
   const supported = capability.supported && !!navigator.mediaDevices?.getDisplayMedia;
-  function stopSources() { for (const stream of sources.current) for (const track of stream.getTracks()) track.stop(); sources.current = []; setCamera(undefined); setMicrophone(undefined); setScreen(undefined); setPreview(undefined); }
+  function stopSources() { liveDevices.current = {}; for (const stream of sources.current) for (const track of stream.getTracks()) track.stop(); sources.current = []; setCamera(undefined); setMicrophone(undefined); setScreen(undefined); setPreview(undefined); }
   useEffect(() => { onBusy(live || working); }, [live, working, onBusy]);
-  useEffect(() => () => { generation.current++; cancelled.current?.abort(); for (const stream of sources.current) stream.getTracks().forEach(track => track.stop()); if (session.current && ['ready','recording','paused','countdown'].includes(state.current)) void session.current.cancel().catch(() => {}); }, []);
+  useEffect(() => () => { invalidateDevices(); cancelled.current?.abort(); for (const stream of sources.current) stream.getTracks().forEach(track => track.stop()); if (session.current && ['ready','recording','paused','countdown'].includes(state.current)) void session.current.cancel().catch(() => {}); }, []);
   useEffect(() => {
     if (!microphone) { setLevel(0); return; }
     const context = new AudioContext();
@@ -67,21 +72,22 @@ export function Studio({ store, persistent, backupFolder, storageError, chooseBa
   async function enable(kind: 'camera' | 'microphone', id = '') {
     if (live || working) return;
     setError(''); setWorking(true);
-    const revision = generation.current;
+    const revision = generation.current; const deviceRevision = ++deviceRequests.current[kind]; devicePending.current[kind] = true;
     try {
       const stream = await navigator.mediaDevices.getUserMedia(kind === 'camera' ? {video: {deviceId: id ? {exact: id} : undefined, width: {ideal: 1280, max: 1280}, height: {ideal: 720, max: 720}, frameRate: {ideal: 30, max: 30}}, audio: false} : {audio: {deviceId: id ? {exact: id} : undefined}, video: false});
-      if (revision !== generation.current) { stream.getTracks().forEach(track => track.stop()); return; }
+      if (revision !== generation.current || deviceRevision !== deviceRequests.current[kind]) { stream.getTracks().forEach(track => track.stop()); return; }
       const previous = kind === 'camera' ? camera : microphone;
       previous?.getTracks().forEach(track => track.stop());
       sources.current = sources.current.filter(source => source !== previous).concat(stream);
       const selected = stream.getTracks()[0].getSettings().deviceId ?? id;
+      liveDevices.current[kind] = stream;
       if (kind === 'camera') { setCamera(stream); setCameraId(selected); } else { setMicrophone(stream); setMicId(selected); }
       setDevices(await navigator.mediaDevices.enumerateDevices());
-      stream.getTracks().forEach(track => track.addEventListener('ended', () => { if (!['recording','paused','stopping'].includes(state.current)) { if (kind === 'camera') setCamera(undefined); else setMicrophone(undefined); setWarning(`${kind === 'camera' ? 'Camera' : 'Microphone'} disconnected. Enable it again or choose another device.`); } }, { once: true }));
-    } catch (value) { setError(`${kind === 'camera' ? 'Camera' : 'Microphone'} access: ${errorMessage(value)}. Check the browser site permissions and the operating system privacy settings.`); }
-    finally { setWorking(false); }
+      stream.getTracks().forEach(track => track.addEventListener('ended', () => { if (liveDevices.current[kind] === stream && !['recording','paused','stopping'].includes(state.current)) { delete liveDevices.current[kind]; if (kind === 'camera') setCamera(undefined); else setMicrophone(undefined); setWarning(`${kind === 'camera' ? 'Camera' : 'Microphone'} disconnected. Enable it again or choose another device.`); } }, { once: true }));
+    } catch (value) { if (revision !== generation.current || deviceRevision !== deviceRequests.current[kind]) return; setError(`${kind === 'camera' ? 'Camera' : 'Microphone'} access: ${errorMessage(value)}. Check the browser site permissions and the operating system privacy settings.`); }
+    finally { if (deviceRevision === deviceRequests.current[kind]) { devicePending.current[kind] = false; if (!preparing.current) setWorking(devicePending.current.camera || devicePending.current.microphone); } }
   }
-  function disable(kind: 'camera' | 'microphone') { const stream = kind === 'camera' ? camera : microphone; stream?.getTracks().forEach(track => track.stop()); sources.current = sources.current.filter(item => item !== stream); if (kind === 'camera') setCamera(undefined); else setMicrophone(undefined); }
+  function disable(kind: 'camera' | 'microphone') { deviceRequests.current[kind]++; devicePending.current[kind] = false; if (!preparing.current) setWorking(devicePending.current.camera || devicePending.current.microphone); const stream = kind === 'camera' ? camera : microphone; delete liveDevices.current[kind]; stream?.getTracks().forEach(track => track.stop()); sources.current = sources.current.filter(item => item !== stream); if (kind === 'camera') setCamera(undefined); else setMicrophone(undefined); }
   async function finishOnce() {
     if (finished.current || !store || !takeId.current) return;
     try { const manifest = await store.load(takeId.current); if (['complete','interrupted','failed'].includes(manifest.state)) { finished.current = true; stopSources(); complete.current(manifest); } }
@@ -90,7 +96,7 @@ export function Studio({ store, persistent, backupFolder, storageError, chooseBa
   function clearReservation(id: string, reserved: string | null) { if (reserved) { cloudId.current = null; cloud.discard(id,reserved); } }
   async function prepare(chosenScreen?: MediaStream, id = crypto.randomUUID(), reserved?: string) {
     const revision = generation.current;
-    const abort = new AbortController(); cancelled.current = abort;
+    const abort = new AbortController(); cancelled.current = abort; preparing.current = true;
     setWorking(true); setError(''); setWarning(''); setDuration(0); setCheckpoint(0); finished.current = false;
     takeId.current = id; cloudId.current = reserved ?? null;
     let encodingAttempted = false;
@@ -120,10 +126,11 @@ export function Studio({ store, persistent, backupFolder, storageError, chooseBa
       }
       if (session.current) await session.current.cancel().catch(() => {});
       clearReservation(id,cloudId.current); session.current = null; stopSources(); setStatus('setup');
-    } finally { setWorking(false); }
+    } finally { preparing.current = false; setWorking(false); }
   }
   function reserve(id: string) { return cloudBackup ? cloud.reserve({clientId:id,title:title.trim() || 'Untitled recording',mode}) : Promise.resolve(undefined); }
   function chooseScreen() {
+    invalidateDevices(); preparing.current = true;
     const id = crypto.randomUUID(); takeId.current = id;
     // Reservation begins first, but this same click reaches the picker without an await.
     const reservation = reserve(id); void reservation.catch(() => {});
@@ -135,15 +142,16 @@ export function Studio({ store, persistent, backupFolder, storageError, chooseBa
       if (failed || revision !== generation.current) { stream.getTracks().forEach(track => track.stop()); throw new DOMException('Screen selection cancelled','AbortError'); }
       sources.current.push(stream); setScreen(stream); return stream;
     }).then(async stream => { const reserved = await reservation; if (revision !== generation.current) { stream.getTracks().forEach(track => track.stop()); clearReservation(id,reserved ?? null); return; } return prepare(stream,id,reserved); }).catch(value => {
-      failed = true; stopSources(); setWorking(false); setStatus('setup');
+      failed = true; preparing.current = false; stopSources(); setWorking(false); setStatus('setup');
       void reservation.then(reserved => clearReservation(id,reserved ?? null)).catch(() => {});
       setError(value instanceof DOMException && ['NotAllowedError','AbortError'].includes(value.name) ? 'Screen selection cancelled or denied. Choose screen again when you are ready; nothing was recorded.' : `Recording setup: ${errorMessage(value)}. No encoding started. Check browser permissions and cloud access before retrying.`);
     });
   }
   async function startCamera() {
+    invalidateDevices(); preparing.current = true;
     const id = crypto.randomUUID(); takeId.current = id; setWorking(true); setError('');
     try { await prepare(undefined,id,await reserve(id)); }
-    catch (value) { stopSources(); setWorking(false); setStatus('setup'); setError(`Cloud reservation: ${errorMessage(value)}. Recording did not start.`); }
+    catch (value) { preparing.current = false; stopSources(); setWorking(false); setStatus('setup'); setError(`Cloud reservation: ${errorMessage(value)}. Recording did not start.`); }
   }
   async function cancel() { finished.current = true; generation.current++; cancelled.current?.abort(); setWorking(true); try { await session.current?.cancel(); } catch (value) { setError(errorMessage(value)); } finally { clearReservation(takeId.current,cloudId.current); session.current = null; stopSources(); setStatus('setup'); setWorking(false); } }
   async function control(action: 'pause' | 'resume' | 'stop') { setWorking(true); setError(''); try { if (!session.current) return; if (action === 'stop') { setStatus('stopping'); const result = await session.current.stop(); if (!finished.current) { finished.current = true; stopSources(); complete.current(result); } } else { await session.current[action](); setStatus(action === 'pause' ? 'paused' : 'recording'); } } catch (value) { setError(errorMessage(value)); stopSources(); await finishOnce(); setStatus('failed'); } finally { setWorking(false); } }
@@ -164,7 +172,7 @@ export function Studio({ store, persistent, backupFolder, storageError, chooseBa
     <div className="studio-grid">
       <div className="setup-panel">
         <div className="section-label">01 <span>What are we recording?</span></div>
-        <div className="mode-options" data-guide="mode">{([['screen-camera','screen','Screen + camera'],['screen','screen','Screen'],['camera','camera','Camera']] as const).map(([value, icon, label]) => <button key={value} disabled={live || working} className={mode === value ? 'selected' : ''} aria-pressed={mode === value} onClick={() => { setMode(value); if (value === 'screen') disable('camera'); }}><Icon name={icon}/><span>{label}</span>{mode === value && <Icon name="check" size={14}/>}</button>)}</div>
+        <div className="mode-options" data-guide="mode">{([['screen-camera','screen','Screen + camera'],['screen','screen','Screen'],['camera','camera','Camera']] as const).map(([value, icon, label]) => <button key={value} disabled={live || working} className={mode === value ? 'selected' : ''} aria-pressed={mode === value} onClick={() => { invalidateDevices(); setMode(value); if (value === 'screen') disable('camera'); }}><Icon name={icon}/><span>{label}</span>{mode === value && <Icon name="check" size={14}/>}</button>)}</div>
         <label className="field">Recording title <input maxLength={160} placeholder="e.g. A quick product walkthrough" value={title} disabled={live} onChange={event => setTitle(event.target.value)}/></label>
         <div className="section-label">02 <span>Your picture and sound</span></div>
         <div className="device-options" data-guide="devices">

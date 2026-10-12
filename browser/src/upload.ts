@@ -75,7 +75,6 @@ type BackupOptions = {
 };
 export async function backupDraft(options: BackupOptions): Promise<void> {
   const { api, store, id, signal, onProgress } = options;
-  const transport = options.transport ?? fetch;
   const manifest = await store.load(id);
   const cloudId = manifest.cloudRecordingId;
   if (!cloudId) throw new RequestError('NO_CLOUD_RESERVATION', 'This take has no private cloud reservation. Local bytes stay saved.');
@@ -99,9 +98,7 @@ export async function backupDraft(options: BackupOptions): Promise<void> {
         const uploadURL = new URL(trustedURL(grant.url));
         if (uploadURL.origin !== location.origin) throw new RequestError('UPLOAD_ORIGIN', 'The raw upload grant has an unexpected origin.');
         try {
-          const response = await transport(uploadURL.href, { method: 'PUT', credentials: 'same-origin', signal:AbortSignal.any([signal,AbortSignal.timeout(60000)]), headers: { Authorization: `Upload ${grant.token}`, 'Content-Type': chunk.mimeType }, body: bytes });
-          const result = await response.json().catch(() => null);
-          if (!response.ok || result?.acknowledged !== true) throw new RequestError(result?.error?.code ?? 'CHUNK_UPLOAD', result?.error?.message ?? 'Raw backup was not acknowledged.', response.status);
+          await api.putChunk(uploadURL.href,grant.token,bytes,signal);
           break;
         } catch (error) {
           if (signal.aborted || (error instanceof RequestError && error.status > 0 && error.status < 500 && error.status !== 401 && error.status !== 403)) throw error;
@@ -115,6 +112,15 @@ export async function backupDraft(options: BackupOptions): Promise<void> {
   }
 }
 
+function verifiedReady(detail: RecordingDetail, manifest: DraftManifest, cloudId: string): RecordingDetail {
+  const remote = detail.manifest;
+  const matches = detail.id === cloudId && remote?.id === manifest.id && remote.schema === manifest.schema && detail.mode === manifest.mode && manifest.tracks.every(track => {
+    const other = remote.tracks.find(item => item.kind === track.kind);
+    return other?.chunks.length === track.chunks.length && track.chunks.every((chunk,index) => { const saved = other.chunks[index]; return saved.sequence === chunk.sequence && saved.sha256 === chunk.sha256 && saved.bytes === chunk.bytes; });
+  });
+  if (detail.state !== 'ready' || !matches) throw new RequestError('CLOUD_RECORDING_MISMATCH','The service did not confirm a ready recording matching this local draft. Local originals stay saved.');
+  return detail;
+}
 export async function uploadDraft(options: {
   api: RushesAPI; store: DraftStore; id: string; signal: AbortSignal;
   onProgress: (progress: UploadProgress) => void; transport?: typeof fetch;
@@ -129,12 +135,26 @@ export async function uploadDraft(options: {
     await store.save(manifest);
   }
   const cloudId = manifest.cloudRecordingId!;
+  const existing = await api.recording(cloudId,signal);
+  if (existing.state === 'ready') return verifiedReady(existing,manifest,cloudId);
+  if (existing.state === 'deleting' || existing.state === 'deleted') throw new RequestError('RECORDING_REMOVED','This cloud recording is being deleted. Local originals remain available.');
   await backupDraft(options);
   onProgress({ phase: 'hashing', completed: 0, total: 1 });
   const composed = await store.trackBlob(id, 'composed');
   if (!composed.size) throw new RequestError('NO_COMPOSED_VIDEO', 'The composed recording has no saved bytes. Download the originals.');
   const finalize = { manifest, composed: { bytes: composed.size, sha256: await blobDigest(composed, signal), mimeType: composed.type } };
-  let grant: UploadGrant = (await api.finalize(cloudId, finalize, signal)).upload;
+  async function requestGrant(): Promise<{grant:UploadGrant; ready?:never} | {ready:RecordingDetail; grant?:never}> {
+    try { return {grant:(await api.finalize(cloudId,finalize,signal)).upload}; }
+    catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'ALREADY_READY') {
+        const detail = await api.recording(cloudId,signal);
+        return {ready:verifiedReady(detail.state === 'ready' ? detail : await api.process(cloudId,signal),manifest,cloudId)};
+      }
+      throw error;
+    }
+  }
+  const initial = await requestGrant(); if (initial.ready) return initial.ready;
+  let grant: UploadGrant = initial.grant;
   const journal = async (offset: number) => {
     manifest = { ...manifest, upload: { ...grant, offset } };
     await store.save(manifest);
@@ -145,7 +165,7 @@ export async function uploadDraft(options: {
   while (true) {
     signal.throwIfAborted();
     if (Date.parse(grant.expiresAt) <= Date.now()) {
-      grant = (await api.finalize(cloudId, finalize, signal)).upload;
+      const refreshed = await requestGrant(); if (refreshed.ready) return refreshed.ready; grant = refreshed.grant;
       if (Date.parse(grant.expiresAt) <= Date.now()) throw new RequestError('UPLOAD_EXPIRED', 'This upload expired. Your local originals remain available; retry when Rushes can issue a fresh upload.');
     }
     try {
@@ -170,12 +190,13 @@ export async function uploadDraft(options: {
     } catch (error) {
       if (signal.aborted || (error instanceof RequestError && ['UPLOAD_OFFSET', 'UPLOAD_LENGTH'].includes(error.code))) throw error;
       if (++failures >= 3) throw error;
-      if (error instanceof RequestError && [401,403,404,410].includes(error.status)) grant = (await api.finalize(cloudId, finalize, signal)).upload;
+      if (error instanceof RequestError && [401,403,404,410].includes(error.status)) { const refreshed = await requestGrant(); if (refreshed.ready) return refreshed.ready; grant = refreshed.grant; }
       await delay(750 * failures, signal);
     }
   }
   onProgress({ phase: 'processing', completed: 1, total: 1 });
-  return api.process(cloudId, signal);
+  const result = await api.process(cloudId, signal);
+  return result.state === 'ready' ? verifiedReady(result,manifest,cloudId) : result;
 }
 
 // One running request per take, one coalesced pending checkpoint. No media bytes are queued here.
