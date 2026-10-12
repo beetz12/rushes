@@ -48,4 +48,31 @@ and Rushes' own windows are excluded by the native screen capture filter.
 Camera and other protected overlays retain their existing behavior. The
 picker's specific title is preserved for native window selection.
 
-Final installed acceptance is pending.
+Final acceptance passed on `/Applications/Rushes.app`, source
+`873f588d2e8828815029c7fd05ec48f6678fa4bd`, signed with David's existing Apple
+Development identity. Signature and packaged source hashes matched the staged
+build. The previous installed app is preserved in the private proof directory.
+
+- The display-sized picker opened as `Rushes — Select recording area` without
+  native fullscreen. A drag from screenshot pixels (600,400) to (1800,1300)
+  produced a 600 × 450-point rectangle on the Retina display.
+- Confirmation restored the recorder and saved exactly
+  `{x:300,y:200,width:600,height:450}` on `display-1`.
+- Reopening then pressing Escape restored the recorder and preserved that crop.
+  The Cancel button also restored the recorder in the preceding installed check.
+- Starting from the installed recorder created take
+  `01M4R9ABDCCKBTQDD7SMC8JB5J`, duration 9.729 seconds. All four screen, camera,
+  microphone and system-audio tracks passed the native decode verification.
+- `ffprobe` reported `screen.mov` at 1200 × 900 pixels, HEVC, duration 9.728333
+  seconds, matching the selected point area at 2× display scale. An extracted
+  frame visibly contained the underlying desktop, rather than a blank image.
+- Native status returned idle with no warnings. Rushes was left in the recorder
+  with Start recording available. Auto-share was false; the take remains local.
+
+The final merged-tree umbrella gate passed again, exit 0, with the same test
+counts. Private logs, original-app backup and test-frame evidence are in
+`~/.goal-loop/loom-clone/host/2026-10-12-area-picker/`. Screenshot captures of a
+transparent window isolate its own layer; they do not by themselves show the
+composited desktop underneath. Crop video verification independently established
+that desktop capture was nonblank. No second physical monitor was attached;
+negative-origin display coordinates are covered by the geometry regression.
