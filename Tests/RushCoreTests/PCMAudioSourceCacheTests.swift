@@ -36,8 +36,7 @@ private struct PCMSourceFixture {
         var tailInput: AVAssetWriterInput?
         var adaptor: AVAssetWriterInputPixelBufferAdaptor?
         if videoTail {
-            let video = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264,
-                AVVideoWidthKey: 16, AVVideoHeightKey: 16])
+            let video = AVAssetWriterInput(mediaType: .video, outputSettings: fixtureH264Settings(width: 16, height: 16))
             video.expectsMediaDataInRealTime = true
             writer.add(video); tailInput = video
             adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: video, sourcePixelBufferAttributes: [

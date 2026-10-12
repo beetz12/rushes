@@ -166,7 +166,11 @@ final class NativeRenderer: @unchecked Sendable {
             let bitrate=options.preset == .youtube ? Double(dimensions.0*dimensions.1)*16_000_000/(1920*1080) : Double(dimensions.0*dimensions.1*options.fps)*0.15
             var compression:[String:Any]=[AVVideoAverageBitRateKey:Int(bitrate),AVVideoExpectedSourceFrameRateKey:options.fps,AVVideoMaxKeyFrameIntervalKey:options.fps*2]
             if options.codec == "h264" { compression[AVVideoProfileLevelKey]=AVVideoProfileLevelH264HighAutoLevel }
-            let input=AVAssetWriterInput(mediaType:.video,outputSettings:[AVVideoCodecKey:options.codec == "hevc" ? AVVideoCodecType.hevc : .h264,AVVideoWidthKey:dimensions.0,AVVideoHeightKey:dimensions.1,AVVideoCompressionPropertiesKey:compression])
+            var videoSettings:[String:Any]=[AVVideoCodecKey:options.codec == "hevc" ? AVVideoCodecType.hevc : .h264,AVVideoWidthKey:dimensions.0,AVVideoHeightKey:dimensions.1,AVVideoCompressionPropertiesKey:compression]
+            if ProcessInfo.processInfo.environment["CI"] == "true" {
+                videoSettings[AVVideoEncoderSpecificationKey]=["EnableHardwareAcceleratedVideoEncoder":false]
+            }
+            let input=AVAssetWriterInput(mediaType:.video,outputSettings:videoSettings)
             guard writer.canAdd(input) else { throw renderFailure("Cannot encode video") }
             writer.add(input); videoInput=input
             adaptor=AVAssetWriterInputPixelBufferAdaptor(assetWriterInput:input,sourcePixelBufferAttributes:[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_32BGRA,kCVPixelBufferWidthKey as String:dimensions.0,kCVPixelBufferHeightKey as String:dimensions.1,kCVPixelBufferIOSurfacePropertiesKey as String:[:]])
@@ -232,7 +236,12 @@ final class NativeRenderer: @unchecked Sendable {
             try await finishWriting(writer, within: 90)
             try Task.checkCancellation()
         } catch {
-            audioTask?.cancel(); writer.cancelWriting()
+            audioTask?.cancel()
+            // cancelWriting while finishWriting is still inside VideoToolbox
+            // segfaults on the CI VM. Abandon a stalled finish instead.
+            if (error as? ControlFailure)?.payload.code != "encoder-stalled" {
+                writer.cancelWriting()
+            }
             _=await audioTask?.result
             try? FileManager.default.removeItem(at:target); throw error
         }
@@ -306,8 +315,9 @@ func finishWriting(_ writer: AVAssetWriter, within seconds: Double) async throws
         }
     }
     guard writer.status == .completed else {
-        if writer.status == .writing { writer.cancelWriting() }
-        throw renderFailure(writer.error?.localizedDescription ?? "Writer did not finish within \(Int(seconds)) seconds")
+        throw ControlFailure(
+            code: "encoder-stalled",
+            message: writer.error?.localizedDescription ?? "Writer did not finish within \(Int(seconds)) seconds")
     }
 }
 

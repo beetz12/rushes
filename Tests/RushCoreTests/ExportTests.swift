@@ -28,7 +28,7 @@ struct SyntheticExportFixture {
     static func video(to url:URL,camera:Bool,allGreen:Bool = false,frameCount:Int = 60,spatialHalves:Bool = false) async throws {
         let width=camera ? 160 : 320,height=camera ? 160 : 180
         let writer=try AVAssetWriter(outputURL:url,fileType:.mov)
-        let input=AVAssetWriterInput(mediaType:.video,outputSettings:[AVVideoCodecKey:AVVideoCodecType.h264,AVVideoWidthKey:width,AVVideoHeightKey:height])
+        let input=AVAssetWriterInput(mediaType:.video,outputSettings:fixtureH264Settings(width:width,height:height))
         input.expectsMediaDataInRealTime = true
         let adaptor=AVAssetWriterInputPixelBufferAdaptor(assetWriterInput:input,sourcePixelBufferAttributes:[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_32BGRA,kCVPixelBufferWidthKey as String:width,kCVPixelBufferHeightKey as String:height])
         writer.add(input); guard writer.startWriting() else { throw renderFailure("Fixture writer failed") }; writer.startSession(atSourceTime:.zero)

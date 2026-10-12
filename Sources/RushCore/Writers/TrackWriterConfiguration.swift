@@ -171,7 +171,7 @@ extension TrackWriterConfiguration {
         case .microphone, .systemAudio:
             return nil
         }
-        return [
+        var settings: [String: Any] = [
             AVVideoCodecKey: codec == .hevc ? AVVideoCodecType.hevc : AVVideoCodecType.h264,
             AVVideoWidthKey: width,
             AVVideoHeightKey: height,
@@ -182,6 +182,14 @@ extension TrackWriterConfiguration {
                 AVVideoMaxKeyFrameIntervalDurationKey: 1.0,
             ] as [String: Any],
         ]
+        // GitHub-hosted macOS has no AppleM2ScalerParavirtDriver. Hardware
+        // VideoToolbox never finishes there; software encode does.
+        if ProcessInfo.processInfo.environment["CI"] == "true" {
+            settings[AVVideoEncoderSpecificationKey] = [
+                "EnableHardwareAcceleratedVideoEncoder": false,
+            ]
+        }
+        return settings
     }
 
     /// Output settings for the audio track, or nil for video kinds.

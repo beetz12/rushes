@@ -15,8 +15,8 @@ func waitUntilReadyForMedia(_ input: AVAssetWriterInput, writer: AVAssetWriter) 
             break
         case .blocked:
             // One stuck VideoToolbox call is enough. Further polls would
-            // leak a thread each and can exhaust the process.
-            writer.cancelWriting()
+            // leak a thread each and can exhaust the process. Do not
+            // cancelWriting here: that races the stuck call and segfaults.
             throw renderFailure("\(input.mediaType.rawValue) encoder readiness did not return")
         }
         try Task.checkCancellation()
@@ -25,8 +25,20 @@ func waitUntilReadyForMedia(_ input: AVAssetWriterInput, writer: AVAssetWriter) 
         }
         try await Task.sleep(for: .milliseconds(20))
     }
-    writer.cancelWriting()
     throw renderFailure("\(input.mediaType.rawValue) encoder was not ready within 15 seconds")
+}
+
+/// Tiny fixture movies. The CI VM logs `AppleM2ScalerParavirtDriver` missing
+/// and hardware H.264 never finishes, so these settings ask for a software encoder.
+func fixtureH264Settings(width: Int, height: Int) -> [String: Any] {
+    [
+        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoWidthKey: width,
+        AVVideoHeightKey: height,
+        AVVideoEncoderSpecificationKey: [
+            "EnableHardwareAcceleratedVideoEncoder": false,
+        ],
+    ]
 }
 
 private enum ReadinessProbe {
