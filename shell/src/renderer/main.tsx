@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo, useReducer } from 'react';
+import {
+  appErrors,
+  appErrorText,
+  connectionMessages,
+  initialAppErrors,
+} from '../shared/app-errors';
 import { isConnectionErrorCode } from '../shared/connection-error';
 import { createRoot } from 'react-dom/client';
 import {
@@ -80,13 +86,14 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
 }
 function App() {
   const view = location.hash.slice(1) || 'recorder';
-  const [error, setErrorText] = useState('');
-  const errorCode = useRef<unknown>(undefined);
-  const setError = useCallback((message: string, code?: unknown) => {
-    errorCode.current = code;
-    setErrorText(message);
-  }, []);
+  const [errors, dispatchError] = useReducer(appErrors, initialAppErrors);
   const [note, setNote] = useState('');
+  const error = appErrorText(errors);
+  const setError = useCallback((message: string, code?: unknown) => {
+    dispatchError({ type: 'report', notice: { message, code } });
+    if (isConnectionErrorCode(code))
+      setNote((previous) => (previous === 'Native engine connection restored.' ? '' : previous));
+  }, []);
   const [busy, setBusy] = useState(false);
   const [options, setOptions] = useState<RecordingOptions>(defaultOptions);
   const [status, setStatus] = useState<any>({ state: 'loading' });
@@ -148,7 +155,7 @@ function App() {
         setStatus(e.status ?? { state: e.state });
         setCountdown(null);
         countdownAudio.cancel();
-        if (isConnectionErrorCode(errorCode.current)) setError('');
+        dispatchError({ type: 'verified-recovery' });
         setNote('Native engine connection restored.');
       }
       if (e.event === 'camera-preview-cleared') setPreview('');
@@ -219,7 +226,7 @@ function App() {
         return true;
       },
       (error) => {
-        setError(String(error));
+        setError(String(error), (error as { code?: string })?.code);
         return false;
       },
     );
@@ -478,10 +485,28 @@ function App() {
           </span>
         </header>
         <div className="page">
-          {error && (
-            <div className="alert error" role="alert">
-              {error}
-              <button onClick={() => setError('')}>×</button>
+          {errors.connection && (
+            <div
+              className="alert error"
+              role="alert"
+              aria-label="Recording engine connection error"
+            >
+              <div>
+                {connectionMessages(errors).map((message, index) => (
+                  <div key={index}>{message}</div>
+                ))}
+              </div>
+            </div>
+          )}
+          {errors.action && (
+            <div className="alert error" role="alert" aria-label="Action error">
+              {errors.action.message}
+              <button
+                aria-label="Dismiss action error"
+                onClick={() => dispatchError({ type: 'clear-action' })}
+              >
+                ×
+              </button>
             </div>
           )}
           {note && (
@@ -534,7 +559,7 @@ function App() {
                             return api.request('camera.preview.start', { camera: chosen.camera });
                           return api.request('camera.preview.stop');
                         })
-                        .catch((e) => setError(String(e)));
+                        .catch((e) => setError(String(e), e?.code));
                     }
                   }}
                 >

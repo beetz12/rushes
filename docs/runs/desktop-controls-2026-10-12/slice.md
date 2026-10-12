@@ -262,3 +262,70 @@ verification. The original successful recordings and their exports were neither
 opened nor modified by these generated-byte tests. The native PID change remains
 unattributed. No repository-public push, install, GUI, provider or Beads write
 was performed by this writer.
+
+## Renderer recovery latch design, before implementation
+
+Independent review of `e98c3d7` found that App.run's action-start clear removed
+invalid-json before any fresh-status response or verified recovery event, and a
+pending request's legitimate engine-disconnected rejection replaced the original
+notice. Root approved a narrowly scoped renderer/error-state amendment in
+`f42f59b`.
+
+Connection errors will occupy a separate latched status from ordinary action
+errors. The first connection notice remains the phase's cause; later coded
+connection failures update a latest detail, without erasing that cause or an
+ordinary failure. Both kinds remain visible independently. Action start and
+ordinary dismissal clear only the ordinary slot; successful actions and normal
+events do not clear the connection status. The existing engine-reconnected
+handler is the sole caller of a verified-recovery transition, which clears only
+the connection slot and leaves unrelated action errors intact.
+
+The shared reducer will preserve error codes and messages and make these
+transitions explicit. Main-window connection alerts will have no dismiss control;
+ordinary alerts retain dismissal. Compact bubble/bar/drawing views will consume
+the same combined message representation. Generic catches will keep classifying
+their real codes rather than suppressing them. A new connection failure will
+remove only a prior connection-restored note, so stale success copy cannot
+contradict the current latch; unrelated notes remain. Pure transitions and the actual
+built renderer with a synthetic API/held status promise will test successful
+actions, pending disconnected rejections, ordinary failures/dismissal and
+verified recovery. No native process, device, shared GUI or provider is needed.
+
+## Renderer latch implementation and evidence
+
+App now uses a shared reducer with independent connection and action slots. It
+retains the first connection cause and the latest coded detail, displays ordinary
+failures separately, and clears connection only in the existing verified
+engine-reconnected handler. Main-window connection notices have no dismiss
+button; ordinary dismissal and action-start clears affect only ordinary errors.
+Generic option/preset catches retain their codes. Compact views preserve both
+kinds through the same combined text. A new connection failure removes only
+stale connection-restored copy, leaving unrelated notes alone.
+
+Bounded evidence in the private `build` proof directory:
+
+- `renderer-latch-shell.log`: complete shell suite **128 tests in 18 files**,
+  exit 0. Four new reducer regressions cover first/latest connection errors,
+  action starts/dismissal/success, unrelated failures and verified recovery.
+  The last small stale-note display adjustment subsequently passed those four
+  focused reducer tests and the actual renderer probe again.
+- `renderer-latch-build.log`: final Node22.22 shell build/typecheck exit 0.
+- `renderer-latch-result.json` and `renderer-latch-probe.log`: actual built
+  renderer in isolated headless Chrome155 with a synthetic API and held status
+  promise. A successful Show-preview action and a pending disconnected rejection
+  both retained the original notice at **0 fresh responses / 0 verified events**.
+  A fresh reply alone still retained it at **1 / 0**. Ordinary permission/disk
+  errors stayed visible independently; dismissing ordinary error kept connection
+  latched. Verified recovery at **1 / 1** cleared only connection and left the
+  disk failure visible. Stale restored copy disappeared on a new failure;
+  connection had no dismiss button. Renderer exception list was empty.
+- `renderer-errors-independent.png`: visually inspected independent error
+  notices; all messages/data in this screenshot are generated fixtures.
+- `renderer-latch-clean.log`: changed renderer/helper/test plus this slice scan
+  first line **0**; `git diff --check` exit 0.
+
+The checker's original e98 failure proof remains in the separate read-only
+`review/transport/error-gate-result.json`. This repair did not rerun Swift,
+physical devices, media encoders or the full repository gate during root's M1
+resource window. Root retains independent review, release/install verification
+and owns `release.md`; that file is excluded from this writer's commit.
