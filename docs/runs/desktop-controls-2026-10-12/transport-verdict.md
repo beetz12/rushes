@@ -1,5 +1,10 @@
 # Independent transport review
 
+**Current qualified source verdict: PASS at `71535da`.** The initial renderer
+finding below is resolved by the independently checked reassessment at the end
+of this artifact. Full release and installed physical acceptance remain
+root-owned; this source verdict does not declare those gates complete.
+
 Reviewed on 2026-10-12 by one fresh read-only reviewer against the root amendment
 in `8563fea` and the complete `e98c3d7` source/test/doc diff. Candidate:
 `e98c3d784500fb25721fe170526bf168bda60175`. The existing isolated review checkout
@@ -13,6 +18,9 @@ amendment's error-clearing requirement unmet. No native transport repair or
 recording-lifecycle change is requested by this review.
 
 ## Supported finding
+
+This section preserves the original `e98c3d7` failure; it is resolved at
+`71535da` as documented in the reassessment below.
 
 **[P2] Ordinary actions clear connection status before verified recovery**
 (confidence 90). `shell/src/renderer/main.tsx:110` unconditionally calls
@@ -111,3 +119,70 @@ not infer the cause of the installed invalid-json incident or any native PID
 change. Root's successful recordings and master exports were not opened,
 modified or graded by this reviewer. No public push/PR or shared Beads write was
 performed. This transport verdict is the reviewer's only tracked edit.
+
+## Renderer latch reassessment
+
+On 2026-10-12 the reviewer independently opened the full `71535da` renderer,
+helper, regression and slice diff against the `f42f59b` contract amendment.
+Exact business candidate:
+`71535da3dae9b12ec8b36d99c6c078610007026b`. Its complete `Sources`, `Tests` and
+`shell` trees were snapshotted in the isolated review checkout before checking.
+The later `787d8eb` commit adds only the unchanged initial verdict artifact; it
+does not alter the tested candidate's business trees. Original failure proof
+and `0148df0` history remain retained.
+
+**Qualified source PASS.** The supported initial P2 finding is resolved. No
+supported blocker remains in this renderer amendment or the previously reviewed
+bounded transport repair. This verdict covers source and synthetic behavior;
+root retains full merged-release, packaging/install and physical acceptance.
+
+`shell/src/shared/app-errors.ts` now holds connection and ordinary action notices
+independently. An empty report or ordinary dismissal clears only the action
+slot; a later connection failure keeps the phase's first cause and updates its
+latest detail. Verified recovery clears only connection. In actual App wiring,
+action start and generic catches pass through that reducer, option/preset catches
+retain their error codes, and only the existing verified `engine-reconnected`
+handler requests the recovery transition. Main-window connection notices have
+no dismiss control; ordinary errors retain their dismiss control. Compact views
+consume combined error text. New connection errors remove only stale native
+connection-restored copy and leave unrelated notes alone.
+
+The reviewer's established held-status probe was adapted into a separate private
+reassessment file, preserving the original failing probe. It ran against the
+actual independently built candidate renderer in a fresh isolated headless
+Chrome context with a generated `window.rushes` API. It observed:
+
+- Ordinary warning, action start and a successful Show-preview acknowledgment
+  keep the original invalid-json notice at **0 completed fresh responses / 0
+  verified events**. The connection notice has no dismiss button.
+- An unrelated permission rejection appears independently. Dismissing it keeps
+  connection status visible.
+- A pending engine-disconnected rejection retains the original invalid-json
+  cause and displays the later detail, still at **0 / 0**.
+- A separate disk rejection remains actionable. Completing the held fresh reply
+  alone leaves both connection and disk error visible at **1 / 0**.
+- The verified recovery event clears only connection at **1 / 1**. The disk
+  failure stays visible and retains ordinary dismissal.
+- A subsequent connection failure starts a new cause, removes stale restored
+  copy, keeps the remaining ordinary failure until dismissal, and preserves an
+  unrelated note. The new connection notice still has no dismiss control.
+
+Fresh private evidence is under
+`~/.goal-loop/loom-clone/host/2026-10-12-desktop-controls/review/transport/renderer-latch`
+(0700):
+
+| Check | Independently observed result |
+| --- | --- |
+| Candidate build/typecheck | Node **22.22.0**, `npm run build`, actual exit **0**; TypeScript and Vite completed. `shell-build.log`. |
+| Focused pure reducer suite | `npm test -- src/shared/app-errors.test.ts`, actual exit **0**: **4 tests in one file passed**, 99 ms. `focused-test.log`. |
+| Changed-surface clean scan | Renderer/helper/regression plus contract/slice: first line **0**, actual exit **0**, no skipped-source warning. `clean.log`. |
+| Actual built renderer probe | Chrome **155.0.8059.39**, probe exit **0**, six scenario groups passed, empty renderer exception list. `error-gate-reassessment-result.json`, `error-gate-reassessment.mjs`, `error-gate-reassessment.log`. |
+| Candidate scope/whitespace | Complete business trees match `71535da`; `Sources` and `Tests` are unchanged from `e98c3d7`. The candidate diff whitespace check passed. |
+
+The old independent **124 shell tests** and **4 generated native transport
+tests** remain evidence for the unchanged native/client transport code. The
+maker's reported complete 128-test run was not substituted for independent
+evidence; this reassessment ran only the focused pure suite, build, clean scan
+and isolated renderer probe while root ran its full native gate. No native,
+media/encoder/device, shared GUI, provider, public or Beads action was performed
+for this reassessment. No installed incident or PID attribution is inferred.
