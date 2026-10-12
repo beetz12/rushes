@@ -67,12 +67,43 @@ export interface PublishInput {
     transcript?: string | null;
     poster?: UploadedAsset;
 }
+/** Private owner-facing policy; passwords and hashes never appear in this snapshot. */
+export interface SharePolicy {
+    protected: boolean;
+    expiresAt: string | null;
+}
+export interface SharePolicyPatch {
+    /** Omitted preserves the current password; null removes protection. */
+    password?: string | null;
+    /** Omitted preserves expiry; null removes it. Otherwise a future ISO timestamp. */
+    expiresAt?: string | null;
+}
+export interface ShareComment {
+    id: string;
+    name: string;
+    body: string;
+    timestampMs: number;
+    createdAt: string;
+}
+export interface ShareReaction {
+    kind: 'like' | 'love' | 'celebrate';
+    count: number;
+}
+export interface ShareFeedback {
+    views: number;
+    /** The service returns at most the first 500 comments, in creation order. */
+    comments: ShareComment[];
+    reactions: ShareReaction[];
+}
 export interface ShareProvider {
     reserve(input: ReserveInput): Promise<ShareReservation>;
     upload(share: ShareReservation, input: UploadInput): Promise<UploadedAsset>;
     publish(share: ShareReservation, input: PublishInput): Promise<ShareReservation>;
     updateMetadata(share: ShareReservation, patch: Partial<MetadataPatch>): Promise<ShareReservation>;
     delete(share: ShareReservation): Promise<void>;
+    getPolicy?(id: string): Promise<SharePolicy>;
+    updatePolicy?(id: string, patch: SharePolicyPatch): Promise<SharePolicy>;
+    feedback?(id: string): Promise<ShareFeedback>;
     setupCheck(): Promise<{
         ok: true;
         provider: 'bucket' | 'worker';

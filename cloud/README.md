@@ -12,6 +12,8 @@ From repo root: `npm ci --prefix cloud && npm run build --prefix cloud`; build v
 - `updateMetadata(reservation,{title?,summary?,chapters?,captions?,transcript?,durationMs?})` → updated reservation.
 - `delete(reservation)` confirms storage removal; `setupCheck()` proves the configured service's connection.
 
+Optional owner capabilities are `getPolicy(id)` and `updatePolicy(id,{password?,expiresAt?})`, both returning only `{protected,expiresAt}`. Omitted fields preserve current policy; null removes that field. Worker passwords accept 8–1024 characters, and expiry updates require a future ISO timestamp with timezone. `feedback(id)` combines the authenticated view count with comment and reaction snapshots: `{views,comments:[{id,name,body,timestampMs,createdAt}],reactions:[{kind,count}]}`. The current service returns the first 500 comments in creation order, with reaction kinds like/love/celebrate. These snapshots do not enter upload jobs. Bucket mode rejects these capabilities with `SHARE_FEATURE_UNSUPPORTED`.
+
 SDK errors carry `code`, optional HTTP `status`, and safe messages without signed queries or credentials. `cloud/dist/cli.js` accepts one JSON request from a secure caller on stdin (`cmd`, `provider`, `config`, `stateDirectory`, `args`) and emits JSON. Commands: setup-check, reserve, upload, publish, update, unshare. It does not read or scan environment secrets. CLI deploy requires caller-supplied ownerToken/sessionSecret retained securely before it runs. SDK `deployWorker` returns generated secrets only to its secure caller and never persists them.
 
 Local gates: `npm run check --prefix cloud`; Worker and browser gates are documented in their READMEs. No configured service is inferred from a successful local fixture test.

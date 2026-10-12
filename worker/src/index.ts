@@ -1,7 +1,7 @@
 import type { Env, StoredObject } from './bindings.js';
-import { digest, equal, passwordHash, randomID, signGrant, verifyGrant } from './crypto.js';
+import { digest, equal, passwordHash, randomID, signGrant, unlockRevision, verifyGrant } from './crypto.js';
 import { viewerPage } from '../../cloud/src/page.js';
-import { ASSET_FILE, SHARE_ID, type ShareManifest, type ShareReservation } from '../../cloud/src/types.js';
+import { ASSET_FILE, SHARE_ID, type ShareManifest, type ShareReservation, type SharePolicy } from '../../cloud/src/types.js';
 declare const VIEWER_JS: string;
 declare const VIEWER_CSS: string;
 const PART = 10 * 1024 * 1024;
@@ -73,11 +73,11 @@ async function needOwner(req: Request, env: Env): Promise<void> { if (!await own
 function ensureEnv(env: Env): void { if (!env.OWNER_TOKEN || env.OWNER_TOKEN.length < 32 || !env.SESSION_SECRET || env.SESSION_SECRET.length < 32)
     fail(503, 'CONFIG_REQUIRED', 'Worker secrets are not configured.'); const u = new URL(env.PUBLIC_BASE_URL); if (u.protocol !== 'https:' && u.hostname !== 'localhost' && u.hostname !== '127.0.0.1')
     fail(503, 'CONFIG_REQUIRED', 'Public URL must be HTTPS.'); }
-async function shareRow(env: Env, id: string): Promise<ShareRow> { if (!SHARE_ID.test(id))
-    fail(404, 'NOT_FOUND', 'Share not found.'); const row = await env.DB.prepare('SELECT * FROM shares WHERE id = ?').bind(id).first<ShareRow>(); if (!row || (row.expires_at && Date.parse(row.expires_at) <= Date.now()))
+async function shareRow(env: Env, id: string, ownerPolicy = false): Promise<ShareRow> { if (!SHARE_ID.test(id))
+    fail(404, 'NOT_FOUND', 'Share not found.'); const row = await env.DB.prepare('SELECT * FROM shares WHERE id = ?').bind(id).first<ShareRow>(); if (!row || (!ownerPolicy && row.expires_at && Date.parse(row.expires_at) <= Date.now()))
     fail(404, 'NOT_FOUND', 'Share not found.'); return row!; }
 async function allowed(req: Request, env: Env, row: ShareRow): Promise<void> { if (!row.password_hash || await owner(req, env))
-    return; const cookies = req.headers.get('cookie') ?? ''; const token = cookies.split(';').map(s => s.trim()).find(s => s.startsWith('rushes_unlock='))?.slice(14) ?? ''; const grant = await verifyGrant(env.SESSION_SECRET, token); if (grant?.kind !== 'unlock' || grant.id !== row.id || grant.hash !== row.password_hash)
+    return; const cookies = req.headers.get('cookie') ?? ''; const token = cookies.split(';').map(s => s.trim()).find(s => s.startsWith('rushes_unlock='))?.slice(14) ?? ''; const grant = await verifyGrant(env.SESSION_SECRET, token); if (grant?.kind !== 'unlock' || grant.id !== row.id || grant.revision !== await unlockRevision(env.SESSION_SECRET, row.id, row.password_hash))
     fail(401, 'PASSWORD_REQUIRED', 'This recording needs a password.'); }
 async function rate(env: Env, key: string, limit: number): Promise<void> { try {
     const window = Math.floor(Date.now() / 60000);
@@ -93,6 +93,39 @@ catch (e) {
     fail(503, 'RATE_UNAVAILABLE', 'Rate limit service unavailable.');
 } }
 const reservation = (env: Env, row: ShareRow): ShareReservation => ({ id: row.id, url: `${env.PUBLIC_BASE_URL.replace(/\/$/, '')}/s/${row.id}`, manifest: JSON.parse(row.manifest) as ShareManifest });
+const policy = (row: ShareRow): SharePolicy => ({ protected: Boolean(row.password_hash), expiresAt: row.expires_at });
+function policyExpiry(value: unknown): string | null {
+    if (value === null) return null;
+    const input = text(value, 'expiry', 50, 1);
+    // Require an ISO date/time with timezone, excluding normalized invalid calendar dates.
+    const fields = /^(?<policyYear>\d{4})-(?<policyMonth>\d{2})-(?<policyDay>\d{2})T(?<policyHour>\d{2}):(?<policyMinute>\d{2}):(?<policySecond>\d{2})(?:\.\d{1,3})?(Z|[+-](?<policyOffsetHour>\d{2}):(?<policyOffsetMinute>\d{2}))$/.exec(input)?.groups;
+    if (!fields) return fail(400, 'INVALID_EXPIRY', 'Expiry must be a future ISO timestamp.');
+    const year = Number(fields.policyYear), month = Number(fields.policyMonth), day = Number(fields.policyDay);
+    const days = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const parsed = Date.parse(input);
+    if (month < 1 || month > 12 || day < 1 || day > days || Number(fields.policyHour) > 23 || Number(fields.policyMinute) > 59 || Number(fields.policySecond) > 59 || (fields.policyOffsetHour !== undefined && (Number(fields.policyOffsetHour) > 23 || Number(fields.policyOffsetMinute) > 59)) || !Number.isFinite(parsed) || parsed <= Date.now())
+        fail(400, 'INVALID_EXPIRY', 'Expiry must be a future ISO timestamp.');
+    return new Date(parsed).toISOString();
+}
+async function updatePolicy(env: Env, row: ShareRow, input: Record<string, unknown>): Promise<SharePolicy> {
+    if (Object.keys(input).some(key => key !== 'password' && key !== 'expiresAt'))
+        fail(400, 'INVALID_INPUT', 'Unsupported share policy field.');
+    // Validate the entire patch before deriving credentials or performing a database write.
+    const password = input.password === undefined ? undefined : input.password === null ? null : text(input.password, 'password', 1024, 8);
+    const expiry = input.expiresAt === undefined ? row.expires_at : policyExpiry(input.expiresAt);
+    if (password === undefined && input.expiresAt === undefined) return policy(row);
+    let salt = row.password_salt, hash = row.password_hash;
+    if (password === null) { salt = null; hash = null; }
+    else if (password !== undefined) { salt = randomID(16); hash = await passwordHash(password, salt); }
+    // Update only supplied fields, so concurrent independent policy changes preserve each other.
+    if (password !== undefined && input.expiresAt !== undefined)
+        await env.DB.prepare('UPDATE shares SET password_salt = ?, password_hash = ?, expires_at = ? WHERE id = ?').bind(salt, hash, expiry, row.id).run();
+    else if (password !== undefined)
+        await env.DB.prepare('UPDATE shares SET password_salt = ?, password_hash = ? WHERE id = ?').bind(salt, hash, row.id).run();
+    else
+        await env.DB.prepare('UPDATE shares SET expires_at = ? WHERE id = ?').bind(expiry, row.id).run();
+    return policy(await shareRow(env, row.id, true));
+}
 async function parts(env: Env, id: string): Promise<PartRow[]> { return (await env.DB.prepare('SELECT part_number,etag,size FROM upload_parts WHERE upload_id = ? ORDER BY part_number').bind(id).all<PartRow>()).results; }
 async function getUpload(env: Env, share: string, id: string): Promise<UploadRow> { if (!SHARE_ID.test(id))
     fail(404, 'NOT_FOUND', 'Upload not found.'); const u = await env.DB.prepare('SELECT * FROM uploads WHERE id = ? AND share_id = ?').bind(id, share).first<UploadRow>(); if (!u)
@@ -223,6 +256,17 @@ async function route(req: Request, env: Env): Promise<Response> {
     const api = /^\/api\/shares\/([A-Za-z0-9_-]{22})(.*)$/.exec(path);
     if (api) {
         const id = api[1]!, tail = api[2]!;
+        // Owner cleanup stays available after expiry or cron deletion; the exact ID prefix is validated by the route.
+        if (tail === '' && req.method === 'DELETE') {
+            await needOwner(req, env);
+            await destroy(env, id);
+            return new Response(null, { status: 204 });
+        }
+        if (tail === '/policy' && (req.method === 'GET' || req.method === 'PATCH')) {
+            await needOwner(req, env);
+            const row = await shareRow(env, id, true);
+            return json(req.method === 'GET' ? policy(row) : await updatePolicy(env, row, await body(req)));
+        }
         const row = await shareRow(env, id);
         if (tail === '/unlock' && req.method === 'POST') {
             const ip = req.headers.get('cf-connecting-ip') ?? 'unknown';
@@ -231,13 +275,8 @@ async function route(req: Request, env: Env): Promise<Response> {
             const p = text(b.password, 'password', 1024, 1);
             if (!row.password_hash || !row.password_salt || !equal(await passwordHash(p, row.password_salt), row.password_hash))
                 fail(401, 'WRONG_PASSWORD', 'Incorrect password.');
-            const token = await signGrant(env.SESSION_SECRET, { kind: 'unlock', id, hash: row.password_hash, exp: Date.now() + 3600000 });
+            const token = await signGrant(env.SESSION_SECRET, { kind: 'unlock', id, revision: await unlockRevision(env.SESSION_SECRET, id, row.password_hash!), exp: Date.now() + 3600000 });
             return new Response(JSON.stringify({ ok: true }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'private,no-store', 'Set-Cookie': `rushes_unlock=${token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=3600` } });
-        }
-        if (tail === '' && req.method === 'DELETE') {
-            await needOwner(req, env);
-            await destroy(env, id);
-            return new Response(null, { status: 204 });
         }
         if (tail === '' && req.method === 'PATCH') {
             await needOwner(req, env);

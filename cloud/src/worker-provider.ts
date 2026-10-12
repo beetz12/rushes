@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { describeAsset, readChunk, PART_BYTES } from './assets.js';
 import { MemoryJobStore, type JobStore } from './store.js';
-import { ShareError, assertShareId, requireHTTPS, metadataPatch, publicationMetadata, publicManifest, type Fetch, type ShareProvider, type ShareReservation, type ReserveInput, type UploadInput, type UploadedAsset, type PublishInput, type MetadataPatch } from './types.js';
+import { ShareError, assertShareId, requireHTTPS, metadataPatch, publicationMetadata, publicManifest, type Fetch, type ShareProvider, type ShareReservation, type ReserveInput, type UploadInput, type UploadedAsset, type PublishInput, type MetadataPatch, type SharePolicy, type SharePolicyPatch, type ShareFeedback } from './types.js';
 export interface WorkerConfig {
     workerURL: string;
     token: string;
@@ -131,4 +131,39 @@ export class WorkerProvider implements ShareProvider {
     async viewCount(id: string): Promise<{
         views: number;
     }> { return this.request(`/api/shares/${assertShareId(id)}/views`); }
+    async getPolicy(id: string): Promise<SharePolicy> {
+        return this.policy(await this.request(`/api/shares/${assertShareId(id)}/policy`));
+    }
+    async updatePolicy(id: string, patch: SharePolicyPatch): Promise<SharePolicy> {
+        // Send only policy inputs and keep the response out of durable upload jobs.
+        const input: SharePolicyPatch = {};
+        if (patch.password !== undefined) input.password = patch.password;
+        if (patch.expiresAt !== undefined) input.expiresAt = patch.expiresAt;
+        return this.policy(await this.request(`/api/shares/${assertShareId(id)}/policy`, 'PATCH', input));
+    }
+    private policy(value: SharePolicy): SharePolicy {
+        if (typeof value?.protected !== 'boolean' || (value.expiresAt !== null && (typeof value.expiresAt !== 'string' || !Number.isFinite(Date.parse(value.expiresAt)))))
+            throw new ShareError('INVALID_RESPONSE', 'Worker returned an invalid share policy.');
+        return { protected: value.protected, expiresAt: value.expiresAt };
+    }
+    async feedback(id: string): Promise<ShareFeedback> {
+        const shareId = assertShareId(id);
+        const [views, snapshot] = await Promise.all([
+            this.viewCount(shareId),
+            this.request<Pick<ShareFeedback, 'comments' | 'reactions'>>(`/api/shares/${shareId}/feedback`)
+        ]);
+        const invalid = (): never => { throw new ShareError('INVALID_RESPONSE', 'Worker returned invalid share feedback.'); };
+        const count = (value: unknown): number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : invalid();
+        const text = (value: unknown, max: number): string => typeof value === 'string' && value.length > 0 && value.length <= max ? value : invalid();
+        if (!Array.isArray(snapshot?.comments) || snapshot.comments.length > 500 || !Array.isArray(snapshot.reactions) || snapshot.reactions.length > 3) invalid();
+        const comments = snapshot.comments.map(comment => {
+            if (!comment || !Number.isFinite(Date.parse(comment.createdAt)) || count(comment.timestampMs) > 604800000 || !/^[A-Za-z0-9_-]{22}$/.test(comment.id)) invalid();
+            return { id: comment.id, name: text(comment.name, 80), body: text(comment.body, 2000), timestampMs: comment.timestampMs, createdAt: comment.createdAt };
+        });
+        const reactions = snapshot.reactions.map(reaction => {
+            if (!reaction || !['like', 'love', 'celebrate'].includes(reaction.kind)) invalid();
+            return { kind: reaction.kind, count: count(reaction.count) };
+        });
+        return { views: count(views?.views), comments, reactions };
+    }
 }

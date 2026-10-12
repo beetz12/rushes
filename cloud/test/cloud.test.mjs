@@ -252,3 +252,14 @@ test('endpoint policy keeps HTTPS, rejects credential/query fragments and limits
     for(const endpoint of ['https://owner:private@media.example/','https://media.example/?secret=x','https://media.example/#private','http://media.example/','ftp://media.example/'])assert.throws(()=>requireHTTPS(endpoint,true),e=>e.code==='INVALID_URL');
     for(const endpoint of ['http://localhost:8000/','http://127.0.0.1:8000/','http://[::1]:8000/']){assert.equal(requireHTTPS(endpoint,true).protocol,'http:');assert.throws(()=>requireHTTPS(endpoint),e=>e.code==='INVALID_URL');}
 });
+test('bucket owner policy and feedback capabilities reject explicitly without requests or state changes', async t => {
+    const f = await fixture(t);
+    const provider = f.provider();
+    for (const action of [() => provider.getPolicy(ID), () => provider.updatePolicy(ID, { password: 'transient fixture password', expiresAt: null }), () => provider.feedback(ID)])
+        await assert.rejects(action, error => error.code === 'SHARE_FEATURE_UNSUPPORTED');
+    for (const policy of [{ password: 'transient fixture password' }, { password: '' }, { password: null }, { expiresAt: new Date(Date.now() + 60000).toISOString() }, { expiresAt: '' }, { expiresAt: null }])
+        await assert.rejects(() => provider.reserve({ id: ID, title: 'Unsupported policy', ...policy }), error => error.code === 'SHARE_FEATURE_UNSUPPORTED');
+    assert.equal(f.objects.size, 0);
+    assert.equal(f.sessions.size, 0);
+    assert.equal(await f.store.read(ID), undefined);
+});

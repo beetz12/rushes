@@ -34,7 +34,11 @@ export class FakeR2 {
     resumeMultipartUpload(key, id) { const self = this; const session = this.sessions.get(id); return { uploadId: id, async uploadPart(n, body) { if (!session || session.key !== key)
             throw new Error('missing multipart'); const data = body instanceof Uint8Array ? Buffer.from(body) : Buffer.from(await new Response(body).arrayBuffer()); const etag = createHash('md5').update(data).digest('hex'); session.parts.set(n, { data, etag }); self.uploadedParts.push(n); return { partNumber: n, etag }; }, async complete(parts) { if (!session)
             throw new Error('missing multipart'); const buffers = parts.map(p => { const s = session.parts.get(p.partNumber); if (!s || s.etag !== p.etag)
-            throw new Error('etag mismatch'); return s.data; }); const data = Buffer.concat(buffers); self.objects.set(key, { data, metadata: session.metadata ?? {} }); self.sessions.delete(id); return self.object(key, data, session.metadata); }, async abort() { self.aborts++; self.sessions.delete(id); } }; }
+            throw new Error('etag mismatch'); return s.data; });
+            // R2 requires each non-final part to contain at least 5 MiB.
+            // https://developers.cloudflare.com/r2/objects/upload-objects/#multipart-upload
+            if (buffers.slice(0, -1).some(buffer => buffer.length < 5 * 1024 * 1024)) throw new Error('non-final multipart part below R2 minimum');
+            const data = Buffer.concat(buffers); self.objects.set(key, { data, metadata: session.metadata ?? {} }); self.sessions.delete(id); return self.object(key, data, session.metadata); }, async abort() { self.aborts++; self.sessions.delete(id); } }; }
 }
 export async function environment() { const db = new FakeD1(await readFile(new URL('../schema.sql', import.meta.url), 'utf8')); const env = { MEDIA: new FakeR2(), DB: db, OWNER_TOKEN: 'fixture-owner-'.padEnd(40, 'x'), SESSION_SECRET: 'fixture-session-'.padEnd(40, 'x'), PUBLIC_BASE_URL: 'https://share.example', MAX_UPLOAD_BYTES: String(100 * 1024 * 1024) }; return { env, worker, request: (path, options = {}) => worker.fetch(new Request(env.PUBLIC_BASE_URL + path, options), env), close: () => db.close() }; }
 export function ownerOptions(env, method = 'POST', body) { return { method, headers: { Authorization: `Bearer ${env.OWNER_TOKEN}`, 'Content-Type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }; }

@@ -3,7 +3,7 @@ import { describeAsset, readChunk, PART_BYTES, xmlEscape, xmlValue } from './ass
 import { signV4, type SigningCredentials } from './sigv4.js';
 import { viewerPage } from './page.js';
 import { MemoryJobStore, type JobStore, type ShareJob, type UploadJob } from './store.js';
-import { ShareError, assertShareId, assertAssetFile, requireHTTPS, applyMetadata, publicationMetadata, publicManifest, type Fetch, type ShareProvider, type ShareReservation, type ReserveInput, type UploadInput, type UploadedAsset, type PublishInput, type MetadataPatch } from './types.js';
+import { ShareError, assertShareId, assertAssetFile, requireHTTPS, applyMetadata, publicationMetadata, publicManifest, type Fetch, type ShareProvider, type ShareReservation, type ReserveInput, type UploadInput, type UploadedAsset, type PublishInput, type MetadataPatch, type SharePolicy, type SharePolicyPatch, type ShareFeedback } from './types.js';
 export interface BucketConfig extends SigningCredentials {
     endpoint: string;
     region: string;
@@ -24,6 +24,15 @@ export class BucketProvider implements ShareProvider {
     private fetcher: Fetch;
     private endpoint: URL;
     private base: URL;
+    async getPolicy(_id: string): Promise<SharePolicy> {
+        throw new ShareError('SHARE_FEATURE_UNSUPPORTED', 'Share policy requires Worker mode.');
+    }
+    async updatePolicy(_id: string, _patch: SharePolicyPatch): Promise<SharePolicy> {
+        throw new ShareError('SHARE_FEATURE_UNSUPPORTED', 'Share policy requires Worker mode.');
+    }
+    async feedback(_id: string): Promise<ShareFeedback> {
+        throw new ShareError('SHARE_FEATURE_UNSUPPORTED', 'Share feedback requires Worker mode.');
+    }
     constructor(private config: BucketConfig, private options: BucketOptions) {
         this.endpoint = requireHTTPS(config.endpoint, options.allowLocalHTTP);
         this.base = requireHTTPS(config.publicBaseURL, options.allowLocalHTTP);
@@ -62,8 +71,8 @@ export class BucketProvider implements ShareProvider {
         await this.put(`s/${share.id}`, viewerPage(share.manifest, this.base.toString()), 'text/html');
     }
     async reserve(input: ReserveInput): Promise<ShareReservation> {
-        if (input.password || input.expiresAt)
-            throw new ShareError('WORKER_REQUIRED', 'Password protection and expiry require Worker mode.');
+        if (input.password !== undefined || input.expiresAt !== undefined)
+            throw new ShareError('SHARE_FEATURE_UNSUPPORTED', 'Password protection and expiry require Worker mode.');
         const id = assertShareId(input.id ?? randomBytes(16).toString('base64url'));
         const prior = await this.store.read(id);
         if (prior) {
