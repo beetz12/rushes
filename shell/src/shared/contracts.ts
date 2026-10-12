@@ -262,6 +262,19 @@ export type ShareStatus = {
   providerMatches?: boolean;
 };
 export type EngineEvent = { event: string; [key: string]: unknown };
+export const previewAcknowledgmentSchema = z.object({ previewToken: z.string().min(1).max(200) });
+export type PreviewAcknowledgment = z.infer<typeof previewAcknowledgmentSchema>;
+export function previewAcknowledgment(raw: unknown): PreviewAcknowledgment {
+  const value = previewAcknowledgmentSchema.safeParse(raw);
+  if (!value.success)
+    throw Object.assign(
+      new Error(
+        'Camera preview could not be confirmed. Reopen Rushes to reconnect to its native engine.',
+      ),
+      { code: 'preview-token-invalid' },
+    );
+  return value.data;
+}
 export interface RushesAPI {
   onboarding(action: OnboardingAction): Promise<OnboardingRecord>;
   request(cmd: string, args?: Record<string, unknown>): Promise<any>;

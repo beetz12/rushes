@@ -234,6 +234,7 @@ public actor EngineController: ControlHandling {
     /// losing footage.
     @discardableResult
     public func shutdown() async -> StoppedRecording? {
+        previewPublication.invalidate()
         let result = active != nil ? try? await stopActive() : nil
         await config.captureRigs.stopPreview()
         await automation.shutdown()
@@ -270,7 +271,10 @@ public actor EngineController: ControlHandling {
         previewGeneration = UUID()
         previewEnabled = false
         previewPublication.setEnabled(false)
-        if active == nil { await config.captureRigs.stopPreview() }
+        if active == nil {
+            previewPublication.invalidate()
+            await config.captureRigs.stopPreview()
+        }
     }
 
     private func dispatch(_ request: ControlRequest, context: ControlCommandContext) async throws -> ControlResponse? {
@@ -324,7 +328,10 @@ public actor EngineController: ControlHandling {
                 throw ControlFailure(code: "invalid-params", message: "preview subscription needs enabled Boolean")
             }
             previewPublication.setEnabled(enabled)
-            return .success(id: request.id, result: .object(["enabled": .bool(enabled)]))
+            return .success(id: request.id, result: .object([
+                "enabled": .bool(enabled),
+                "previewToken": previewPublication.currentToken.map(JSONValue.string) ?? .null
+            ]))
         case "camera.preview.start":
             guard context.isConnected() else { throw ControlFailure(code: "connection-closed", message: "preview owner disconnected before warm-up") }
             guard !starting, !previewStarting, active == nil else { throw ControlFailure(code: "wrong-state", message: "preview selection cannot change during a take or warm-up") }
@@ -344,19 +351,31 @@ public actor EngineController: ControlHandling {
             }
             previewEnabled = true
             previewPublication.setEnabled(true)
-            let preview = previewPublisher()
-            let result = try await config.captureRigs.warmCamera(cameraID: id, preview: preview, warning: { _, _ in })
+            let previewToken = generation.uuidString
+            previewPublication.activate(previewToken)
+            let preview = previewPublisher(token: previewToken)
+            let result: JSONValue
+            do {
+                result = try await config.captureRigs.warmCamera(cameraID: id, preview: preview, warning: { _, _ in })
+            } catch {
+                previewPublication.invalidate(previewToken)
+                throw error
+            }
             guard previewGeneration == generation else {
+                previewPublication.invalidate(previewToken)
                 await config.captureRigs.stopPreview()
                 throw ControlFailure(code: "cancelled", message: "camera preview selection cancelled")
             }
-            return .success(id: request.id, result: result)
+            var payload = result.object ?? [:]
+            payload["previewToken"] = .string(previewToken)
+            return .success(id: request.id, result: .object(payload))
         case "camera.preview.stop":
             guard active == nil else { throw ControlFailure(code: "wrong-state", message: "camera is recording") }
             previewGeneration = UUID()
             previewOwner = nil
             previewEnabled = false
             previewPublication.setEnabled(false)
+            previewPublication.invalidate()
             await config.captureRigs.stopPreview()
             return .success(id: request.id)
         case "record.mute":
@@ -390,6 +409,7 @@ public actor EngineController: ControlHandling {
             } else if active != nil {
                 throw ControlFailure(code: "wrong-state", message: "cancel applies during countdown; use discard for an active take")
             }
+            previewPublication.invalidate()
             return .success(id: request.id, result: .object(["state": .string("idle")]))
         case "record.discard":
             startGeneration = UUID()
@@ -1015,14 +1035,18 @@ public actor EngineController: ControlHandling {
         // Capture attaches behind the gate: pre-gate video frames are
         // cached for media time zero, pre-gate audio is discarded.
         let rig: CaptureRig
+        let captureRequest = await session.effectiveRequest() ?? sessionRequest
+        let previewToken = UUID().uuidString
+        if captureRequest.cameraId != nil { previewPublication.activate(previewToken) }
+        else { previewPublication.invalidate() }
         do {
             rig = try await config.captureRigs.attach(CaptureContext(
                 session: session,
-                request: await session.effectiveRequest() ?? sessionRequest,
+                request: captureRequest,
                 package: startedPackage,
                 selftest: request.param("selftest")?.bool == true,
                 shellBundleID: config.shellBundleID,
-                preview: previewPublisher(),
+                preview: previewPublisher(token: previewToken),
                 microphoneObserver: effects.microphoneObserver(),
                 warning: { [weak self] code, message in
                     Task {
@@ -1034,6 +1058,7 @@ public actor EngineController: ControlHandling {
                     Task { await self?.captureStreamFailure(reason) }
                 }))
         } catch {
+            previewPublication.invalidate(previewToken)
             await effects.cancelRecording()
             _ = try? await session.stopEarly(
                 code: "capture-failed", message: String(describing: error))
@@ -1044,6 +1069,7 @@ public actor EngineController: ControlHandling {
         }
 
         guard startGeneration == generation else {
+            previewPublication.invalidate(previewToken)
             await effects.cancelRecording()
             await rig.stop()
             _ = try? await session.stop()
@@ -1078,6 +1104,7 @@ public actor EngineController: ControlHandling {
         do {
             epoch = try await session.openGate(atHostNs: sessionRequest.countdownSeconds > 0 ? countdownEnd : nil)
         } catch {
+            previewPublication.invalidate(previewToken)
             await rig.stop()
             _ = try? await session.stop()
             await upsertIndexRow(for: startedPackage)
@@ -1147,7 +1174,10 @@ public actor EngineController: ControlHandling {
         catch { await recording.session.recordWarning(code: "voice-finalize-failed", message: String(describing: error)) }
         try? effects.configureBlur(defaultBlur)
         await config.captureRigs.setCameraPreviewTransform(effects.previewTransform())
-        if !previewEnabled { await config.captureRigs.stopPreview() }
+        if !previewEnabled {
+            previewPublication.invalidate()
+            await config.captureRigs.stopPreview()
+        }
         do {
             let outcome = try await recording.session.stop()
             return await finish(recording, outcome: outcome)
@@ -1177,7 +1207,10 @@ public actor EngineController: ControlHandling {
         catch { await recording.session.recordWarning(code: "voice-finalize-failed", message: String(describing: error)) }
         try? effects.configureBlur(defaultBlur)
         await config.captureRigs.setCameraPreviewTransform(effects.previewTransform())
-        if !previewEnabled { await config.captureRigs.stopPreview() }
+        if !previewEnabled {
+            previewPublication.invalidate()
+            await config.captureRigs.stopPreview()
+        }
         let outcome = try? await recording.session.stopEarly(
             code: "stream-error", message: reason)
         let result: StoppedRecording
@@ -1341,9 +1374,9 @@ public actor EngineController: ControlHandling {
         return .object(["id": .string(result.id), "discarded": .bool(true), "state": .string("idle")])
     }
 
-    private func previewPublisher() -> @Sendable (Data) -> Void {
+    private func previewPublisher(token: String) -> @Sendable (Data) -> Void {
         let publication = previewPublication
-        return { jpeg in publication.publish(jpeg) }
+        return { jpeg in publication.publish(jpeg, token: token) }
     }
 
     private func permissionKind(_ request: ControlRequest) throws -> PermissionKind {
@@ -1600,20 +1633,5 @@ public actor EngineController: ControlHandling {
 extension String {
     var nilIfEmpty: String? {
         isEmpty ? nil : self
-    }
-}
-
-/// Subscription changes never acquire or release a camera device. A publisher
-/// installed before CLI capture reads this shared state when each frame arrives.
-private final class PreviewPublication: @unchecked Sendable {
-    private let lock = NSLock()
-    private var enabled = false
-    private var sink: (@Sendable (ControlEvent) -> Void)?
-    func setEnabled(_ value: Bool) { lock.withLock { enabled = value } }
-    func setSink(_ value: @escaping @Sendable (ControlEvent) -> Void) { lock.withLock { sink = value } }
-    func publish(_ jpeg: Data) {
-        let destination = lock.withLock { enabled ? sink : nil }
-        destination?(ControlEvent(kind: .cameraPreview, result: .object([
-            "jpeg": .string(jpeg.base64EncodedString()), "mime": .string("image/jpeg"), "mirrored": .bool(true)])))
     }
 }

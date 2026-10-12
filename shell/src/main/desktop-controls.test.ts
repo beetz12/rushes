@@ -19,7 +19,9 @@ function rig() {
   let allowed = true;
   const actions = {
     allowed: () => allowed,
-    start: vi.fn(async (_camera: string) => ({})),
+    start: vi.fn(async (_camera: string): Promise<unknown> => ({
+      previewToken: 'fixture-preview',
+    })),
     stop: vi.fn(async () => ({})),
     clear: vi.fn(),
     show: vi.fn(),
@@ -96,7 +98,7 @@ describe('selected camera preview lifetime', () => {
     expect(r.preview.acceptsFrames).toBe(false);
     expect(r.actions.show).not.toHaveBeenCalled();
     const repeated = r.preview.select('selected-camera');
-    warm.resolve({ running: true });
+    warm.resolve({ running: true, previewToken: 'selected-camera-source' });
     await Promise.all([first, repeated]);
     expect(r.preview.acceptsFrames).toBe(true);
     expect(r.actions.show).toHaveBeenCalledTimes(1);

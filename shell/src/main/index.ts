@@ -35,6 +35,7 @@ import { atomicJSON, atomicBytes } from './atomic';
 import { OnboardingStore } from './onboarding-store';
 import { CameraOverlayLifecycle, recoveredBubbleHidden } from './camera-overlay';
 import { IdleCameraPreview } from './idle-camera-preview';
+import { PreviewFrames } from './preview-frames';
 import {
   CountdownSignals,
   RecordingStartup,
@@ -100,13 +101,20 @@ let viewNotifications: ViewNotifications | undefined;
 const countdownSignals = new CountdownSignals();
 const recordingWindows = new RecordingWindowLifecycle();
 const recordingStartup = new RecordingStartup();
+const previewFrames = new PreviewFrames();
 const idlePreview = new IdleCameraPreview({
   allowed: () => engineReady && !quitting && !captureBusy() && recorderVisible(),
   start: (camera) => supervisor.client.request('camera.preview.start', { camera }),
   stop: () =>
     supervisor.active ? Promise.resolve() : supervisor.client.request('camera.preview.stop'),
-  clear: () => broadcast({ event: 'camera-preview-cleared' }),
-  show: () => bubble(),
+  clear: () => {
+    previewFrames.clear();
+    broadcast({ event: 'camera-preview-cleared' });
+  },
+  show: (acknowledgment) => {
+    previewFrames.install(acknowledgment);
+    bubble();
+  },
 });
 const uiFile = join(__dirname, '../renderer/index.html');
 const devURL = app.isPackaged
@@ -121,6 +129,7 @@ const devURL = app.isPackaged
       .parse(process.env.RUSHES_DEV_URL);
 const broadcast = (event: Record<string, unknown>) => {
   if (event.event === 'camera-preview' && !supervisor.active && !idlePreview.acceptsFrames) return;
+  if (event.event === 'camera-preview' && !previewFrames.accepts(event.result ?? event)) return;
   for (const [view, window] of windows) {
     if (window.isDestroyed()) continue;
     if (
@@ -553,6 +562,7 @@ function bubble() {
 }
 function showRecordingBubble(id: string) {
   if (bubbleSuppressed) return;
+  const frameGeneration = previewFrames.clear();
   return cameraOverlay
     .showWhenReady(
       async (current) => {
@@ -564,8 +574,11 @@ function showRecordingBubble(id: string) {
           !supervisor.active
         )
           return false;
-        await supervisor.client.request('camera.preview.subscribe', { enabled: true });
-        return current() && currentId === id && supervisor.active;
+        const acknowledgment = await supervisor.client.request('camera.preview.subscribe', {
+          enabled: true,
+        });
+        if (!current() || currentId !== id || !supervisor.active) return false;
+        return previewFrames.install(acknowledgment, frameGeneration);
       },
       (hasCamera) => {
         if (hasCamera && !quitting && !bubbleSuppressed && currentId === id && supervisor.active) {
@@ -764,6 +777,7 @@ async function ready() {
       throw new Error('Use the native save dialog for file output');
     if (request.cmd === 'camera.preview.start' && supervisor.active) {
       bubbleSuppressed = false;
+      const frameGeneration = previewFrames.clear();
       return cameraOverlay.showWhenReady(
         async (current) => {
           const live = await supervisor.client.request('status');
@@ -776,10 +790,16 @@ async function ready() {
           if (request.args.camera !== 'default' && request.args.camera !== camera)
             throw new Error('Keep the active recording camera selected until this take finishes.');
           if (!current() || !supervisor.active || currentId !== id) return;
-          return supervisor.client.request('camera.preview.subscribe', { enabled: true });
+          const acknowledgment = await supervisor.client.request('camera.preview.subscribe', {
+            enabled: true,
+          });
+          if (!current() || !supervisor.active || currentId !== id) return;
+          return previewFrames.install(acknowledgment, frameGeneration)
+            ? acknowledgment
+            : undefined;
         },
-        () => {
-          if (!quitting && supervisor.active) {
+        (acknowledgment) => {
+          if (acknowledgment && !quitting && supervisor.active) {
             bubble();
             void syncBubble();
           }
@@ -1244,6 +1264,7 @@ async function ready() {
       void syncBubble().catch((error) => broadcast({ event: 'warning', message: String(error) }));
     }
     if (e.event === 'engine-reconnected' && !quitting) {
+      previewFrames.clear();
       const recoveredId = e.status?.recording?.recordingID;
       bubbleSuppressed = recoveredBubbleHidden(currentId, recoveredId, e.state, bubbleSuppressed);
       if (recoveredId !== currentId || e.state === 'idle' || e.state === 'preparing') {
@@ -1277,6 +1298,7 @@ async function ready() {
       if (typeof stoppedId === 'string')
         void autoShare.recordingStopped(stoppedId, options.autoShare);
       state = 'idle';
+      previewFrames.clear();
       cameraOverlay.hide();
       bubbleSuppressed = false;
       broadcast({ event: 'camera-preview-cleared' });

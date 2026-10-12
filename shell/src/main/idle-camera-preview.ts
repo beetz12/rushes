@@ -1,3 +1,4 @@
+import { previewAcknowledgment, type PreviewAcknowledgment } from '../shared/contracts';
 // Native camera warm-up cannot overlap another warm-up. Keep selections in order,
 // but invalidate their UI/frame callbacks immediately when a newer choice wins.
 export class IdleCameraPreview {
@@ -12,7 +13,7 @@ export class IdleCameraPreview {
       start(camera: string): Promise<unknown>;
       stop(): Promise<unknown>;
       clear(): void;
-      show(): void;
+      show(acknowledgment: PreviewAcknowledgment): void;
     },
   ) {}
   get acceptsFrames() {
@@ -34,8 +35,9 @@ export class IdleCameraPreview {
         try {
           const result = await this.actions.start(camera);
           if (generation === this.generation && this.actions.allowed()) {
+            const acknowledgment = previewAcknowledgment(result);
             this.frames = true;
-            this.actions.show();
+            this.actions.show(acknowledgment);
           }
           return result;
         } catch (error) {
