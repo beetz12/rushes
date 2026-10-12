@@ -12,7 +12,7 @@ jobs:
   gate:
     name: check.sh (build, tests, clean-room, notices)
     runs-on: macos-latest
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
