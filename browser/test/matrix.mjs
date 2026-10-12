@@ -14,6 +14,7 @@ import { matrixMedia } from './matrix-media.mjs';
 const run = promisify(execFile), sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const { mkdtemp, writeFile, readFile, mkdir, access } = filesystem;
 const long = process.env.RUSHES_M1_LONG === '1';
+const diagnostic = process.env.RUSHES_M1_DIAGNOSTIC === '1';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const proof = resolve(process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir(), 'rushes-m1-')));
 await mkdir(proof, { recursive: true, mode: 0o700 });
@@ -23,7 +24,7 @@ const evidence = { schema: 'rushes.independent-m1/1', startedAt: new Date().toIS
   normalBackgroundFlags: true, source: 'native Chrome fake Y4M with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; headless virtual pages only',
-  samples: [], actions: [], checks: [], failures: [] };
+  diagnostic, samples: [], actions: [], checks: [], failures: [], browserStderr: [], lifecycle: [] };
 evidence.fileHashes = {};
 for (const filename of ['test/matrix.mjs', 'test/matrix-fixture.mjs', 'test/matrix-media.mjs', 'test/matrix-source.worker.mjs',
   'src/capture/index.ts', 'src/capture/composition.worker.ts', 'src/capture/storage.ts'])
@@ -37,6 +38,7 @@ const check = (name, operation) => {
 };
 const save = () => writeFile(join(proof, 'metrics.json'), JSON.stringify(evidence, null, 2));
 let processHandle, browser, server, origin, page;
+let stderrWrites = Promise.resolve();
 
 async function chromeExecutable() {
   if (process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE) return process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE;
@@ -63,7 +65,10 @@ async function launch(media) {
   assert.ok(args.every(arg => !/disable-(background|renderer-backgrounding|hang-monitor)/.test(arg)));
   processHandle = spawn(executable, args, { detached: process.platform !== 'win32', stdio: ['ignore', 'ignore', 'pipe'] });
   const stderr = [];
-  processHandle.stderr.on('data', data => { stderr.push(data.toString()); });
+  processHandle.stderr.on('data', data => {
+    const value = data.toString(); stderr.push(value); evidence.browserStderr.push({ at: new Date().toISOString(), value });
+    stderrWrites = stderrWrites.then(() => filesystem.appendFile(join(proof, 'chrome-stderr.log'), value));
+  });
   let endpoint;
   for (let attempt = 0; attempt < 200; attempt++) {
     if (processHandle.exitCode !== null) throw new Error(`Chrome exited ${processHandle.exitCode}: ${stderr.join('').slice(-2500)}`);
@@ -75,6 +80,10 @@ async function launch(media) {
   browser = await chromium.connectOverCDP(endpoint); evidence.chrome = browser.version();
   const context = browser.contexts()[0]; await context.setOffline(false);
   page = context.pages()[0] || await context.newPage();
+  const lifecycle = await context.newCDPSession(page);
+  lifecycle.on('Page.lifecycleEvent', event => evidence.lifecycle.push({ at: new Date().toISOString(), ...event }));
+  await lifecycle.send('Page.enable'); await lifecycle.send('Page.setLifecycleEventsEnabled', { enabled: true });
+  page.on('crash', () => evidence.lifecycle.push({ at: new Date().toISOString(), name: 'page-crash' }));
   await page.goto(`${origin}/matrix-fixture`);
   return context;
 }
@@ -100,11 +109,12 @@ async function rss() {
 async function sample(stage) {
   const [snapshot, processRss] = await Promise.all([page.evaluate(() => window.matrixTake?.snapshot()), rss()]);
   evidence.samples.push({ stage, at: new Date().toISOString(), rssBytes: processRss,
-    elapsedMs: snapshot?.elapsedMs, heap: snapshot?.heap, inputFrames: snapshot?.metrics.frames['input-camera'].count,
-    outputFrames: snapshot?.metrics.frames['output-composed'].count, pendingBytes: snapshot?.metrics.pendingBytes,
+    elapsedMs: snapshot?.elapsedMs, heap: snapshot?.heap, inputFrames: snapshot?.metrics.frames['input-camera']?.count,
+    outputFrames: snapshot?.metrics.frames['output-composed']?.count, pendingBytes: snapshot?.metrics.pendingBytes,
+    workerFrameCount: snapshot?.metrics.workerEvents.filter(event => event.kind === 'progress').at(-1)?.frameCount,
     captureState: snapshot?.metrics.states.at(-1)?.state,
-    inputStaleMs: snapshot ? snapshot.wallMs - snapshot.metrics.frames['input-camera'].lastWallMs : null,
-    outputStaleMs: snapshot ? snapshot.wallMs - snapshot.metrics.frames['output-composed'].lastWallMs : null,
+    inputStaleMs: snapshot?.metrics.frames['input-camera'] ? snapshot.wallMs - snapshot.metrics.frames['input-camera'].lastWallMs : null,
+    outputStaleMs: snapshot?.metrics.frames['output-composed'] ? snapshot.wallMs - snapshot.metrics.frames['output-composed'].lastWallMs : null,
     visibility: snapshot?.visibilityState, focus: snapshot?.focused });
   return snapshot;
 }
@@ -193,6 +203,59 @@ async function decodedSync(videoFile, audioFile, videoOffsetMs = 0, audioOffsetM
     }) };
 }
 
+async function runDiagnostic() {
+  evidence.scope = 'One bounded240s foreground diagnostic; zero extra processor readers; constant tone; no M1/sync/background verdict';
+  evidence.source = 'Native fake MJPEG and constant-tone AudioWorklet; no extra processor consumers';
+  await page.evaluate(async () => {
+    const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
+    window.matrixTake = await prepareMatrix({ diagnostic: true }); await window.matrixTake.start();
+    setTimeout(() => { void window.matrixTake.session.stop(); }, 240000 - window.matrixTake.elapsed());
+  });
+  console.log(`Diagnostic ACTIVE240s: ${evidence.chrome}; zero extra frame consumers, constant tone, real five recorders/OPFS/backup/preview.`);
+  for (;;) {
+    const snapshot = await sample('diagnostic-recording');
+    if (snapshot.metrics.states.at(-1).state !== 'recording') break;
+    if (evidence.samples.length % 15 === 0) {
+      await save(); console.log(`Diagnostic ${(snapshot.elapsedMs / 1000).toFixed(1)}s; existingworker frames ${evidence.samples.at(-1).workerFrameCount}; chunks ${snapshot.metrics.chunks.length}.`);
+    }
+    await sleep(2000);
+  }
+  const startedFinalization = Date.now(); let finishing = true;
+  const monitor = (async () => { while (finishing) { await sample('diagnostic-finalization'); await sleep(250); } })();
+  try { evidence.recording = await page.evaluate(() => window.matrixTake.finish()); }
+  finally { finishing = false; await monitor; }
+  evidence.finalizationMs = Date.now() - startedFinalization;
+  const manifest = evidence.recording.manifest;
+  check('diagnostic has zero extra processor readers', () => assert.equal(evidence.recording.metrics.extraProcessorReaders, 0));
+  check('diagnostic finishes complete', () => assert.equal(manifest.state, 'complete'));
+  check('diagnostic effective duration within250ms of240s', () => assert.ok(Math.abs(manifest.durationMs - 240000) <= 250));
+  check('diagnostic observer errors are reported', () => assert.deepEqual(evidence.recording.metrics.observerErrors, []));
+  const files = await downloadTracks(manifest, join(proof, 'normal-stop'));
+  evidence.decoded = {}; evidence.audio = {};
+  for (const kind of ['screen', 'camera', 'composed']) {
+    evidence.decoded[kind] = await probeFrames(files[kind]);
+    check(`${kind} diagnostic video decodes720p`, () => assert.deepEqual([evidence.decoded[kind].width, evidence.decoded[kind].height], [1280, 720]));
+    check(`${kind} diagnostic decoded duration`, () => assert.ok(Math.abs(evidence.decoded[kind].durationSeconds * 1000 - manifest.durationMs) <= 250));
+    check(`${kind} diagnostic decoded gaps`, () => assert.equal(evidence.decoded[kind].gapsAbove250ms.length, 0));
+  }
+  for (const kind of ['microphone', 'tab-audio', 'composed']) {
+    const pcm = join(proof, `${kind}.pcm`);
+    await run(process.env.RUSHES_FFMPEG || 'ffmpeg', ['-y', '-v', 'error', '-i', files[kind], '-vn', '-ar', '48000', '-ac', '1', '-f', 'f32le', pcm]);
+    const bytes = await readFile(pcm), samples = bytes.length / 4;
+    let square = 0; for (let index = 0; index < samples; index++) square += bytes.readFloatLE(index * 4) ** 2;
+    evidence.audio[kind] = { durationSeconds: samples / 48000, rms: Math.sqrt(square / samples), decodedSamples: samples };
+    check(`${kind} diagnostic audio is audible`, () => assert.ok(evidence.audio[kind].rms > 0.05));
+    check(`${kind} diagnostic audio duration`, () => assert.ok(Math.abs(evidence.audio[kind].durationSeconds * 1000 - manifest.durationMs) <= 250));
+  }
+  evidence.memory = { baselineRssBytes: evidence.samples[0].rssBytes,
+    peakRssBytes: Math.max(...evidence.samples.map(value => value.rssBytes || 0)),
+    peakHeapBytes: Math.max(...evidence.samples.map(value => value.heap?.used || 0)),
+    maxChunkBytes: Math.max(...evidence.recording.metrics.chunks.map(chunk => chunk.bytes)),
+    peakPendingBytes: evidence.recording.metrics.peakPendingBytes,
+    totalRecordedBytes: manifest.tracks.reduce((sum, track) => sum + track.bytes, 0) };
+  evidence.backgroundCoverage = 'Not tested: no virtual tab activation; headless foreground diagnostic only';
+}
+
 try {
   const media = process.env.RUSHES_M1_SOURCE_FILE ? { video: process.env.RUSHES_M1_SOURCE_FILE,
     audio: join(dirname(process.env.RUSHES_M1_SOURCE_FILE), 'calibration.wav') } : await matrixMedia(proof);
@@ -201,6 +264,8 @@ try {
     response.end('<!doctype html><title>Independent Rushes synthetic M1</title>'); });
   await server.listen(); origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   const context = await launch(media);
+  if (diagnostic) await runDiagnostic();
+  else {
   await page.evaluate(async () => { const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
     window.matrixTake = await prepareMatrix(); await window.matrixTake.start(); });
   if (!long) await page.evaluate(() => {
@@ -248,6 +313,7 @@ try {
   evidence.finalizationMs = Date.now() - finalizationStarted;
   const manifest = evidence.recording.manifest;
   check('normal Stop is complete', () => assert.equal(manifest.state, 'complete'));
+  check('observer faults are reported rather than accepted', () => assert.deepEqual(evidence.recording.metrics.observerErrors, []));
   check('at least five pauses', () => assert.ok(manifest.pauses.length >= 5));
   check('target take duration', () => assert.ok(Math.abs(manifest.durationMs - targetMs) <= 250));
   check('offline interval', () => assert.ok(evidence.actions.find(action => action.kind === 'offline-end')?.milliseconds >= (long ? 300000 : 2000)));
@@ -355,10 +421,15 @@ try {
     assert.ok(evidence.writeFailure.manifest.tracks.some(track => track.chunks.length > 0));
     assert.ok(evidence.writeFailure.metrics.warnings.some(value => value.includes('M1 injected write failure')));
   });
+  }
 } catch (error) {
   evidence.failures.push(`Harness execution: ${error.stack || error}`); console.error(error);
+  if (page) {
+    try { evidence.observerErrors = await page.evaluate(() => globalThis.matrixObserverErrors); }
+    catch (failure) { evidence.observerErrorReadFailure = String(failure); }
+  }
 } finally {
-  evidence.endedAt = new Date().toISOString(); await save();
+  evidence.endedAt = new Date().toISOString(); await stderrWrites; await save();
   await browser?.close().catch(() => undefined);
   if (processHandle && processHandle.exitCode === null) await killAbruptly().catch(error => console.error(error));
   await server?.close();

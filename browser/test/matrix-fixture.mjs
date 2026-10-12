@@ -1,12 +1,21 @@
 // Independent M1 instrumentation. Native Chrome fake media is supplied by the
 // runner; this page never requests a real screen or uses a timer as its video source.
-export async function prepareMatrix({ backup = true } = {}) {
+export async function prepareMatrix({ backup = true, diagnostic = false } = {}) {
   const { createCaptureSession } = await import('/src/capture/index.ts');
   const { createDraftStore } = await import('/src/capture/storage.ts');
   const nativeRecorder = globalThis.MediaRecorder;
+  const nativeWorker = globalThis.Worker;
   const metrics = { recorderKinds: [], chunks: [], pendingBytes: 0, peakPendingBytes: 0,
     peakConcurrentAppends: 0, activeAppends: 0, appends: [], visibility: [], states: [],
-    warnings: [], checkpoints: [], frames: {} };
+    warnings: [], checkpoints: [], frames: {}, workerEvents: [], observerErrors: [], extraProcessorReaders: diagnostic ? 0 : 5 };
+  globalThis.matrixObserverErrors = metrics.observerErrors;
+  if (diagnostic) globalThis.Worker = class extends nativeWorker {
+    constructor(...args) {
+      super(...args);
+      this.addEventListener('message', event => metrics.workerEvents.push({ ...event.data, wallMs: performance.now() }));
+      this.addEventListener('error', event => metrics.observerErrors.push({ name: 'production-worker-event', message: event.message, wallMs: performance.now() }));
+    }
+  };
   const kinds = ['screen', 'camera', 'microphone', 'tab-audio', 'composed'];
   globalThis.MediaRecorder = class extends nativeRecorder {
     constructor(...args) {
@@ -46,18 +55,22 @@ export async function prepareMatrix({ backup = true } = {}) {
   await toneContext.audioWorklet.addModule(moduleURL); URL.revokeObjectURL(moduleURL);
   const tone = new AudioWorkletNode(toneContext, 'matrix-tone'), audio = toneContext.createMediaStreamDestination();
   tone.connect(audio); await toneContext.resume(); metrics.calibrationInputEdges = []; metrics.calibrationAudioEdges = [];
-  const sourceObserverTrack = source.getVideoTracks()[0].clone();
-  const processor = new MediaStreamTrackProcessor({ track: sourceObserverTrack, maxBufferSize: 1 });
-  const sourceWorker = new Worker(new URL('./matrix-source.worker.mjs', import.meta.url), { type: 'module' });
-  const ready = new Promise((resolve, reject) => {
-    sourceWorker.onerror = error => reject(new Error(error.message));
-    sourceWorker.onmessage = event => {
-      if (event.data.kind === 'ready') resolve();
-      if (event.data.kind === 'input-anchor') metrics.calibrationInputEdges.push(event.data);
-      if (event.data.kind === 'audio-anchor') metrics.calibrationAudioEdges.push(event.data);
-    };
-  });
-  sourceWorker.postMessage({ input: processor.readable, audioPort: tone.port }, [processor.readable, tone.port]); await ready;
+  let sourceObserverTrack, sourceWorker;
+  if (!diagnostic) {
+    sourceObserverTrack = source.getVideoTracks()[0].clone();
+    const processor = new MediaStreamTrackProcessor({ track: sourceObserverTrack, maxBufferSize: 1 });
+    sourceWorker = new Worker(new URL('./matrix-source.worker.mjs', import.meta.url), { type: 'module' });
+    const ready = new Promise((resolve, reject) => {
+      sourceWorker.onerror = error => { metrics.observerErrors.push({ name: 'source-anchor', message: error.message, wallMs: performance.now() }); reject(new Error(error.message)); };
+      sourceWorker.onmessage = event => {
+        if (event.data.kind === 'ready') resolve();
+        if (event.data.kind === 'input-anchor') metrics.calibrationInputEdges.push(event.data);
+        if (event.data.kind === 'audio-anchor') metrics.calibrationAudioEdges.push(event.data);
+        if (event.data.kind === 'observer-error') { metrics.observerErrors.push(event.data); reject(new Error(event.data.message)); }
+      };
+    });
+    sourceWorker.postMessage({ input: processor.readable, audioPort: tone.port }, [processor.readable, tone.port]); await ready;
+  }
   const screen = new MediaStream([source.getVideoTracks()[0].clone(), audio.stream.getAudioTracks()[0].clone()]);
   const camera = new MediaStream([source.getVideoTracks()[0].clone()]);
   const microphone = new MediaStream([audio.stream.getAudioTracks()[0].clone()]);
@@ -86,21 +99,26 @@ export async function prepareMatrix({ backup = true } = {}) {
       try {
         while (!stop) {
           const item = await reader.read(); if (item.done) break;
-          const now = performance.now(), timestamp = item.value.timestamp;
-          item.value.close();
-          info.count++; info.firstTimestamp ??= timestamp;
-          if (info.lastTimestamp !== null) info.maxTimestampGapUs = Math.max(info.maxTimestampGapUs, timestamp - info.lastTimestamp);
-          if (lastWall !== null) info.maxWallGapMs = Math.max(info.maxWallGapMs, now - lastWall);
-          info.lastTimestamp = timestamp; lastWall = now; info.lastWallMs = now;
-          const bucket = Math.floor(now / 1000); info.buckets[bucket] = (info.buckets[bucket] || 0) + 1;
-          if (info.count % 30 === 1) info.samples.push({ count: info.count, timestamp, wallMs: now });
+          const frame = item.value;
+          try {
+            const now = performance.now(), timestamp = frame.timestamp;
+            info.count++; info.firstTimestamp ??= timestamp;
+            if (info.lastTimestamp !== null) info.maxTimestampGapUs = Math.max(info.maxTimestampGapUs, timestamp - info.lastTimestamp);
+            if (lastWall !== null) info.maxWallGapMs = Math.max(info.maxWallGapMs, now - lastWall);
+            info.lastTimestamp = timestamp; lastWall = now; info.lastWallMs = now;
+            const bucket = Math.floor(now / 1000); info.buckets[bucket] = (info.buckets[bucket] || 0) + 1;
+            if (info.count % 30 === 1) info.samples.push({ count: info.count, timestamp, wallMs: now });
+          } finally { frame.close(); }
         }
-      } finally { settled = true; reader.releaseLock(); }
+      } catch (error) { metrics.observerErrors.push({ name, message: String(error), wallMs: performance.now() }); }
+      finally { settled = true; reader.releaseLock(); }
     })();
     monitors.push(async () => { stop = true; if (!settled) await reader.cancel(); clone.stop(); await task; });
   };
-  watch('native-input', source.getVideoTracks()[0]);
-  watch('input-screen', screen.getVideoTracks()[0]); watch('input-camera', camera.getVideoTracks()[0]);
+  if (!diagnostic) {
+    watch('native-input', source.getVideoTracks()[0]);
+    watch('input-screen', screen.getVideoTracks()[0]); watch('input-camera', camera.getVideoTracks()[0]);
+  }
   const session = await createCaptureSession({ id, title: 'Independent synthetic M1', mode: 'screen-camera',
     screen, camera, microphone, store, persistent: false, backupFolder: backup,
     bubble: { x: 1030, y: 490, size: 180 }, onState: state => metrics.states.push({ state, wallMs: performance.now() }),
@@ -110,7 +128,7 @@ export async function prepareMatrix({ backup = true } = {}) {
   });
   const player = document.createElement('video'); player.muted = true; player.playsInline = true;
   player.srcObject = session.preview; document.body.append(player); await player.play();
-  watch('output-composed', session.preview.getVideoTracks()[0]);
+  if (!diagnostic) watch('output-composed', session.preview.getVideoTracks()[0]);
   const visibility = () => metrics.visibility.push({ wallMs: performance.now(), state: document.visibilityState, hasFocus: document.hasFocus() });
   document.addEventListener('visibilitychange', visibility); visibility();
   const take = { id, session, store, rawStore, metrics, manifest: undefined, startedAt: 0,
@@ -124,9 +142,9 @@ export async function prepareMatrix({ backup = true } = {}) {
         used: performance.memory.usedJSHeapSize, total: performance.memory.totalJSHeapSize, limit: performance.memory.jsHeapSizeLimit } : null }); },
     async finish() { const manifest = await session.stop(); source.getTracks().forEach(track => track.stop());
       player.pause(); player.srcObject = null; player.remove();
-      sourceObserverTrack.stop(); sourceWorker.terminate(); audio.stream.getTracks().forEach(track => track.stop()); await toneContext.close();
+      sourceObserverTrack?.stop(); sourceWorker?.terminate(); audio.stream.getTracks().forEach(track => track.stop()); await toneContext.close();
       await Promise.all(monitors.map(stop => stop()));
-      document.removeEventListener('visibilitychange', visibility); globalThis.MediaRecorder = nativeRecorder;
+      document.removeEventListener('visibilitychange', visibility); globalThis.MediaRecorder = nativeRecorder; globalThis.Worker = nativeWorker;
       this.manifest = manifest; return this.snapshot(); },
     async download(kind) { const url = URL.createObjectURL(await store.trackBlob(id, kind));
       const link = document.createElement('a'); link.href = url; link.download = `${kind}.webm`; link.click();
