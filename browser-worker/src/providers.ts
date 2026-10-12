@@ -8,7 +8,7 @@ const videoSchema = z.object({
   uid,
   creator: z.string().optional(),
   readyToStream: z.boolean().optional(),
-  duration: z.number().nonnegative().optional(),
+  duration: z.number().min(-1).optional(),
   requireSignedURLs: z.boolean(),
   status: z
     .object({
@@ -67,12 +67,33 @@ export class StreamProvider {
         'Upload-Metadata': metadata,
       },
     });
-    if (!r.ok)
+    if (!r.ok) {
+      // A server error can follow a remote side effect. Only an explicit API
+      // validation/authentication rejection can establish non-creation.
+      let rejection = false;
+      if ([400, 401, 403, 404, 413, 415, 422].includes(r.status)) {
+        try {
+          const failure = z
+            .object({
+              success: z.literal(false),
+              errors: z
+                .array(z.object({ code: z.number().int().min(1000), message: z.string() }))
+                .min(1),
+            })
+            .safeParse(await r.json());
+          rejection = failure.success;
+        } catch {
+          rejection = false;
+        }
+      }
       throw new Failure(
         503,
-        'STREAM_CREATE',
-        'The video upload could not be provisioned. Retry after the service recovers.',
+        rejection ? 'STREAM_CREATE_REJECTED' : 'STREAM_CREATE_UNCERTAIN',
+        rejection
+          ? 'The video provider rejected the upload request. Retry after its configuration is corrected.'
+          : 'The video provider could not confirm creation. Keep the local draft while the saved creation marker is reconciled.',
       );
+    }
     const location = r.headers.get('location'),
       mediaId = r.headers.get('stream-media-id');
     if (!location || !mediaId || !uid.safeParse(mediaId).success)
@@ -151,7 +172,9 @@ export class StreamProvider {
     return parsed.data.result.default.status === 'ready';
   }
   async findCreated(creator: string) {
-    const r = await this.request(`?creator=${encodeURIComponent(creator)}&limit=1000`);
+    const r = await this.request(
+      `?creator=${encodeURIComponent(creator)}&limit=1000&include_counts=true`,
+    );
     if (!r.ok)
       throw new Failure(
         503,
@@ -159,11 +182,16 @@ export class StreamProvider {
         'The provider upload associations could not be reconciled.',
       );
     const list = z
-      .object({ success: z.literal(true), result: z.array(videoSchema).max(1000) })
+      .object({
+        success: z.literal(true),
+        result: z.array(videoSchema).max(1000),
+        total: z.number().int().nonnegative(),
+      })
       .safeParse(await r.json());
     if (
       !list.success ||
       list.data.result.length >= 1000 ||
+      list.data.total !== list.data.result.length ||
       list.data.result.some((v) => v.creator !== creator)
     )
       throw new Failure(

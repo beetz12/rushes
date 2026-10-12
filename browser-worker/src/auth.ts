@@ -65,6 +65,7 @@ export type Auth = {
   csrfHash: string;
   createdAt: number;
   absoluteExpiry: number;
+  familyId: string;
 };
 
 export async function authenticate(
@@ -72,6 +73,7 @@ export async function authenticate(
   env: Env,
   runtime: Runtime,
   required = true,
+  ancestorForLogout = false,
 ): Promise<Auth | null> {
   const token = cookie(request, sessionCookie);
   if (!token || !env.DB) {
@@ -79,10 +81,15 @@ export async function authenticate(
     return null;
   }
   const hash = await digest(token);
+  const predicate = ancestorForLogout
+    ? ''
+    : ' AND s.revoked_at IS NULL AND s.expires_at>? AND f.current_token_hash=s.token_hash';
+  const bindings: unknown[] = [hash, runtime.now(), runtime.now()];
+  if (!ancestorForLogout) bindings.push(runtime.now());
   const row = await env.DB.prepare(
-    `SELECT a.id,a.tenant_id,a.email,a.name,s.csrf_hash,s.created_at,s.absolute_expiry FROM sessions s JOIN accounts a ON a.id=s.account_id WHERE s.token_hash=? AND s.revoked_at IS NULL AND s.expires_at>? AND s.absolute_expiry>?`,
+    `SELECT a.id,a.tenant_id,a.email,a.name,s.csrf_hash,s.created_at,s.absolute_expiry,s.family_id FROM sessions s JOIN accounts a ON a.id=s.account_id JOIN session_families f ON f.id=s.family_id AND f.account_id=s.account_id WHERE s.token_hash=? AND s.absolute_expiry>? AND f.absolute_expiry>? AND f.revoked_at IS NULL${predicate}`,
   )
-    .bind(hash, runtime.now(), runtime.now())
+    .bind(...bindings)
     .first<{
       id: string;
       tenant_id: string;
@@ -91,6 +98,7 @@ export async function authenticate(
       csrf_hash: string;
       created_at: number;
       absolute_expiry: number;
+      family_id: string;
     }>();
   if (!row) {
     if (required) throw new Failure(401, 'SESSION_EXPIRED', 'Sign in again to continue.');
@@ -102,6 +110,7 @@ export async function authenticate(
     csrfHash: row.csrf_hash,
     createdAt: row.created_at,
     absoluteExpiry: row.absolute_expiry,
+    familyId: row.family_id,
   };
 }
 export async function csrf(request: Request, c: Config, auth: Auth) {
@@ -120,10 +129,23 @@ async function newSession(
   const token = random(),
     csrfToken = random();
   const hash = await digest(token);
+  const familyId = old?.familyId ?? crypto.randomUUID();
+  const parent = old
+    ? db
+        .prepare(
+          'UPDATE session_families SET current_token_hash=? WHERE id=? AND account_id=? AND current_token_hash=? AND revoked_at IS NULL AND absolute_expiry>? AND EXISTS(SELECT 1 FROM sessions WHERE token_hash=? AND family_id=? AND revoked_at IS NULL AND expires_at>?)',
+        )
+        .bind(hash, familyId, accountId, old.sessionHash, now, old.sessionHash, familyId, now)
+    : db
+        .prepare(
+          'INSERT INTO session_families(id,account_id,current_token_hash,absolute_expiry) VALUES(?,?,?,?)',
+        )
+        .bind(familyId, accountId, hash, absolute);
   const statements = [
+    parent,
     db
       .prepare(
-        'INSERT INTO sessions(token_hash,account_id,csrf_hash,created_at,expires_at,absolute_expiry) VALUES(?,?,?,?,?,?)',
+        'INSERT INTO sessions(token_hash,account_id,csrf_hash,created_at,expires_at,absolute_expiry,family_id) SELECT ?,?,?,?,?,?,id FROM session_families WHERE id=? AND account_id=? AND current_token_hash=? AND revoked_at IS NULL AND absolute_expiry>=?',
       )
       .bind(
         hash,
@@ -132,19 +154,27 @@ async function newSession(
         now,
         Math.min(now + 86400000, absolute),
         absolute,
+        familyId,
+        accountId,
+        hash,
+        absolute,
       ),
   ];
   if (old)
-    statements.unshift(
+    statements.push(
       db
-        .prepare('UPDATE sessions SET revoked_at=? WHERE token_hash=? AND revoked_at IS NULL')
-        .bind(now, old.sessionHash),
+        .prepare(
+          'UPDATE sessions SET revoked_at=? WHERE token_hash=? AND family_id=? AND EXISTS(SELECT 1 FROM session_families WHERE id=? AND current_token_hash=?)',
+        )
+        .bind(now, old.sessionHash, familyId, familyId, hash),
     );
   const result = await db.batch(statements);
-  if (old && result[0].meta.changes !== 1) {
-    await db.prepare('UPDATE sessions SET revoked_at=? WHERE token_hash=?').bind(now, hash).run();
-    throw new Failure(401, 'SESSION_ROTATED', 'Refresh the account page to continue.');
-  }
+  if (result[0].meta.changes !== 1 || result[1].meta.changes !== 1)
+    throw new Failure(
+      401,
+      'SESSION_ROTATED',
+      'This login changed or signed out while the session refreshed. Sign in again.',
+    );
   const headers = new Headers();
   headers.append(
     'Set-Cookie',
@@ -181,12 +211,16 @@ export async function session(request: Request, env: Env, runtime: Runtime) {
   return response({ user: auth.user, csrfToken: raw } satisfies SessionResponse);
 }
 export async function logout(request: Request, c: Config, env: Env, runtime: Runtime) {
-  const auth = await authenticate(request, env, runtime);
+  const auth = await authenticate(request, env, runtime, true, true);
   await csrf(request, c, auth!);
-  await needDB(env)
-    .prepare('UPDATE sessions SET revoked_at=? WHERE token_hash=?')
-    .bind(runtime.now(), auth!.sessionHash)
+  const changed = await needDB(env)
+    .prepare(
+      'UPDATE session_families SET revoked_at=COALESCE(revoked_at,?) WHERE id=? AND account_id=?',
+    )
+    .bind(runtime.now(), auth!.familyId, auth!.user.id)
     .run();
+  if (!changed.meta.changes)
+    throw new Failure(401, 'SESSION_EXPIRED', 'This login no longer exists.');
   const headers = new Headers();
   headers.append('Set-Cookie', setCookie(sessionCookie, '', 0));
   headers.append('Set-Cookie', setCookie(csrfCookie, '', 0));

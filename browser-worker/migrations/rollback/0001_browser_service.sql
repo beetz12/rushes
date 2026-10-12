@@ -11,6 +11,7 @@ DROP TABLE IF EXISTS quota_periods;
 DROP TABLE IF EXISTS webhook_events;
 DROP TABLE IF EXISTS billing_risks;
 DROP TABLE IF EXISTS sessions;
+DROP TABLE IF EXISTS session_families;
 DROP TABLE IF EXISTS accounts;
 DROP TABLE IF EXISTS tenants;
 DROP TABLE IF EXISTS oauth_states;

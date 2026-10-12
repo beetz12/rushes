@@ -19,7 +19,15 @@ import { Auth } from './auth';
 
 import { digest, equal, random, passwordHash, sign, verify, cookie, setCookie } from './crypto';
 
-import { Row, recording, tenant, canView, currentPeriod, idSchema } from './records';
+import {
+  Row,
+  recording,
+  tenant,
+  canView,
+  currentPeriod,
+  idSchema,
+  recordedCreator,
+} from './records';
 
 import { StreamProvider } from './providers';
 
@@ -225,15 +233,15 @@ async function playback(
     throw new Failure(503, 'DELIVERY_DISABLED', 'Cloud playback is currently paused.');
   const t = await tenant(env, row.tenant_id);
   if (row.state !== 'ready' || !row.stream_uid || !canView(t, runtime.now())) absent();
-  await prepareBudget(c, env, runtime.now());
+  const now = runtime.now();
+  await prepareBudget(c, env, now);
   const db = needDB(env);
-  await limited(db, `playback:${t.id}`, runtime.now(), 30);
+  await limited(db, `playback:${t.id}`, now, 30);
   let viewer = cookie(request, '__Host-rushes-viewer');
   if (!viewer || !/^[A-Za-z0-9_-]{43}$/.test(viewer)) viewer = random();
   const viewerHash = await digest(
-      `${download ? random() : viewer}:${request.headers.get('cf-connecting-ip') ?? ''}`,
-    ),
-    now = runtime.now();
+    `${download ? random() : viewer}:${request.headers.get('cf-connecting-ip') ?? ''}`,
+  );
   let deadline = Math.min(now + row.duration_ms + 120000, now + 720000);
   deadline = Math.min(
     deadline,
@@ -346,7 +354,7 @@ export async function exportRecording(
   await reserveOperation(c, env, runtime.now());
   const provider = new StreamProvider(c, runtime),
     video = await provider.get(row.stream_uid);
-  if (!video?.requireSignedURLs || video.creator !== `${row.tenant_id}:${row.id}`)
+  if (!video?.requireSignedURLs || video.creator !== (await recordedCreator(row)))
     throw new Failure(
       503,
       'STREAM_OWNERSHIP',

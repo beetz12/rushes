@@ -2,7 +2,7 @@ import { Config, Env, Runtime, Failure, needDB, needRaw, response } from './plat
 
 import { Auth } from './auth';
 
-import { recording, Row, rawPrefix } from './records';
+import { recording, Row, rawPrefix, recordedCreator } from './records';
 
 import { StreamProvider } from './providers';
 
@@ -41,14 +41,24 @@ export async function deleteRaw(env: Env, row: Row) {
       .bind(row.tenant_id, row.id),
   ]);
 }
-export async function finishDelete(c: Config, env: Env, row: Row, runtime: Runtime) {
+export async function finishDelete(c: Config, env: Env, candidate: Row, runtime: Runtime) {
+  // Delete callers may have read before another request acquired its creation
+  // lease. Read the persisted row after entering deleting state.
+  const row = await recording(env, candidate.tenant_id, candidate.id, true);
+  if (row.state === 'deleted') return;
+  if (row.state !== 'deleting')
+    throw new Failure(409, 'DELETE_STATE', 'This recording has not entered deletion.');
   if (row.provision_id && row.provision_until && row.provision_until > runtime.now())
     throw new Failure(503, 'PROVISION_PENDING', 'The provider upload creation has not settled.');
-  if (row.error === 'STREAM_CREATE_UNCERTAIN') {
+  if (
+    row.provision_id ||
+    row.error === 'STREAM_CREATE_UNCERTAIN' ||
+    (row.finalize_hash && !row.stream_uid)
+  ) {
     const provider = new StreamProvider(c, runtime);
-    const associated = await provider.findCreated(`${row.tenant_id}:${row.id}`);
+    const associated = await provider.findCreated(await recordedCreator(row));
     for (const video of associated) await provider.remove(video.uid);
-    const again = await provider.findCreated(`${row.tenant_id}:${row.id}`);
+    const again = await provider.findCreated(await recordedCreator(row));
     if (again.length)
       throw new Failure(
         503,
@@ -72,7 +82,7 @@ export async function finishDelete(c: Config, env: Env, row: Row, runtime: Runti
       .bind(row.tenant_id, row.id, row.tenant_id, row.tenant_id, row.id),
     db
       .prepare(
-        "UPDATE recordings SET state='deleted',stream_uid=NULL,upload_url=NULL,manifest=NULL,error=NULL,cleanup_error=NULL,updated_at=? WHERE tenant_id=? AND id=? AND state='deleting'",
+        "UPDATE recordings SET state='deleted',stream_uid=NULL,upload_url=NULL,manifest=NULL,error=NULL,cleanup_error=NULL,provision_id=NULL,provision_until=NULL,updated_at=? WHERE tenant_id=? AND id=? AND state='deleting'",
       )
       .bind(runtime.now(), row.tenant_id, row.id),
   ]);
@@ -117,8 +127,13 @@ export async function cleanup(c: Config, env: Env, runtime: Runtime) {
     now = runtime.now();
   await db.batch([
     db
-      .prepare('DELETE FROM sessions WHERE expires_at<? OR revoked_at IS NOT NULL')
-      .bind(now - 86400000),
+      .prepare(
+        'DELETE FROM sessions WHERE absolute_expiry<=? OR family_id IN (SELECT id FROM session_families WHERE revoked_at IS NOT NULL OR absolute_expiry<=?)',
+      )
+      .bind(now, now),
+    db
+      .prepare('DELETE FROM session_families WHERE revoked_at IS NOT NULL OR absolute_expiry<=?')
+      .bind(now),
     db.prepare('DELETE FROM oauth_states WHERE expires_at<?').bind(now),
     db.prepare('DELETE FROM rate_limits WHERE window<?').bind(now - 48 * 3600000),
     db.prepare('DELETE FROM active_writes WHERE expires_at<?').bind(now),

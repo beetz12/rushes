@@ -93,3 +93,9 @@ export function cookie(request: Request, name: string) {
 export function setCookie(name: string, value: string, maxAge: number, path = '/') {
   return `${name}=${value}; Path=${path}; Max-Age=${Math.max(0, Math.floor(maxAge))}; Secure; HttpOnly; SameSite=Lax`;
 }
+
+// The provider limits creator identifiers to64characters. The versioned database
+// finalization marker decides whether a recorded attempt uses this key or thelegacytag.
+export async function creatorKey(tenant: string, recording: string) {
+  return digest(JSON.stringify(['rushes.browser.creator/2', tenant, recording]));
+}

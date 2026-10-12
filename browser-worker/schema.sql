@@ -13,9 +13,14 @@ CREATE TABLE IF NOT EXISTS accounts (
  id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL UNIQUE REFERENCES tenants(id),
  google_subject TEXT NOT NULL UNIQUE, email TEXT NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS session_families (
+ id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id), current_token_hash TEXT NOT NULL,
+ absolute_expiry INTEGER NOT NULL, revoked_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS sessions (
  token_hash TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id), csrf_hash TEXT NOT NULL,
- created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, absolute_expiry INTEGER NOT NULL, revoked_at INTEGER
+ created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, absolute_expiry INTEGER NOT NULL, revoked_at INTEGER,
+ family_id TEXT NOT NULL REFERENCES session_families(id)
 );
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
 CREATE TABLE IF NOT EXISTS oauth_states (
@@ -136,8 +141,8 @@ CREATE TABLE IF NOT EXISTS budget_settings (
  id INTEGER PRIMARY KEY CHECK(id=1), cap_cents INTEGER NOT NULL, warning_cents INTEGER NOT NULL, month_start INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS budget_months (
- month_start INTEGER PRIMARY KEY, delivery_seconds INTEGER NOT NULL DEFAULT 0, operation_units INTEGER NOT NULL DEFAULT 0,
- raw_peak_bytes INTEGER NOT NULL DEFAULT 0
+ month_start INTEGER PRIMARY KEY, delivery_seconds INTEGER NOT NULL DEFAULT 0 CHECK(delivery_seconds>=0), operation_units INTEGER NOT NULL DEFAULT 0 CHECK(operation_units>=0),
+ raw_peak_bytes INTEGER NOT NULL DEFAULT 0 CHECK(raw_peak_bytes>=0)
 );
 CREATE VIEW IF NOT EXISTS budget_estimates AS SELECT m.month_start,
  500 + CAST((COALESCE((SELECT SUM(retained_seconds+reserved_retained_seconds) FROM tenants),0)+59999)/60000 AS INTEGER)*500
@@ -154,9 +159,9 @@ CREATE TRIGGER IF NOT EXISTS tenant_budget_capacity AFTER UPDATE OF reserved_ret
  SELECT CASE WHEN (SELECT estimated_cents FROM budget_estimates WHERE month_start=(SELECT month_start FROM budget_settings WHERE id=1))>(SELECT cap_cents FROM budget_settings WHERE id=1) THEN RAISE(ABORT,'APPLICATION_BUDGET') END;
 END;
 CREATE TRIGGER IF NOT EXISTS delivery_budget_reserved AFTER INSERT ON deliveries BEGIN
- UPDATE budget_months SET delivery_seconds=delivery_seconds+NEW.seconds WHERE month_start=(SELECT month_start FROM budget_settings WHERE id=1);
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM budget_settings WHERE id=1) THEN RAISE(ABORT,'BUDGET_NOT_CONFIGURED') END;
- SELECT CASE WHEN (SELECT estimated_cents FROM budget_estimates WHERE month_start=(SELECT month_start FROM budget_settings WHERE id=1))>(SELECT cap_cents FROM budget_settings WHERE id=1) THEN RAISE(ABORT,'APPLICATION_BUDGET') END;
+ UPDATE budget_months SET delivery_seconds=delivery_seconds+NEW.seconds WHERE month_start=NEW.budget_month;
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM budget_settings WHERE id=1) OR NOT EXISTS(SELECT 1 FROM budget_months WHERE month_start=NEW.budget_month) THEN RAISE(ABORT,'BUDGET_NOT_CONFIGURED') END;
+ SELECT CASE WHEN (SELECT estimated_cents FROM budget_estimates WHERE month_start=NEW.budget_month)>(SELECT cap_cents FROM budget_settings WHERE id=1) THEN RAISE(ABORT,'APPLICATION_BUDGET') END;
 END;
 CREATE TRIGGER IF NOT EXISTS operation_budget_capacity AFTER UPDATE OF operation_units ON budget_months WHEN NEW.operation_units>OLD.operation_units BEGIN
  SELECT CASE WHEN (SELECT estimated_cents FROM budget_estimates WHERE month_start=NEW.month_start)>(SELECT cap_cents FROM budget_settings WHERE id=1) THEN RAISE(ABORT,'APPLICATION_BUDGET') END;
@@ -165,4 +170,22 @@ END;
 CREATE TRIGGER IF NOT EXISTS undelivered_released AFTER DELETE ON deliveries WHEN OLD.issued=0 BEGIN
  UPDATE quota_periods SET delivery_seconds=delivery_seconds-OLD.seconds WHERE tenant_id=OLD.tenant_id AND period_start=OLD.period_start;
  UPDATE budget_months SET delivery_seconds=delivery_seconds-OLD.seconds WHERE month_start=OLD.budget_month;
+END;
+
+CREATE TRIGGER IF NOT EXISTS delivery_month_required BEFORE INSERT ON deliveries BEGIN
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM budget_months WHERE month_start=NEW.budget_month) OR NEW.created_at<NEW.budget_month OR NEW.created_at>=CAST(strftime('%s',datetime(NEW.budget_month/1000,'unixepoch','+1 month')) AS INTEGER)*1000 THEN RAISE(ABORT,'INVALID_BUDGET_MONTH') END;
+END;
+CREATE TRIGGER IF NOT EXISTS budget_nonnegative_insert BEFORE INSERT ON budget_months BEGIN
+ SELECT CASE WHEN NEW.delivery_seconds<0 OR NEW.operation_units<0 OR NEW.raw_peak_bytes<0 THEN RAISE(ABORT,'INVALID_BUDGET_LEDGER') END;
+END;
+CREATE TRIGGER IF NOT EXISTS budget_nonnegative_update BEFORE UPDATE ON budget_months BEGIN
+ SELECT CASE WHEN NEW.delivery_seconds<0 OR NEW.operation_units<0 OR NEW.raw_peak_bytes<0 OR NEW.month_start!=OLD.month_start THEN RAISE(ABORT,'INVALID_BUDGET_LEDGER') END;
+END;
+
+CREATE INDEX IF NOT EXISTS sessions_family ON sessions(family_id);
+CREATE TRIGGER IF NOT EXISTS session_family_required BEFORE INSERT ON sessions BEGIN
+ SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM session_families WHERE id=NEW.family_id AND account_id=NEW.account_id AND current_token_hash=NEW.token_hash AND revoked_at IS NULL AND absolute_expiry>=NEW.absolute_expiry) THEN RAISE(ABORT,'SESSION_FAMILY_REQUIRED') END;
+END;
+CREATE TRIGGER IF NOT EXISTS session_lineage_immutable BEFORE UPDATE OF token_hash,account_id,family_id ON sessions BEGIN
+ SELECT CASE WHEN NEW.token_hash!=OLD.token_hash OR NEW.account_id!=OLD.account_id OR NEW.family_id IS NOT OLD.family_id THEN RAISE(ABORT,'SESSION_LINEAGE_IMMUTABLE') END;
 END;

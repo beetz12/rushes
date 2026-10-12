@@ -372,6 +372,7 @@ test(
   use(async (f) => {
     const u = await uploaded(f),
       v = f.providers.videos.get(u.grant.uid);
+    const expectedCreator = v.creator;
     v.readyToStream = true;
     v.status.state = 'ready';
     v.duration = 601;
@@ -394,7 +395,7 @@ test(
       'STREAM_OWNERSHIP',
       503,
     );
-    v.creator = `alpha:${u.recording.id}`;
+    v.creator = expectedCreator;
     for (let i = 0; i < 2; i++) {
       const r = await f.request(
         `/api/recordings/${u.recording.id}/process`,
@@ -1397,5 +1398,56 @@ test(
     const detail = await (await f.request(`/api/recordings/${a.id}`, f.auth())).json();
     assert.equal(detail.manifest.upload, undefined);
     assert.equal(detail.manifest.cloudRecordingId, a.id);
+  }),
+);
+test(
+  'fresh Google sign-in creates an independent family after logout of the prior family',
+  use(async (f) => {
+    assert.equal((await f.request('/api/logout', f.auth('alpha', 'POST', {}))).status, 200);
+    const login = await identity(f, { sub: 'google-alpha' }),
+      callback = await login.request();
+    assert.equal(callback.status, 302);
+    const cookie = callback.headers
+      .getSetCookie()
+      .filter((v) => v.startsWith('__Host-rushes-session=') || v.startsWith('__Host-rushes-csrf='))
+      .map((v) => v.split(';')[0])
+      .join('; ');
+    const session = await f.request('/api/session', { headers: { Cookie: cookie } });
+    assert.equal(session.status, 200);
+    assert.equal((await session.json()).user.id, 'account-alpha');
+    assert.equal((await f.request('/api/recordings', { headers: { Cookie: cookie } })).status, 200);
+    assert.equal(
+      f.db.db
+        .prepare(
+          'SELECT COUNT(*) AS n FROM session_families WHERE account_id=? AND revoked_at IS NULL',
+        )
+        .get('account-alpha').n,
+      1,
+    );
+    assert.equal((await f.request('/api/recordings', f.auth())).status, 401);
+  }),
+);
+test(
+  'logout of one family preserves a separately verified Google login on another device',
+  use(async (f) => {
+    const login = await identity(f, { sub: 'google-alpha' }),
+      callback = await login.request();
+    assert.equal(callback.status, 302);
+    const cookie = callback.headers
+      .getSetCookie()
+      .filter((v) => v.startsWith('__Host-rushes-session=') || v.startsWith('__Host-rushes-csrf='))
+      .map((v) => v.split(';')[0])
+      .join('; ');
+    assert.equal(
+      f.db.db
+        .prepare(
+          'SELECT COUNT(*) AS n FROM session_families WHERE account_id=? AND revoked_at IS NULL',
+        )
+        .get('account-alpha').n,
+      2,
+    );
+    assert.equal((await f.request('/api/logout', f.auth('alpha', 'POST', {}))).status, 200);
+    assert.equal((await f.request('/api/recordings', f.auth())).status, 401);
+    assert.equal((await f.request('/api/recordings', { headers: { Cookie: cookie } })).status, 200);
   }),
 );

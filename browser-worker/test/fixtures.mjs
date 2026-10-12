@@ -7,8 +7,9 @@ import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { createWorker } from '../dist/worker.js';
 
 export class D1Fixture {
-  constructor(sql) {
-    this.db = new DatabaseSync(':memory:');
+  constructor(sql, filename = ':memory:') {
+    this.db = new DatabaseSync(filename);
+    this.db.exec('PRAGMA foreign_keys=ON');
     this.db.exec(sql);
   }
   prepare(sql) {
@@ -157,7 +158,11 @@ export class Providers {
     if (u.hostname !== 'api.cloudflare.com') throw new Error(`unhandled fixture provider ${u}`);
     if (u.searchParams.has('direct_user')) {
       this.created.push(options);
-      if (this.createFail) return new Response('unavailable', { status: 503 });
+      if (this.createFail)
+        return Response.json(
+          { success: false, errors: [{ code: 10004, message: 'Fixture invalid upload request' }] },
+          { status: 400 },
+        );
       const id = (++this.next).toString(16).padStart(32, '0');
       const metadata = new Headers(options.headers).get('Upload-Metadata');
       const creator = atob(
@@ -183,6 +188,8 @@ export class Providers {
     if (u.searchParams.has('creator')) {
       return Response.json({
         success: true,
+        total: [...this.videos.values()].filter((v) => v.creator === u.searchParams.get('creator'))
+          .length,
         result: [...this.videos.values()].filter(
           (v) => v.creator === u.searchParams.get('creator'),
         ),
@@ -221,10 +228,21 @@ const sha = (value) => createHash('sha256').update(value).digest('hex');
 
 export { sha };
 
-export async function fixture() {
-  const db = new D1Fixture(await readFile(new URL('../schema.sql', import.meta.url), 'utf8')),
+export async function fixture(options = {}) {
+  const db = new D1Fixture(
+      options.schema ?? (await readFile(new URL('../schema.sql', import.meta.url), 'utf8')),
+    ),
     raw = new R2Fixture(),
     providers = new Providers();
+  if (
+    !db.db
+      .prepare('PRAGMA table_info(sessions)')
+      .all()
+      .some((v) => v.name === 'family_id')
+  )
+    db.db.exec(
+      await readFile(new URL('../migrations/0003_session_families.sql', import.meta.url), 'utf8'),
+    );
   let now = Date.UTC(2026, 9, 12, 16);
   const runtime = { now: () => now, fetch: providers.fetch.bind(providers) },
     worker = createWorker(runtime);
@@ -289,11 +307,17 @@ export async function fixture() {
         'INSERT INTO accounts(id,tenant_id,google_subject,email,name,created_at) VALUES(?,?,?,?,?,?)',
       )
       .run(account, tenant, `google-${name}`, `${name}@example.com`, name, now);
+    const family = `family-${name}`;
     db.db
       .prepare(
-        'INSERT INTO sessions(token_hash,account_id,csrf_hash,created_at,expires_at,absolute_expiry) VALUES(?,?,?,?,?,?)',
+        'INSERT INTO session_families(id,account_id,current_token_hash,absolute_expiry) VALUES(?,?,?,?)',
       )
-      .run(sha(token), account, sha(csrf), now, now + 86400000, now + 14 * 86400000);
+      .run(family, account, sha(token), now + 14 * 86400000);
+    db.db
+      .prepare(
+        'INSERT INTO sessions(token_hash,account_id,csrf_hash,created_at,expires_at,absolute_expiry,family_id) VALUES(?,?,?,?,?,?,?)',
+      )
+      .run(sha(token), account, sha(csrf), now, now + 86400000, now + 14 * 86400000, family);
     users[name] = {
       tenant,
       account,

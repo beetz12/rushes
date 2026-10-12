@@ -31,7 +31,7 @@ import {
 
 import { Auth } from './auth';
 
-import { sign, verify, digest, equal, bytes64, from64 } from './crypto';
+import { sign, verify, digest, equal, bytes64, from64, creatorKey } from './crypto';
 
 import { StreamProvider } from './providers';
 
@@ -694,8 +694,13 @@ export async function finalized(
     ...input,
     manifest: { ...input.manifest, upload: undefined, cloudRecordingId: id },
   };
-  const hash = await digest(JSON.stringify(normalized));
-  if (row.finalize_hash && row.finalize_hash !== hash)
+  const contentHash = await digest(JSON.stringify(normalized));
+  const hash = `v2:${contentHash}`;
+  if (
+    row.finalize_hash &&
+    (row.finalize_hash.startsWith('v2:') ? row.finalize_hash.slice(3) : row.finalize_hash) !==
+      contentHash
+  )
     throw new Failure(
       409,
       'FINALIZE_CONFLICT',
@@ -703,6 +708,12 @@ export async function finalized(
     );
   if (row.state === 'ready')
     throw new Failure(409, 'ALREADY_READY', 'This video is ready in your library.');
+  if (row.error === 'STREAM_CREATE_UNCERTAIN' || row.provision_id)
+    throw new Failure(
+      503,
+      'STREAM_CREATE_UNCERTAIN',
+      'The previous provider association requires recovery before another upload can be issued.',
+    );
   const provider = new StreamProvider(c, runtime);
   if (row.stream_uid && row.upload_url && row.upload_expiry) {
     if (row.upload_expiry > runtime.now())
@@ -771,17 +782,11 @@ export async function finalized(
       'UPLOAD_EXPIRED',
       'This upload reservation has closed. Keep the local draft and start a new cloud recording.',
     );
-  if (row.error === 'STREAM_CREATE_UNCERTAIN')
-    throw new Failure(
-      503,
-      'STREAM_CREATE_UNCERTAIN',
-      'The previous provider association requires recovery before another upload can be issued.',
-    );
   const claimed = await db
     .prepare(
       "UPDATE recordings SET provision_id=?,provision_until=?,state='uploading',updated_at=? WHERE tenant_id=? AND id=? AND stream_uid IS NULL AND state IN ('uploading','failed') AND provision_id IS NULL",
     )
-    .bind(lease, runtime.now() + 120000, runtime.now(), t.id, id)
+    .bind(lease, expiry, runtime.now(), t.id, id)
     .run();
   if (!claimed.meta.changes)
     throw new Failure(
@@ -793,11 +798,16 @@ export async function finalized(
   let upload: UploadGrant;
   try {
     await reserveOperation(c, env, runtime.now());
-    upload = await provider.create(input.composed.bytes, expiry, `${t.id}:${id}`);
+    upload = await provider.create(
+      input.composed.bytes,
+      expiry,
+      await recordedCreator({ ...row, finalize_hash: row.finalize_hash ?? hash }),
+    );
   } catch (error) {
-    const uncertain =
+    const uncertain = !(
       error instanceof Failure &&
-      ['STREAM_UNAVAILABLE', 'STREAM_CREATE_UNCERTAIN'].includes(error.code);
+      ['STREAM_CREATE_REJECTED', 'APPLICATION_BUDGET'].includes(error.code)
+    );
     await db
       .prepare(
         "UPDATE recordings SET state='failed',error=?,provision_id=?,provision_until=? WHERE tenant_id=? AND id=? AND provision_id=?",
@@ -805,7 +815,7 @@ export async function finalized(
       .bind(
         uncertain ? 'STREAM_CREATE_UNCERTAIN' : 'STREAM_CREATE',
         uncertain ? lease : null,
-        uncertain ? runtime.now() + 86400000 : null,
+        uncertain ? expiry : null,
         t.id,
         id,
         lease,
@@ -813,26 +823,51 @@ export async function finalized(
       .run();
     throw error;
   }
-  const saved = await db
-    .prepare(
-      "UPDATE recordings SET stream_uid=?,upload_url=?,upload_expiry=?,provision_id=NULL,provision_until=NULL,error=NULL,state='uploading',updated_at=? WHERE tenant_id=? AND id=? AND provision_id=? AND state='uploading'",
-    )
-    .bind(upload.uid, upload.url, expiry, runtime.now(), t.id, id, lease)
-    .run();
-  if (!saved.meta.changes) {
-    await provider.remove(upload.uid);
+  try {
+    const saved = await db
+      .prepare(
+        "UPDATE recordings SET stream_uid=?,upload_url=?,upload_expiry=?,provision_id=NULL,provision_until=NULL,error=NULL,state='uploading',updated_at=? WHERE tenant_id=? AND id=? AND provision_id=? AND state='uploading'",
+      )
+      .bind(upload.uid, upload.url, expiry, runtime.now(), t.id, id, lease)
+      .run();
+    if (!saved.meta.changes) {
+      await provider.remove(upload.uid);
+      throw new Failure(
+        409,
+        'UPLOAD_CANCELED',
+        'This upload was canceled while it was being provisioned.',
+      );
+    }
+    await db
+      .prepare(
+        "UPDATE upload_reservations SET expires_at=? WHERE tenant_id=? AND recording_id=? AND state='reserved'",
+      )
+      .bind(expiry, t.id, id)
+      .run();
+  } catch (error) {
+    // Provider creation already happened. Its durable lease is the fallback even
+    // if every subsequent database write fails or this isolate is terminated.
+    try {
+      await db
+        .prepare(
+          "UPDATE recordings SET error='STREAM_CREATE_UNCERTAIN',state=CASE WHEN state='deleting' THEN state ELSE 'failed' END,stream_uid=COALESCE(stream_uid,?),provision_id=COALESCE(provision_id,?),provision_until=MAX(COALESCE(provision_until,0),?) WHERE tenant_id=? AND id=? AND state!='deleted' AND (provision_id=? OR stream_uid=?)",
+        )
+        .bind(upload.uid, lease, expiry, t.id, id, lease, upload.uid)
+        .run();
+    } catch {
+      throw new Failure(
+        503,
+        'STREAM_CREATE_UNCERTAIN',
+        'Provider creation could not be mapped durably. The saved creation marker requires reconciliation.',
+      );
+    }
+    if (error instanceof Failure && error.code === 'UPLOAD_CANCELED') throw error;
     throw new Failure(
-      409,
-      'UPLOAD_CANCELED',
-      'This upload was canceled while it was being provisioned.',
+      503,
+      'STREAM_CREATE_UNCERTAIN',
+      'Provider creation could not be confirmed durably. Keep the local draft while cleanup reconciles it.',
     );
   }
-  await db
-    .prepare(
-      "UPDATE upload_reservations SET expires_at=? WHERE tenant_id=? AND recording_id=? AND state='reserved'",
-    )
-    .bind(expiry, t.id, id)
-    .run();
   return response({ upload, state: 'uploading' });
 }
 export async function processRecording(c: Config, env: Env, row: Row, runtime: Runtime) {
@@ -845,7 +880,7 @@ export async function processRecording(c: Config, env: Env, row: Row, runtime: R
     );
   const v = await new StreamProvider(c, runtime).get(row.stream_uid);
   if (!v) throw new Failure(503, 'STREAM_MISSING', 'The provider upload could not be found.');
-  if (!v.requireSignedURLs || v.creator !== `${row.tenant_id}:${row.id}`)
+  if (!v.requireSignedURLs || v.creator !== (await recordedCreator(row)))
     throw new Failure(
       503,
       'STREAM_OWNERSHIP',
@@ -869,7 +904,7 @@ export async function processRecording(c: Config, env: Env, row: Row, runtime: R
       .run();
     return recording(env, row.tenant_id, row.id);
   }
-  if (!v.duration || v.duration > BROWSER_LIMITS.maxTakeSeconds)
+  if (!v.duration || v.duration <= 0 || v.duration > BROWSER_LIMITS.maxTakeSeconds)
     throw new Failure(
       422,
       'PROVIDER_DURATION',
@@ -977,4 +1012,10 @@ export async function downloadChunk(
   };
   if (status === 206) headers['Content-Range'] = `bytes ${start}-${end}/${data.length}`;
   return new Response(data.slice(start, end + 1), { status, headers });
+}
+
+export async function recordedCreator(row: Pick<Row, 'tenant_id' | 'id' | 'finalize_hash'>) {
+  return row.finalize_hash?.startsWith('v2:')
+    ? creatorKey(row.tenant_id, row.id)
+    : `${row.tenant_id}:${row.id}`;
 }

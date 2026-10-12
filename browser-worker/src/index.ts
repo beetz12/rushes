@@ -64,6 +64,11 @@ async function route(
       revision: c.REVISION,
       googleConfigured: googleReady(c, env),
       billingConfigured: billingReady(c),
+      billingMode: billingReady(c)
+        ? c.STRIPE_SECRET_KEY!.startsWith('sk_live_') && c.STRIPE_LIVE_ENABLED === 'true'
+          ? 'live'
+          : 'test'
+        : 'unconfigured',
       streamConfigured: streamReady(c, env),
       captureEnabled: true,
       hostingEnabled: hosting(c, env),
@@ -80,6 +85,10 @@ async function route(
   if (path === '/auth/google/callback' && method === 'GET')
     return googleCallback(request, c, env, runtime);
 
+  if (path === '/api/logout' && method === 'POST') {
+    await json(request, z.object({}).strict(), 2048);
+    return logout(request, c, env, runtime);
+  }
   if (path === '/api/billing/webhook' && method === 'POST')
     return webhook(request, c, env, runtime);
 
@@ -97,10 +106,6 @@ async function route(
     const auth = await authenticate(request, env, runtime);
     if (!['GET', 'HEAD'].includes(method)) await csrf(request, c, auth!);
 
-    if (path === '/api/logout' && method === 'POST') {
-      await json(request, z.object({}).strict(), 2048);
-      return logout(request, c, env, runtime);
-    }
     if (path === '/api/billing/checkout' && method === 'POST') {
       await json(request, z.object({}).strict(), 2048);
       return checkout(c, env, auth!, runtime);
