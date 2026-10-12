@@ -32,8 +32,11 @@ struct ProbeMedia {
                             // AVFoundation also emits zero-sample segment markers;
                             // they have no media timing or payload to validate.
                             guard CMSampleBufferGetNumSamples(packet) > 0 else { continue }
-                            let stamp = packet.presentationTimeStamp
-                            let interval = packet.duration
+                            // Compressed PTS describes source media time. The
+                            // output stamp/duration applies MP4 edit-list trims
+                            // and shifts, matching the decoded presentation.
+                            let stamp = CMSampleBufferGetOutputPresentationTimeStamp(packet)
+                            let interval = CMSampleBufferGetOutputDuration(packet)
                             guard stamp.seconds.isFinite, interval.isValid, interval.seconds.isFinite, interval.seconds >= 0 else {
                                 throw ProbeError.timing
                             }
