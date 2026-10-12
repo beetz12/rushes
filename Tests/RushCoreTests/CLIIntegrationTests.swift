@@ -342,7 +342,7 @@ final class EngineHarness: @unchecked Sendable {
         let err = Pipe()
         process.standardOutput = out
         process.standardError = err
-        let capture: (FileHandle) -> Void = { [weak self] handle in
+        let capture: @Sendable (FileHandle) -> Void = { [weak self] handle in
             let chunk = String(data: handle.availableData, encoding: .utf8) ?? ""
             guard !chunk.isEmpty, let self else { return }
             self.outputLock.lock()
