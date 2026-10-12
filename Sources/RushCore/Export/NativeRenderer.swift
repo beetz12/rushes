@@ -63,35 +63,38 @@ final class NativeRenderer: @unchecked Sendable {
         }
         deinit { reader.cancelReading() }
     }
-    /// One task owns audio writer input; its bounded decoder queue owns reads.
-    /// The video task owns its distinct input. Finalize follows the audio join;
-    /// cancellation rejects decoder results before cleaning staged output.
+    /// One task reads bounded PCM file blocks and owns the audio writer input.
+    /// No final AVAssetReader or compressed composition is involved. The video
+    /// task owns its distinct input; finalization follows the audio task join.
     private final class AudioPump: @unchecked Sendable {
-        private struct Sample:@unchecked Sendable { let buffer:CMSampleBuffer }
-        let reader:AVAssetReader
-        let output:AVAssetReaderAudioMixOutput
+        let file:AVAudioFile
+        let buffer:AVAudioPCMBuffer
         let input:AVAssetWriterInput
         let writer:AVAssetWriter
         let renderer:NativeRenderer
-        private let samples:BoundedMediaRead<Sample>
-        init(reader:AVAssetReader,output:AVAssetReaderAudioMixOutput,input:AVAssetWriterInput,writer:AVAssetWriter,renderer:NativeRenderer) {
-            self.reader=reader; self.output=output; self.input=input; self.writer=writer; self.renderer=renderer
-            let backend=AudioReadBackend(reader:reader,output:output)
-            samples=BoundedMediaRead(copy:{ backend.output.copyNextSampleBuffer().map { Sample(buffer:$0) } },cancel:{ backend.reader.cancelReading() })
+        init(file:AVAudioFile,buffer:AVAudioPCMBuffer,input:AVAssetWriterInput,writer:AVAssetWriter,renderer:NativeRenderer) {
+            self.file=file; self.buffer=buffer; self.input=input; self.writer=writer; self.renderer=renderer
         }
-        private final class AudioReadBackend:@unchecked Sendable {
-            let reader:AVAssetReader; let output:AVAssetReaderAudioMixOutput
-            init(reader:AVAssetReader,output:AVAssetReaderAudioMixOutput) { self.reader=reader; self.output=output }
-        }
-        func cancel() { samples.cancel() }
         func run() async throws {
             defer { if writer.status == .writing { input.markAsFinished() } }
-            while let sample=try await samples.read() {
+            var frame:Int64=0
+            while frame<file.length {
                 try Task.checkCancellation()
+                let count=AVAudioFrameCount(min(Int64(PCMEditingAudioRenderer.block),file.length-frame))
+                try file.read(into:buffer,frameCount:count)
+                guard buffer.frameLength == count else { throw renderFailure("Edited PCM file ended before its expected frame count") }
+                var timing=CMSampleTimingInfo(duration:CMTime(value:1,timescale:48_000),presentationTimeStamp:CMTime(value:frame,timescale:48_000),decodeTimeStamp:.invalid)
+                var sample:CMSampleBuffer?
+                guard CMSampleBufferCreate(allocator:kCFAllocatorDefault,dataBuffer:nil,dataReady:false,makeDataReadyCallback:nil,refcon:nil,formatDescription:buffer.format.formatDescription,sampleCount:Int(count),sampleTimingEntryCount:1,sampleTimingArray:&timing,sampleSizeEntryCount:0,sampleSizeArray:nil,sampleBufferOut:&sample) == noErr,let sample else { throw renderFailure("Cannot create an edited PCM sample") }
+                // Copy the bounded PCM block: the writer can retain this sample
+                // while the file buffer is reused for the next block.
+                guard CMSampleBufferSetDataBufferFromAudioBufferList(sample,blockBufferAllocator:kCFAllocatorDefault,blockBufferMemoryAllocator:kCFAllocatorDefault,flags:0,bufferList:buffer.audioBufferList) == noErr,
+                      CMSampleBufferSetDataReady(sample) == noErr else { throw renderFailure("Cannot copy edited PCM sample data") }
                 try await renderer.wait(input,writer:writer)
-                guard input.append(sample.buffer) else { throw renderFailure(writer.error?.localizedDescription ?? "Audio append failed") }
+                guard input.append(sample) else { throw renderFailure(writer.error?.localizedDescription ?? "Audio append failed") }
+                frame += Int64(count)
             }
-            guard reader.status == .completed else { throw renderFailure(reader.error?.localizedDescription ?? "Audio decoder did not reach the end of the edited timeline") }
+            guard frame == file.length else { throw renderFailure("PCM writer did not reach the end of the edited timeline") }
         }
     }
     private func source(_ kind: TrackKind) async throws -> VideoSource? {
@@ -120,50 +123,38 @@ final class NativeRenderer: @unchecked Sendable {
         if options.preset == .youtube && !options.sourceSize { width=1920; height=1080 }
         return (max(2,Int(width)/2*2),max(2,Int(height)/2*2))
     }
-    private func audioReader() async throws -> (AVAssetReader,AVAssetReaderAudioMixOutput)? {
-        let composition=AVMutableComposition()
-        var inputs:[AVMutableAudioMixInputParameters]=[]
+    private func prepareAudioPCM() async throws -> (AVAudioFile,AVAudioPCMBuffer,URL)? {
         let screenOffset=manifest.tracks.first(where:{$0.kind == .screen})?.offsetMs ?? 0
+        var sources:[PCMEditingAudioInput]=[]
         for info in manifest.tracks where info.present && (info.kind == .microphone || info.kind == .systemAudio) {
-            let asset=AVURLAsset(url:try safeTrackURL(info.file))
-            guard let source=try await asset.loadTracks(withMediaType:.audio).first else { continue }
-            let duration=try await asset.load(.duration).seconds * 1000
+            let decoded=try await PCMAudioSourceCache.shared.prepare(package:package,track:info)
             let offset=Double(info.offsetMs-screenOffset-(info.latencyMs ?? 0))
-            var output=0.0
-            for clip in edit.clips {
-                let availableStart=max(clip.sourceStartMs,offset), availableEnd=min(clip.sourceEndMs,offset+duration)
-                let targetDuration=clip.durationMs
-                if availableEnd > availableStart {
-                    // Give each clip a contiguous decoder segment. A single
-                    // compressed-audio track that seeks backwards for reorder
-                    // can leave AVFoundation's mix reader waiting for EOF.
-                    guard let track=composition.addMutableTrack(withMediaType:.audio,preferredTrackID:kCMPersistentTrackID_Invalid) else { throw renderFailure("Cannot allocate clip audio track") }
-                    let start=CMTime(seconds:(availableStart-offset)/1000,preferredTimescale:600_000)
-                    let length=CMTime(seconds:(availableEnd-availableStart)/1000,preferredTimescale:600_000)
-                    let at=CMTime(seconds:(output+(availableStart-clip.sourceStartMs)/clip.speed)/1000,preferredTimescale:600_000)
-                    try track.insertTimeRange(CMTimeRange(start:start,duration:length),of:source,at:at)
-                    track.scaleTimeRange(CMTimeRange(start:at,duration:length),toDuration:CMTime(seconds:(availableEnd-availableStart)/clip.speed/1000,preferredTimescale:600_000))
-                    let input=AVMutableAudioMixInputParameters(track:track)
-                    let gain=info.kind == .microphone ? (edit.audio.micMuted ? 0 : edit.audio.micGain) : edit.audio.systemGain
-                    input.setVolume(Float(gain),at:.zero); input.audioTimePitchAlgorithm = .spectral
-                    inputs.append(input)
-                }
-                output += targetDuration
-            }
+            let gain=info.kind == .microphone ? (edit.audio.micMuted ? 0 : edit.audio.micGain) : edit.audio.systemGain
+            sources.append(.init(url:decoded.url,frameCount:decoded.frameCount,offsetMs:offset,gain:gain))
         }
-        guard !inputs.isEmpty else { return nil }
-        let reader=try AVAssetReader(asset:composition)
-        let tracks=try await composition.loadTracks(withMediaType:.audio)
-        let output=AVAssetReaderAudioMixOutput(audioTracks:tracks,audioSettings:[AVFormatIDKey:kAudioFormatLinearPCM,AVSampleRateKey:48_000,AVNumberOfChannelsKey:2,AVLinearPCMBitDepthKey:16,AVLinearPCMIsFloatKey:false,AVLinearPCMIsNonInterleaved:false])
-        let mix=AVMutableAudioMix(); mix.inputParameters=inputs
-        output.audioMix=mix; output.audioTimePitchAlgorithm = .spectral
-        reader.add(output); reader.timeRange=CMTimeRange(start:.zero,duration:CMTime(seconds:edit.durationMs/1000,preferredTimescale:600_000))
-        guard reader.startReading() else { throw renderFailure(reader.error?.localizedDescription ?? "Audio mix reader did not start") }
-        return (reader,output)
+        guard !sources.isEmpty else { return nil }
+        let directory=try PostproductionPaths.managedDirectory("renders",in:package.folderURL,create:true)
+        let mixed=try PostproductionPaths.managedFile(".pcm-mix-\(UUID().uuidString).caf",in:directory)
+        do {
+            _=try await PCMEditingAudioRenderer(inputs:sources,clips:edit.clips).render(to:mixed)
+            try Task.checkCancellation()
+            _=try PostproductionPaths.managedDirectory("renders",in:package.folderURL)
+            _=try PostproductionPaths.managedFile(mixed.lastPathComponent,in:directory)
+            let file=try AVAudioFile(forReading:mixed,commonFormat:.pcmFormatFloat32,interleaved:false)
+            guard file.length>0,let buffer=AVAudioPCMBuffer(pcmFormat:file.processingFormat,frameCapacity:PCMEditingAudioRenderer.block) else { throw renderFailure("Edited PCM has no audio frames") }
+            return (file,buffer,mixed)
+        } catch {
+            if let own=try? PostproductionPaths.managedFile(mixed.lastPathComponent,in:directory) { try? FileManager.default.removeItem(at:own) }
+            throw error
+        }
     }
     func render(to target: URL, progress: (@Sendable (ExportProgress) -> Void)? = nil) async throws -> (Int,Int) {
         try Task.checkCancellation()
-        let audio=try await audioReader()
+        let audio=try await prepareAudioPCM()
+        defer {
+            if let audio,let directory=try? PostproductionPaths.managedDirectory("renders",in:package.folderURL),
+               let own=try? PostproductionPaths.managedFile(audio.2.lastPathComponent,in:directory) { try? FileManager.default.removeItem(at:own) }
+        }
         let audioOnly=options.preset == .audio
         let dimensions=audioOnly ? (0,0) : try await dimensions()
         let fileType:AVFileType=options.container == "mov" ? .mov : options.container == "wav" ? .wav : options.container == "m4a" ? .m4a : .mp4
@@ -195,12 +186,10 @@ final class NativeRenderer: @unchecked Sendable {
         // readiness waits can deadlock the muxer when one input needs the other
         // to drain or signal its end of stream.
         let audioTask:Task<Void,Error>?
-        let audioPump:AudioPump?
         if let audio,let input=audioInput {
-            let pump=AudioPump(reader:audio.0,output:audio.1,input:input,writer:writer,renderer:self)
-            audioPump=pump
+            let pump=AudioPump(file:audio.0,buffer:audio.1,input:input,writer:writer,renderer:self)
             audioTask=Task { try await pump.run() }
-        } else { audioTask=nil; audioPump=nil }
+        } else { audioTask=nil }
         do {
             if let input=videoInput, let adaptor {
                 let screen=try await source(.screen), camera=try await source(.camera)
@@ -238,13 +227,13 @@ final class NativeRenderer: @unchecked Sendable {
                 }
                 input.markAsFinished()
             }
-            try await withTaskCancellationHandler(operation:{ try await audioTask?.value },onCancel:{ audioTask?.cancel(); audioPump?.cancel() })
+            try await withTaskCancellationHandler(operation:{ try await audioTask?.value },onCancel:{ audioTask?.cancel() })
             writer.endSession(atSourceTime:CMTime(seconds:edit.durationMs/1000,preferredTimescale:600_000))
             await writer.finishWriting()
             guard writer.status == .completed else { throw renderFailure(writer.error?.localizedDescription ?? "Writer failed during finalize") }
             try Task.checkCancellation()
         } catch {
-            audioTask?.cancel(); audioPump?.cancel(); writer.cancelWriting()
+            audioTask?.cancel(); writer.cancelWriting()
             _=await audioTask?.result
             try? FileManager.default.removeItem(at:target); throw error
         }

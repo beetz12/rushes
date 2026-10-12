@@ -163,7 +163,7 @@ public actor PostproductionService {
     private func cacheKey(package:RecordingPackage,manifest:RecordingManifest,edit:EditDocument,options:ExportOptions,effects:ProductionEffectsPolicy,derived:CameraBlurDerivedVideo?) throws -> String {
         var hasher=SHA256()
         var canonical=edit; canonical.revision=0; canonical.export.lastPath=nil
-        hasher.update(data:Data("rushes.native-render/2".utf8)); hasher.update(data:try ControlWire.encoder.encode(canonical)); hasher.update(data:try ControlWire.encoder.encode(options))
+        hasher.update(data:Data("rushes.native-render/3".utf8)); hasher.update(data:try ControlWire.encoder.encode(canonical)); hasher.update(data:try ControlWire.encoder.encode(options))
         hasher.update(data:try ControlWire.encoder.encode(effects))
         if let derived { hasher.update(data:Data(derived.result.sha256.utf8)) }
         hasher.update(data:try ControlWire.encoder.encode(manifest.tracks))
