@@ -182,9 +182,9 @@ function patchManifest(m: ShareManifest, b: Record<string, unknown>): ShareManif
     return next;
 }
 async function writeManifest(env: Env, row: ShareRow, m: ShareManifest): Promise<ShareReservation> { await env.DB.prepare('UPDATE shares SET manifest = ? WHERE id = ?').bind(JSON.stringify(m), row.id).run(); return reservation(env, { ...row, manifest: JSON.stringify(m) }); }
-async function responseObject(req: Request, obj: StoredObject, protectedShare: boolean): Promise<Response> { const headers = new Headers({ 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': protectedShare ? 'private,no-store' : 'public,max-age=31536000,immutable' }); obj.writeHttpMetadata(headers); headers.set('Cache-Control', protectedShare ? 'private,no-store' : 'public,max-age=31536000,immutable'); headers.set('ETag', obj.httpEtag); headers.set('Content-Length', String(obj.range?.length ?? obj.size)); let status = 200; if (obj.range) {
+async function responseObject(req: Request, obj: StoredObject, protectedShare: boolean, requestedRange?: StoredObject['range']): Promise<Response> { const headers = new Headers({ 'Accept-Ranges': 'bytes', 'X-Content-Type-Options': 'nosniff', 'Cache-Control': protectedShare ? 'private,no-store' : 'public,max-age=31536000,immutable' }); obj.writeHttpMetadata(headers); headers.set('Cache-Control', protectedShare ? 'private,no-store' : 'public,max-age=31536000,immutable'); headers.set('ETag', obj.httpEtag); headers.set('Content-Length', String(requestedRange?.length ?? obj.size)); let status = 200; if (requestedRange) {
     status = 206;
-    headers.set('Content-Range', `bytes ${obj.range.offset}-${obj.range.offset + obj.range.length - 1}/${obj.size}`);
+    headers.set('Content-Range', `bytes ${requestedRange.offset}-${requestedRange.offset + requestedRange.length - 1}/${obj.size}`);
 } return new Response(req.method === 'HEAD' ? null : obj.body, { status, headers }); }
 function parseRange(value: string, size: number): {
     offset: number;
@@ -467,10 +467,12 @@ async function route(req: Request, env: Env): Promise<Response> {
             fail(404, 'NOT_FOUND', 'Asset not found.');
         const range = req.headers.get('range');
         try {
-            const object = await env.MEDIA.get(key, range ? { range: parseRange(range, h!.size) } : undefined);
+            // R2 can return full-span range metadata on a complete object. Only a requested, validated range makes HTTP 206.
+            const requestedRange = range ? parseRange(range, h!.size) : undefined;
+            const object = await env.MEDIA.get(key, requestedRange ? { range: requestedRange } : undefined);
             if (!object)
                 fail(404, 'NOT_FOUND', 'Asset not found.');
-            return responseObject(req, object!, Boolean(row.password_hash));
+            return responseObject(req, object!, Boolean(row.password_hash), requestedRange);
         }
         catch (e) {
             if (e instanceof HTTPError && e.status === 416)

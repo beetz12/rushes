@@ -21,7 +21,9 @@ export class FakeR2 {
     sessions = new Map();
     aborts = 0;
     uploadedParts = [];
-    object(key, data, metadata = {}, range) { const bytes = Buffer.from(data); const etag = createHash('md5').update(bytes).digest('hex'); const body = range ? bytes.subarray(range.offset, range.offset + range.length) : bytes; return { key, size: bytes.length, etag, httpEtag: `"${etag}"`, httpMetadata: metadata, range, body: new ReadableStream({ start(c) { c.enqueue(new Uint8Array(body)); c.close(); } }), writeHttpMetadata(h) { if (metadata.contentType)
+    // Observed live R2 GET metadata can describe the full span even without a requested range.
+    fullRangeMetadata = false;
+    object(key, data, metadata = {}, range) { const bytes = Buffer.from(data); const etag = createHash('md5').update(bytes).digest('hex'); const body = range ? bytes.subarray(range.offset, range.offset + range.length) : bytes; const returnedRange = range ?? (this.fullRangeMetadata ? { offset: 0, length: bytes.length } : undefined); return { key, size: bytes.length, etag, httpEtag: `"${etag}"`, httpMetadata: metadata, range: returnedRange, body: new ReadableStream({ start(c) { c.enqueue(new Uint8Array(body)); c.close(); } }), writeHttpMetadata(h) { if (metadata.contentType)
             h.set('Content-Type', metadata.contentType); if (metadata.cacheControl)
             h.set('Cache-Control', metadata.cacheControl); } }; }
     async put(key, value, options) { const data = typeof value === 'string' ? Buffer.from(value) : value instanceof Uint8Array ? Buffer.from(value) : Buffer.from(await new Response(value).arrayBuffer()); this.objects.set(key, { data, metadata: options?.httpMetadata ?? {} }); return this.object(key, data, options?.httpMetadata); }
