@@ -1505,9 +1505,11 @@ function Review({ id, back, run, setNote, trashed }: any) {
         if (el) el.playbackRate = current.speed * speed;
       });
     }
-    refs.forEach((el) => {
-      if (el && el !== primary && Math.abs(el.currentTime - t) > 0.12) el.currentTime = t;
-    });
+    // Let every track's play request settle before issuing synchronization seeks.
+    if (playing)
+      refs.forEach((el) => {
+        if (el && el !== primary && Math.abs(el.currentTime - t) > 0.12) el.currentTime = t;
+      });
   };
   const onPreviewEnded = (event: React.SyntheticEvent<HTMLVideoElement>) => {
     if (event.currentTarget !== (screenRef.current ?? cameraRef.current)) return;

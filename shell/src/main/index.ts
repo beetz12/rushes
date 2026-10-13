@@ -1612,11 +1612,11 @@ async function ready() {
               ),
             );
           await library.webContents.executeJavaScript(
-            `document.querySelectorAll('video,audio').forEach(el=>el.muted=true);document.querySelector('.player-play').click()`,
+            `window.__reviewPlaybackFailures=[];window.__reviewPauses=[];document.querySelectorAll('video,audio').forEach(el=>{el.muted=true;const play=el.play.bind(el);el.play=()=>play().catch(error=>{window.__reviewPlaybackFailures.push({kind:el.tagName,name:error.name,message:error.message});throw error});const pause=el.pause.bind(el);el.pause=()=>{window.__reviewPauses.push({kind:el.tagName,time:el.currentTime,stack:new Error().stack});pause()}});document.querySelector('.player-play').click()`,
           );
           await new Promise((r) => setTimeout(r, 1000));
           const review = await library.webContents.executeJavaScript(
-            `({media:[...document.querySelectorAll('video,audio')].map(el=>({kind:el.tagName,src:el.src,ready:el.readyState,time:el.currentTime,duration:el.duration,paused:el.paused,error:el.error?.message})),camera:(()=>{const video=document.querySelector('.review-camera');if(!video)return null;const r=video.getBoundingClientRect(),p=document.querySelector('.player').getBoundingClientRect();return {width:r.width,height:r.height,playerWidth:p.width,playerHeight:p.height}})()})`,
+            `({media:[...document.querySelectorAll('video,audio')].map(el=>({kind:el.tagName,src:el.src,ready:el.readyState,time:el.currentTime,duration:el.duration,paused:el.paused,error:el.error?.message})),playbackFailures:window.__reviewPlaybackFailures,pauses:window.__reviewPauses,camera:(()=>{const video=document.querySelector('.review-camera');if(!video)return null;const r=video.getBoundingClientRect(),p=document.querySelector('.player').getBoundingClientRect();return {width:r.width,height:r.height,playerWidth:p.width,playerHeight:p.height}})()})`,
           );
           if (review.media.some((el: any) => el.error || el.ready < 2))
             throw new Error('Real media playback failed: ' + JSON.stringify(review.media));
