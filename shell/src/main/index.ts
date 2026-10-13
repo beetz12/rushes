@@ -115,7 +115,6 @@ const idlePreview = new IdleCameraPreview({
   },
   show: (acknowledgment) => {
     previewFrames.install(acknowledgment);
-    bubble();
   },
 });
 const uiFile = join(__dirname, '../renderer/index.html');
@@ -1480,6 +1479,13 @@ async function ready() {
           const rendererToken = await w.webContents.executeJavaScript(
             `window.__windowProbe = crypto.randomUUID()`,
           );
+          if (process.env.RUSHES_TEST_ENGINE_STUB === '1') {
+            await w.webContents.executeJavaScript(
+              `window.rushes.request('camera.preview.start', {camera:'camera-diagnostic'})`,
+            );
+            if (BrowserWindow.getAllWindows().length !== 1)
+              throw new Error('Idle camera preview opened an extra window');
+          }
           const views = [];
           for (const view of ['library', 'settings', 'recorder', 'library', 'recorder']) {
             const selected = windowFor(view);
