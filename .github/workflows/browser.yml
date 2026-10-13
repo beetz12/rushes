@@ -69,6 +69,7 @@ jobs:
             ${{ runner.temp }}/rushes-browser-proof/*.webm
             ${{ runner.temp }}/rushes-browser-proof/*.log
             ${{ runner.temp }}/rushes-browser-ui/*.png
+            ${{ runner.temp }}/rushes-browser-ui/unclosed-*.json
             ${{ runner.temp }}/rushes-browser-maximum/metrics.json
             ${{ runner.temp }}/rushes-browser-maximum/*.webm
             ${{ runner.temp }}/rushes-browser-maximum/*.log

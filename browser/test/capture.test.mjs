@@ -3,6 +3,11 @@ import assert from 'node:assert/strict';
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+const runFile = promisify(execFile);
 let server, browser, origin;
 before(async () => {
   server = await createServer({ root: fileURLToPath(new URL('..', import.meta.url)), server: { host: '127.0.0.1', port: 0 }, logLevel: 'error',
@@ -35,20 +40,52 @@ async function pageFixture(callback) {
 test('screen/camera composition, separate originals, mixed audio, pause timeline, moved bubble, and final chunks decode', { timeout: 45000 }, async () => pageFixture(async page => {
   const result = await page.evaluate(async () => {
     const { fixture, inspectVideo, inspectAudio } = await import('/test/capture-fixture.mjs');
-    const value = await fixture(); await value.session.start();
+    const value = await fixture();
+    const startRequestedAt = performance.now(); await value.session.start(); const startResolvedAt = performance.now();
     await new Promise(resolve => setTimeout(resolve, 2200)); await value.session.pause();
     await new Promise(resolve => setTimeout(resolve, 700)); value.session.setBubble({ x: 100, y: 100, size: 180 });
     await value.session.resume(); await new Promise(resolve => setTimeout(resolve, 2100));
     const manifest = await value.session.stop();
-    const data = {};
+    const data = {}, retained = {};
     for (const track of manifest.tracks) {
       const blob = await value.store.trackBlob(value.id, track.kind);
+      const bytes = new Uint8Array(await blob.arrayBuffer()); const pieces = [];
+      for (let offset = 0; offset < bytes.length; offset += 16384) pieces.push(String.fromCharCode(...bytes.subarray(offset, offset + 16384)));
+      retained[track.kind] = btoa(pieces.join(''));
       data[track.kind] = ['microphone', 'tab-audio'].includes(track.kind) ? await inspectAudio(blob) : await inspectVideo(blob, [[600, 360], [1070, 590], [190, 190]]);
     }
     const mixed = await inspectAudio(await value.store.trackBlob(value.id, 'composed'));
     const released = [...value.feeds.flatMap(feed => feed.getTracks()), ...value.session.preview.getTracks()].every(track => track.readyState === 'ended');
-    await value.cleanup(); return { manifest, data, mixed, released, states: value.states, finalCheckpoint: value.checkpoints.at(-1) };
+    await value.cleanup(); return { manifest, data, mixed, released, retained, startRequestedAt, startResolvedAt,
+      states: value.states, finalCheckpoint: value.checkpoints.at(-1) };
   });
+  // Retain this generated case before assertions, including on a timing failure.
+  // Packet probes run only after Stop; they do not consume live media.
+  if (process.env.RUSHES_M1_PROOF) {
+    await mkdir(process.env.RUSHES_M1_PROOF, { recursive: true });
+    const packets = {};
+    for (const [kind, data] of Object.entries(result.retained)) {
+      const path = join(process.env.RUSHES_M1_PROOF, `capture-cold-${kind}.webm`);
+      await writeFile(path, Buffer.from(data, 'base64'));
+      try {
+        const raw = await runFile(process.env.RUSHES_FFPROBE || 'ffprobe', ['-v','error','-show_packets',
+          '-show_entries','packet=codec_type,pts_time,duration_time','-of','json',path], { timeout: 5000, maxBuffer: 4 * 1024 ** 2 });
+        const values = JSON.parse(raw.stdout).packets;
+        packets[kind] = {};
+        for (const type of ['video','audio']) {
+          const stream = values.filter(value => value.codec_type === type);
+          if (!stream.length) continue;
+          const gaps = stream.slice(1).map((value,index) => ({ before: stream[index], after: value,
+            milliseconds: (Number(value.pts_time) - Number(stream[index].pts_time)) * 1000 }));
+          packets[kind][type] = { count: stream.length, first: stream.slice(0,8), last: stream.slice(-8),
+            largestGap: gaps.reduce((best,value) => !best || value.milliseconds > best.milliseconds ? value : best, null) };
+        }
+      } catch (error) { packets[kind] = { probeError: String(error) }; }
+    }
+    await writeFile(join(process.env.RUSHES_M1_PROOF, 'capture-cold.log'), JSON.stringify({ manifest: result.manifest,
+      startRequestedAt: result.startRequestedAt, startResolvedAt: result.startResolvedAt, html: result.data, packets }, null, 2));
+  }
+  delete result.retained;
   console.log('Calibration offsets/durations', result.manifest.tracks.map(track => [track.kind, track.startOffsetMs, result.data[track.kind].duration]), result.manifest.durationMs);
   assert.equal(result.manifest.state, 'complete'); assert.equal(result.released, true);
   assert.deepEqual(result.manifest.tracks.map(track => track.kind), ['screen', 'camera', 'microphone', 'tab-audio', 'composed']);

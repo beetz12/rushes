@@ -1,12 +1,15 @@
-import { after, before, test } from 'node:test';
+import { after, afterEach, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, mkdir, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
+import { fixtureContexts, diagnosticWithin } from './fixture-contexts.mjs';
 let server, browser, origin;
+const ownedContexts=fixtureContexts();
+const pageErrors=new WeakMap();
 const proof = process.env.RUSHES_UI_PROOF ?? await mkdtemp(`${tmpdir()}/rushes-ui-`);
 const config = {revision:'fixture',billingMode:'test',googleConfigured:true,billingConfigured:true,streamConfigured:true,captureEnabled:true,hostingEnabled:true,signupEnabled:true,priceUSD:15,limits:{maxTakeSeconds:600,width:1280,height:720,fps:30,monthlyUploadSeconds:6000,retainedSeconds:18000,deliverySeconds:60000,activeRawBytes:2147483648,rawRetentionDays:7,monthlyPriceUSD:15}};
 const user = {id:'fixture-user',tenantId:'fixture-tenant',name:'Sam Taylor',email:'sam@example.test'};
@@ -22,8 +25,30 @@ before(async()=>{
   browser=await chromium.launch({headless:true,...(process.env.RUSHES_CHROME ? {executablePath:process.env.RUSHES_CHROME} : {channel:'chromium'}),args:['--use-fake-device-for-media-stream']});console.log(`Isolated Chromium ${browser.version()} on ${process.platform}`);
 });
 after(async()=>{await browser?.close();server?.kill('SIGTERM');console.log(`UI screenshots: ${proof}`);});
+afterEach(async context=>{
+  const name=context.name.replace(/[^a-z0-9]+/gi,'-').slice(0,100);
+  let index=0;
+  const results=await ownedContexts.drain(async retained=>{
+    const number=index++,pages=[];
+    for(const [pageIndex,page] of retained.pages().entries()) {
+      const entry={url:page.url(),pageErrors:pageErrors.get(page)??[]};pages.push(entry);
+      try {entry.state=await diagnosticWithin(()=>page.evaluate(()=>({
+        main:document.querySelector('main')?.textContent,
+        alerts:[...document.querySelectorAll('[role="alert"],[role="status"]')].map(value=>value.textContent),
+        controls:[...document.querySelectorAll('button')].map(value=>({text:value.textContent,disabled:value.disabled})),
+        recordTime:document.querySelector('.record-time')?.textContent,visibility:document.visibilityState,
+        tracks:(window.testStreams??[]).flatMap(stream=>stream.getTracks().map(track=>({kind:track.kind,readyState:track.readyState,muted:track.muted}))),
+      })),5000);}catch(error){entry.stateError=String(error);}
+      try {await page.screenshot({path:`${proof}/unclosed-${name}-${number}-${pageIndex}.png`,timeout:5000});}
+      catch(error){entry.screenshotError=String(error);}
+    }
+    await writeFile(`${proof}/unclosed-${name}-${number}.json`,JSON.stringify({test:context.name,pages},null,2));
+  });
+  for(const result of results)if(result.status==='rejected')console.error('Retained-context diagnostic failed:',result.reason);
+});
 async function pageFixture(options={}) {
-  const context=await browser.newContext({viewport:{width:1440,height:960},acceptDownloads:true});
+  const context=ownedContexts.own(await browser.newContext({viewport:{width:1440,height:960},acceptDownloads:true}));
+  context.on('page',page=>{const errors=[];pageErrors.set(page,errors);page.on('pageerror',error=>errors.push(error.message));});
   let currentRecording={...recording}; const calls=[];const created=new Map();const granted=new Map();const accepted=new Map();
   await context.route('**/api/**',async route=>{
     const request=route.request();const url=new URL(request.url());const method=request.method();calls.push({path:url.pathname,query:url.search,method,body:request.headers()['content-type']?.includes('application/json')?request.postDataJSON():null,bytes:request.postDataBuffer()?.byteLength??0,headers:request.headers()});
