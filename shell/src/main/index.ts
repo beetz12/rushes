@@ -1538,11 +1538,12 @@ async function ready() {
             `document.querySelector('.window-minimize').click()`,
           );
           await waitFor(async () => w.isMinimized());
-          windowFor('recorder');
+          app.emit('activate');
           await waitFor(async () => !w.isMinimized());
           await w.webContents.executeJavaScript(`document.querySelector('.window-close').click()`);
           await waitFor(async () => !w.isVisible());
-          windowFor('recorder');
+          app.emit('activate');
+          await waitFor(async () => w.isVisible());
           if (process.env.RUSHES_SMOKE_SCREENSHOT)
             await writeFile(
               process.env.RUSHES_SMOKE_SCREENSHOT,
@@ -1698,6 +1699,12 @@ async function ready() {
 }
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
+  app.on('activate', () => {
+    if (!engineReady || quitting || captureBusy()) return;
+    const main = windows.get('recorder');
+    if (!main || main.isDestroyed() || !main.isVisible() || main.isMinimized())
+      windowFor(primaryView);
+  });
   app.on('second-instance', (_event, argv) => {
     const url = argv.find((value) => value.startsWith('rushes:'));
     if (url) void routeURL(url);
