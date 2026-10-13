@@ -8,8 +8,12 @@ public struct LayoutFrames: Equatable, Sendable {
 }
 public enum LayoutPlanner {
     /// Fractions use top-left coordinates, shared with the desktop preview.
-    public static func frames(layout: EditLayout, canvasAspect: Double, hasCamera: Bool, zoomScale: Double = 1) -> LayoutFrames {
+    public static func frames(layout: EditLayout, canvasAspect: Double, hasCamera: Bool, zoomScale: Double = 1, hasScreen: Bool = true) -> LayoutFrames {
         let full = CGRect(x: 0, y: 0, width: 1, height: 1)
+        // Visibility describes the floating camera overlay, never the sole video source.
+        if hasCamera && (!hasScreen || layout.preset == .cameraOnly) {
+            return LayoutFrames(screen: nil, camera: full, roundCamera: false)
+        }
         guard hasCamera && layout.bubble.visible && layout.preset != .screenOnly else { return LayoutFrames(screen: full, camera: nil, roundCamera: false) }
         let aspect = layout.cameraAspect.split(separator: ":").compactMap { Double($0) }
         let cameraAspect = aspect.count == 2 ? aspect[0] / aspect[1] : 1

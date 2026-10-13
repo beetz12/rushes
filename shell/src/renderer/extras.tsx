@@ -501,10 +501,15 @@ export function RecordingJobs({
       {jobs.map((job) => (
         <div className="job-row" key={job.id}>
           <span>
-            <strong>{job.kind}</strong> · {job.status}
+            <strong>{job.kind === 'metadata' ? 'Automatic summary' : job.kind}</strong> ·{' '}
+            {job.status}
             {job.error && (
               <small>
-                {typeof job.error === 'string' ? job.error : (job.error.message ?? job.error.code)}
+                {job.kind === 'metadata' && job.error?.code === 'metadata-model-required'
+                  ? 'Your recording is saved. Automatic title and summary generation was unavailable. Retry it or choose the local summary option below.'
+                  : typeof job.error === 'string'
+                    ? job.error
+                    : (job.error.message ?? job.error.code)}
               </small>
             )}
           </span>

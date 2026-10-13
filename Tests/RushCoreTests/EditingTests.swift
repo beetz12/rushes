@@ -4,6 +4,21 @@ import Testing
 
 @Suite("Non-destructive editing")
 struct EditingTests {
+    @Test func hiddenFloatingOverlayCannotHideCameraOnlyVideo() {
+        var layout=EditLayout(); layout.bubble.visible=false; layout.preset = .cameraOnly
+        let cameraOnly=LayoutPlanner.frames(layout:layout,canvasAspect:16/9,hasCamera:true)
+        #expect(cameraOnly.screen == nil)
+        #expect(cameraOnly.camera == CGRect(x:0,y:0,width:1,height:1))
+        #expect(!cameraOnly.roundCamera)
+        for preset in LayoutPreset.allCases {
+            layout.preset=preset
+            let soleCamera=LayoutPlanner.frames(layout:layout,canvasAspect:16/9,hasCamera:true,hasScreen:false)
+            #expect(soleCamera.screen == nil && soleCamera.camera == CGRect(x:0,y:0,width:1,height:1))
+        }
+        layout.preset = .bubble
+        let screenWithHiddenOverlay=LayoutPlanner.frames(layout:layout,canvasAspect:16/9,hasCamera:true)
+        #expect(screenWithHiddenOverlay.screen != nil && screenWithHiddenOverlay.camera == nil)
+    }
     @Test func cutsReorderSpeedAndValidation() throws {
         var edit=EditDocument(durationMs:10_000)
         try edit.removeRanges([EditCut(sourceStartMs:2000,sourceEndMs:4000,reason:"words",wordIds:["w1"])])

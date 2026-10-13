@@ -258,7 +258,8 @@ final class NativeRenderer: @unchecked Sendable {
     private func compose(screen: CIImage?,camera: CIImage?,viewport: ViewportState,pointer: [Double]?,width: Int,height: Int) throws -> CIImage {
         let bounds=CGRect(x:0,y:0,width:width,height:height)
         var image=CIImage(color:CIColor(red:0.06,green:0.07,blue:0.09)).cropped(to:bounds)
-        let frames=LayoutPlanner.frames(layout:edit.layout,canvasAspect:Double(width)/Double(height),hasCamera:camera != nil,zoomScale:viewport.scale)
+        let hasScreen=manifest.tracks.contains { $0.kind == .screen && $0.present }
+        let frames=LayoutPlanner.frames(layout:edit.layout,canvasAspect:Double(width)/Double(height),hasCamera:camera != nil,zoomScale:viewport.scale,hasScreen:hasScreen)
         func rect(_ fraction:CGRect) -> CGRect { CGRect(x:fraction.minX*Double(width),y:(1-fraction.maxY)*Double(height),width:fraction.width*Double(width),height:fraction.height*Double(height)) }
         if let screen,let region=frames.screen {
             let extent=screen.extent

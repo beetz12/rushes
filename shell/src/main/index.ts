@@ -1603,15 +1603,38 @@ async function ready() {
             await new Promise((r) => setTimeout(r, 100));
           }
           await new Promise((r) => setTimeout(r, 500));
+          if (process.env.RUSHES_SMOKE_CAMERA_REVIEW === '1')
+            await waitFor(async () =>
+              Boolean(
+                await library.webContents.executeJavaScript(
+                  `document.querySelector('.review-camera')?.readyState >= 2`,
+                ),
+              ),
+            );
           await library.webContents.executeJavaScript(
             `document.querySelectorAll('video,audio').forEach(el=>el.muted=true);document.querySelector('.player-play').click()`,
           );
           await new Promise((r) => setTimeout(r, 1000));
           const review = await library.webContents.executeJavaScript(
-            `({text:document.body.innerText,media:[...document.querySelectorAll('video,audio')].map(el=>({src:el.src,ready:el.readyState,time:el.currentTime,duration:el.duration,error:el.error?.message}))})`,
+            `({media:[...document.querySelectorAll('video,audio')].map(el=>({kind:el.tagName,src:el.src,ready:el.readyState,time:el.currentTime,duration:el.duration,paused:el.paused,error:el.error?.message})),camera:(()=>{const video=document.querySelector('.review-camera');if(!video)return null;const r=video.getBoundingClientRect(),p=document.querySelector('.player').getBoundingClientRect();return {width:r.width,height:r.height,playerWidth:p.width,playerHeight:p.height}})()})`,
           );
           if (review.media.some((el: any) => el.error || el.ready < 2))
             throw new Error('Real media playback failed: ' + JSON.stringify(review.media));
+          if (
+            process.env.RUSHES_SMOKE_CAMERA_REVIEW === '1' &&
+            (!review.camera ||
+              review.camera.width !== review.camera.playerWidth ||
+              review.camera.height !== review.camera.playerHeight ||
+              review.media.filter((el: any) => el.kind === 'VIDEO').length !== 1 ||
+              review.media.some((el: any) => el.time < 0.2 || el.paused) ||
+              Math.max(...review.media.map((el: any) => el.time)) -
+                Math.min(...review.media.map((el: any) => el.time)) >
+                0.12)
+          )
+            throw new Error(
+              'Camera-only review is blank, cropped, out of sync or not advancing: ' +
+                JSON.stringify(review),
+            );
           cycle = { capture: 'read-only-real-package', id, review };
           if (process.env.RUSHES_SMOKE_SCREENSHOT)
             await writeFile(

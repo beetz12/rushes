@@ -60,6 +60,7 @@ import { ZoomEditor } from './zoom-editor';
 import { OnboardingTour } from './onboarding-tour';
 import { CountdownAudio } from './countdown-audio';
 import { isPrimaryView } from '../shared/navigation';
+import { reviewVideoSources } from '../shared/review-video';
 document.documentElement.dataset.view = location.hash.slice(1) || 'recorder';
 const api = window.rushes;
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -1344,6 +1345,15 @@ function Review({ id, back, run, setNote, trashed }: any) {
     recording?.manifest?.tracks?.find((t: any) => t.role === 'camera');
   const canvasAspect =
     videoTrack?.width && videoTrack?.height ? videoTrack.width / videoTrack.height : 16 / 9;
+  const videoSources = reviewVideoSources(
+    Boolean(urls.screen),
+    Boolean(urls.camera),
+    layout,
+    bubbleVisible,
+  );
+  const cameraFrame = videoSources.cameraPrimary
+    ? { x: 0, y: 0, width: 1, height: 1 }
+    : frames?.camera;
   useEffect(
     () =>
       api.onEvent((event) => {
@@ -1472,12 +1482,51 @@ function Review({ id, back, run, setNote, trashed }: any) {
     });
     setCurrentTime(t);
   };
-  const togglePlay = () => {
+  const onPreviewTimeUpdate = (event: React.SyntheticEvent<HTMLVideoElement>) => {
+    const primary = screenRef.current ?? cameraRef.current;
+    if (event.currentTarget !== primary) return;
+    const t = primary.currentTime;
+    setCurrentTime(t);
+    const refs = [screenRef.current, cameraRef.current, micRef.current, systemRef.current];
+    if (playing && !renderedPreview && edit?.clips?.length) {
+      const current = edit.clips.find(
+        (clip: any) => t * 1000 >= clip.sourceStartMs && t * 1000 < clip.sourceEndMs,
+      );
+      if (!current) {
+        const next = edit.clips.find((clip: any) => clip.sourceStartMs > t * 1000);
+        if (next) seek(next.sourceStartMs / 1000);
+        else {
+          refs.forEach((el) => el?.pause());
+          setPlaying(false);
+        }
+        return;
+      }
+      refs.forEach((el) => {
+        if (el) el.playbackRate = current.speed * speed;
+      });
+    }
+    refs.forEach((el) => {
+      if (el && el !== primary && Math.abs(el.currentTime - t) > 0.12) el.currentTime = t;
+    });
+  };
+  const onPreviewEnded = (event: React.SyntheticEvent<HTMLVideoElement>) => {
+    if (event.currentTarget !== (screenRef.current ?? cameraRef.current)) return;
+    [screenRef.current, cameraRef.current, micRef.current, systemRef.current].forEach((el) =>
+      el?.pause(),
+    );
+    setPlaying(false);
+  };
+  const togglePlay = async () => {
     const primary = screenRef.current ?? cameraRef.current;
     const refs = [screenRef.current, cameraRef.current, micRef.current, systemRef.current].filter(
       Boolean,
     ) as HTMLMediaElement[];
-    if (!primary) return;
+    if (!primary) {
+      setNote(
+        'No video source is available in this preview. Your originals are kept; try Preview final video.',
+      );
+      return;
+    }
     if (!primary.paused) {
       refs.forEach((el) => el.pause());
       setPlaying(false);
@@ -1485,9 +1534,17 @@ function Review({ id, back, run, setNote, trashed }: any) {
       refs.forEach((el) => {
         el.currentTime = primary.currentTime;
         el.playbackRate = speed;
-        void el.play().catch(() => {});
       });
-      setPlaying(true);
+      try {
+        await Promise.all(refs.map((el) => el.play()));
+        setPlaying(true);
+      } catch {
+        refs.forEach((el) => el.pause());
+        setPlaying(false);
+        setNote(
+          'A track could not play in this preview. Your originals are kept; use Preview final video for a compatible MP4.',
+        );
+      }
     }
   };
   const save = () =>
@@ -1680,7 +1737,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
       <div className="review-grid">
         <div className="review-main">
           <div className="player" style={{ aspectRatio: canvasAspect }}>
-            {(renderedPreview || (urls.screen && (layout !== 'camera-only' || !urls.camera))) && (
+            {(renderedPreview || videoSources.screen) && (
               <video
                 ref={screenRef}
                 src={renderedPreview?.url ?? urls.screen}
@@ -1696,42 +1753,8 @@ function Review({ id, back, run, setNote, trashed }: any) {
                     : undefined
                 }
                 preload="metadata"
-                onTimeUpdate={(e) => {
-                  const t = e.currentTarget.currentTime;
-                  setCurrentTime(t);
-                  if (playing && !renderedPreview && edit?.clips?.length) {
-                    const current = edit.clips.find(
-                      (c: any) => t * 1000 >= c.sourceStartMs && t * 1000 < c.sourceEndMs,
-                    );
-                    if (!current) {
-                      const next = edit.clips.find((c: any) => c.sourceStartMs > t * 1000);
-                      if (next) {
-                        seek(next.sourceStartMs / 1000);
-                      } else {
-                        [
-                          screenRef.current,
-                          cameraRef.current,
-                          micRef.current,
-                          systemRef.current,
-                        ].forEach((el) => el?.pause());
-                        setPlaying(false);
-                      }
-                    } else {
-                      [
-                        screenRef.current,
-                        cameraRef.current,
-                        micRef.current,
-                        systemRef.current,
-                      ].forEach((el) => {
-                        if (el) el.playbackRate = current.speed * speed;
-                      });
-                    }
-                  }
-                  [cameraRef.current, micRef.current, systemRef.current].forEach((el) => {
-                    if (el && Math.abs(el.currentTime - t) > 0.12) el.currentTime = t;
-                  });
-                }}
-                onEnded={() => setPlaying(false)}
+                onTimeUpdate={onPreviewTimeUpdate}
+                onEnded={onPreviewEnded}
                 onError={() =>
                   setNote(
                     'This master codec may need an MP4 export for playback. Your original recording is preserved.',
@@ -1739,7 +1762,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
                 }
               />
             )}
-            {!renderedPreview && urls.camera && layout !== 'screen-only' && bubbleVisible && (
+            {!renderedPreview && videoSources.camera && (
               <video
                 ref={cameraRef}
                 src={urls.camera}
@@ -1747,14 +1770,18 @@ function Review({ id, back, run, setNote, trashed }: any) {
                 preload="metadata"
                 className="review-camera"
                 style={{
-                  left: `${(frames?.camera?.x ?? bubbleCenter[0] - bubbleSize / 2) * 100}%`,
-                  top: `${(frames?.camera?.y ?? bubbleCenter[1] - (bubbleSize * 16) / 9 / 2) * 100}%`,
+                  left: `${(cameraFrame?.x ?? bubbleCenter[0] - bubbleSize / 2) * 100}%`,
+                  top: `${(cameraFrame?.y ?? bubbleCenter[1] - (bubbleSize * 16) / 9 / 2) * 100}%`,
                   right: 'auto',
                   bottom: 'auto',
-                  width: `${(frames?.camera?.width ?? bubbleSize) * 100}%`,
-                  height: `${(frames?.camera?.height ?? (bubbleSize * 16) / 9) * 100}%`,
+                  width: `${(cameraFrame?.width ?? bubbleSize) * 100}%`,
+                  height: `${(cameraFrame?.height ?? (bubbleSize * 16) / 9) * 100}%`,
                   borderRadius:
-                    frames?.roundCamera === false ? '0' : bubbleShape === 'circle' ? '50%' : '25%',
+                    videoSources.cameraPrimary || frames?.roundCamera === false
+                      ? '0'
+                      : bubbleShape === 'circle'
+                        ? '50%'
+                        : '25%',
                   transform: mirror ? 'scaleX(-1)' : undefined,
                 }}
                 onPointerDown={(e) => e.currentTarget.setPointerCapture(e.pointerId)}
@@ -1766,9 +1793,13 @@ function Review({ id, back, run, setNote, trashed }: any) {
                   );
                   if (center) setBubbleCenter(center);
                 }}
-                onTimeUpdate={(e) => {
-                  if (!screenRef.current) setCurrentTime(e.currentTarget.currentTime);
-                }}
+                onTimeUpdate={onPreviewTimeUpdate}
+                onEnded={onPreviewEnded}
+                onError={() =>
+                  setNote(
+                    'The camera track could not load in this preview. Your original is kept; use Preview final video for a compatible MP4.',
+                  )
+                }
               />
             )}
             {!renderedPreview && urls.mic && <audio ref={micRef} src={urls.mic} />}{' '}
@@ -2207,11 +2238,15 @@ function Review({ id, back, run, setNote, trashed }: any) {
           <label className="check-label">
             <input
               type="checkbox"
-              checked={bubbleVisible}
+              checked={videoSources.cameraPrimary || bubbleVisible}
+              disabled={videoSources.cameraPrimary}
               onChange={(e) => setBubbleVisible(e.target.checked)}
             />
             Show camera
           </label>
+          {videoSources.cameraPrimary && (
+            <p className="muted">Your camera is the main video in this layout.</p>
+          )}
           <label className="field">
             Bubble shape
             <select value={bubbleShape} onChange={(e) => setBubbleShape(e.target.value)}>

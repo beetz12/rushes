@@ -270,6 +270,27 @@ struct ExportTests {
         #expect(try await SyntheticExportFixture.audioWindowRMS(audio,start:0.025,end:0.075)<0.005)
         #expect(try await SyntheticExportFixture.audioWindowRMS(audio,start:0.19,end:0.24)>0.12)
     }
+    @Test func hiddenCameraOverlayStillExportsCameraOnlyPixels() async throws {
+        let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
+        let original=try fixture.hashes()
+        var manifest=try fixture.package.readManifest()
+        manifest.tracks.removeAll { $0.kind == .screen || $0.kind == .systemAudio }
+        try fixture.package.writeManifest(manifest)
+        let service=PostproductionService(root:fixture.root)
+        var edit=try await service.getEdit(id:fixture.package.id)
+        edit.clips=[EditClip(id:"c1",sourceStartMs:300,sourceEndMs:600)]
+        edit.layout.bubble.visible=false
+        for preset in [LayoutPreset.cameraOnly, .bubble] {
+            edit.layout.preset=preset
+            _=try await service.setEdit(id:fixture.package.id,edit:edit)
+            let output=fixture.root.appendingPathComponent("hidden-camera-\(preset.rawValue).mp4")
+            _=try await service.export(id:fixture.package.id,to:output)
+            let pixels=try await SyntheticExportFixture.pixels(output,at:0.1)
+            let red=stride(from:0,to:pixels.data.count,by:4).filter { pixels.data[$0]>160 && pixels.data[$0+2]<50 }.count
+            #expect(red > 100)
+        }
+        #expect(try fixture.hashes() == original)
+    }
     @Test func unsafeSourcePathsAndOtherTakeOverwriteRejected() async throws {
         let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
         let second=try RecordingPackage.create(root:fixture.root,date:Date().addingTimeInterval(1))

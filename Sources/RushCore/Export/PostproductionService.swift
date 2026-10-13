@@ -244,7 +244,8 @@ public actor PostproductionService {
         if let value=canvasAspect { aspect=value }
         guard aspect.isFinite,aspect>0,aspect<=20 else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"Invalid canvas aspect ratio") }
         let hasCamera=manifest.tracks.contains { $0.kind == .camera && $0.present }
-        let frames=LayoutPlanner.frames(layout:layout,canvasAspect:aspect,hasCamera:hasCamera)
+        let hasScreen=manifest.tracks.contains { $0.kind == .screen && $0.present }
+        let frames=LayoutPlanner.frames(layout:layout,canvasAspect:aspect,hasCamera:hasCamera,hasScreen:hasScreen)
         func rectangle(_ rect:CGRect?) -> JSONValue {
             guard let rect else { return .null }
             return .object(["x":.double(rect.minX),"y":.double(rect.minY),"width":.double(rect.width),"height":.double(rect.height)])
