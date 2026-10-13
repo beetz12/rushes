@@ -4,6 +4,7 @@ export function isConnectionErrorCode(code: unknown): boolean {
     [
       'engine-disconnected',
       'socket-error',
+      'invalid-json',
       'engine-recovery-failed',
       'engine-start-failed',
     ].includes(code)

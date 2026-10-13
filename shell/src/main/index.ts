@@ -34,6 +34,14 @@ import { videoExportRequest } from '../shared/review-draft';
 import { atomicJSON, atomicBytes } from './atomic';
 import { OnboardingStore } from './onboarding-store';
 import { CameraOverlayLifecycle, recoveredBubbleHidden } from './camera-overlay';
+import { IdleCameraPreview } from './idle-camera-preview';
+import { PreviewFrames } from './preview-frames';
+import {
+  CountdownSignals,
+  RecordingStartup,
+  RecordingWindowLifecycle,
+  type StartupAttempt,
+} from './recording-controls';
 import { openAreaPicker } from './area-picker';
 import { startShellServer } from './shell-server';
 import { MediaRegistry, parseRange, mimeType } from './media';
@@ -41,6 +49,7 @@ import {
   requestSchema,
   windowSchema,
   recordingOptionsSchema,
+  exportPresetSchema,
   cloudSettingsSchema,
   shareCommands,
   defaultOptions,
@@ -89,6 +98,24 @@ let drawingEnabled = false;
 let cloudSettings: CloudSettings = { provider: 'none' };
 let cloudGeneration = 0;
 let viewNotifications: ViewNotifications | undefined;
+const countdownSignals = new CountdownSignals();
+const recordingWindows = new RecordingWindowLifecycle();
+const recordingStartup = new RecordingStartup();
+const previewFrames = new PreviewFrames();
+const idlePreview = new IdleCameraPreview({
+  allowed: () => engineReady && !quitting && !captureBusy() && recorderVisible(),
+  start: (camera) => supervisor.client.request('camera.preview.start', { camera }),
+  stop: () =>
+    supervisor.active ? Promise.resolve() : supervisor.client.request('camera.preview.stop'),
+  clear: () => {
+    previewFrames.clear();
+    broadcast({ event: 'camera-preview-cleared' });
+  },
+  show: (acknowledgment) => {
+    previewFrames.install(acknowledgment);
+    bubble();
+  },
+});
 const uiFile = join(__dirname, '../renderer/index.html');
 const devURL = app.isPackaged
   ? undefined
@@ -101,11 +128,13 @@ const devURL = app.isPackaged
       .optional()
       .parse(process.env.RUSHES_DEV_URL);
 const broadcast = (event: Record<string, unknown>) => {
+  if (event.event === 'camera-preview' && !supervisor.active && !idlePreview.acceptsFrames) return;
+  if (event.event === 'camera-preview' && !previewFrames.accepts(event.result ?? event)) return;
   for (const [view, window] of windows) {
     if (window.isDestroyed()) continue;
     if (
       event.event === 'camera-preview' &&
-      (!['bubble', 'recorder'].includes(view) || !window.isVisible())
+      (!['bubble', 'recorder'].includes(view) || !window.isVisible() || window.isMinimized())
     )
       continue;
     window.webContents.send('rushes:event', event);
@@ -114,8 +143,10 @@ const broadcast = (event: Record<string, unknown>) => {
 function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions = {}) {
   const old = windows.get(view);
   if (old && !old.isDestroyed()) {
+    if (old.isMinimized()) old.restore();
     old.show();
     old.focus();
+    if (view === 'recorder') void syncIdlePreview();
     return old;
   }
   const compact = ['bar', 'bubble', 'area', 'teleprompter', 'drawing', 'drawing-tools'].includes(
@@ -141,6 +172,9 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
       sandbox: true,
       nodeIntegration: false,
       webSecurity: true,
+      // Only local app code runs here; native countdown events must also sound
+      // when a take is started through the registered keyboard shortcut.
+      autoplayPolicy: 'no-user-gesture-required',
     },
     ...extra,
   });
@@ -170,13 +204,21 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
     if (view === 'drawing' && drawingEnabled)
       void hideDrawing().catch((error) => broadcast({ event: 'warning', message: String(error) }));
   });
-  if (view === 'recorder')
+  if (view === 'recorder') {
+    w.on('show', () => void syncIdlePreview());
     w.on('hide', () => {
       if (!captureBusy())
         void hideCameraBubble().catch((error) =>
           broadcast({ event: 'warning', message: String(error) }),
         );
     });
+    w.on('minimize', () => {
+      if (!captureBusy())
+        void hideCameraBubble().catch((error) =>
+          broadcast({ event: 'warning', message: String(error) }),
+        );
+    });
+  }
   if (view === 'bubble' || view === 'bar') w.on('moved', () => rememberPosition(view, w));
   w.once('ready-to-show', () => {
     if (quitting || w.isDestroyed() || windows.get(view) !== w) return;
@@ -423,6 +465,7 @@ function queueBubbleWrite(write: () => Promise<void>) {
 }
 async function hideCameraBubble() {
   const generation = cameraOverlay.hide();
+  idlePreview.invalidate();
   const busy = captureBusy();
   const id = currentId;
   if (busy) bubbleSuppressed = true;
@@ -435,8 +478,40 @@ async function hideCameraBubble() {
         await supervisor.client.request('record.bubble', { ...lastBubble, visible: false });
     });
   } else if (!captureBusy() && cameraOverlay.sameGeneration(generation)) {
-    await supervisor.client.request('camera.preview.stop');
+    await idlePreview.stop();
   }
+}
+async function syncIdlePreview() {
+  const camera = options.camera;
+  if (camera === 'none' || !engineReady || captureBusy() || quitting || !recorderVisible()) return;
+  const generation = cameraOverlay.begin();
+  try {
+    const permissions = await supervisor.client.request('permissions.check');
+    if (
+      permissions.camera !== 'granted' ||
+      !cameraOverlay.current(generation) ||
+      options.camera !== camera ||
+      captureBusy() ||
+      !recorderVisible()
+    )
+      return;
+    await idlePreview.select(camera);
+  } catch (error) {
+    if (!captureBusy() && recorderVisible())
+      broadcast({
+        event: 'warning',
+        message: String(error),
+        code: (error as { code?: string })?.code,
+      });
+  }
+}
+function recorderVisible() {
+  const recorder = windows.get('recorder');
+  return !!recorder && !recorder.isDestroyed() && recorder.isVisible() && !recorder.isMinimized();
+}
+function clearCountdown() {
+  countdownSignals.cancel();
+  broadcast({ event: 'countdown-cleared' });
 }
 function rememberPosition(view: 'bubble' | 'bar', w: BrowserWindow) {
   const bounds = w.getBounds(),
@@ -487,6 +562,7 @@ function bubble() {
 }
 function showRecordingBubble(id: string) {
   if (bubbleSuppressed) return;
+  const frameGeneration = previewFrames.clear();
   return cameraOverlay
     .showWhenReady(
       async (current) => {
@@ -498,8 +574,11 @@ function showRecordingBubble(id: string) {
           !supervisor.active
         )
           return false;
-        await supervisor.client.request('camera.preview.subscribe', { enabled: true });
-        return current() && currentId === id && supervisor.active;
+        const acknowledgment = await supervisor.client.request('camera.preview.subscribe', {
+          enabled: true,
+        });
+        if (!current() || currentId !== id || !supervisor.active) return false;
+        return previewFrames.install(acknowledgment, frameGeneration);
       },
       (hasCamera) => {
         if (hasCamera && !quitting && !bubbleSuppressed && currentId === id && supervisor.active) {
@@ -514,6 +593,12 @@ function showRecordingBubble(id: string) {
 }
 async function requestControl(cmd: string, args: Record<string, unknown> = {}) {
   try {
+    if (['record.stop', 'record.cancel', 'record.discard'].includes(cmd)) clearCountdown();
+    if (
+      ['record.stop', 'record.cancel', 'record.discard'].includes(cmd) &&
+      recordingStartup.cancelBeforeIssue()
+    )
+      return { state: 'idle' };
     if (cmd === 'record.stop') await syncBubble();
     return await supervisor.client.request(cmd, args);
   } catch (error) {
@@ -692,6 +777,7 @@ async function ready() {
       throw new Error('Use the native save dialog for file output');
     if (request.cmd === 'camera.preview.start' && supervisor.active) {
       bubbleSuppressed = false;
+      const frameGeneration = previewFrames.clear();
       return cameraOverlay.showWhenReady(
         async (current) => {
           const live = await supervisor.client.request('status');
@@ -704,10 +790,16 @@ async function ready() {
           if (request.args.camera !== 'default' && request.args.camera !== camera)
             throw new Error('Keep the active recording camera selected until this take finishes.');
           if (!current() || !supervisor.active || currentId !== id) return;
-          return supervisor.client.request('camera.preview.subscribe', { enabled: true });
+          const acknowledgment = await supervisor.client.request('camera.preview.subscribe', {
+            enabled: true,
+          });
+          if (!current() || !supervisor.active || currentId !== id) return;
+          return previewFrames.install(acknowledgment, frameGeneration)
+            ? acknowledgment
+            : undefined;
         },
-        () => {
-          if (!quitting && supervisor.active) {
+        (acknowledgment) => {
+          if (acknowledgment && !quitting && supervisor.active) {
             bubble();
             void syncBubble();
           }
@@ -716,17 +808,27 @@ async function ready() {
     }
     if (request.cmd === 'camera.preview.stop') return hideCameraBubble();
     if (request.cmd === 'camera.preview.start') {
-      return cameraOverlay.showWhenReady(
-        () => supervisor.client.request(request.cmd, request.args),
-        () => {
-          if (!quitting && !captureBusy() && windows.get('recorder')?.isVisible()) bubble();
-        },
+      cameraOverlay.begin();
+      return idlePreview.select(
+        z
+          .string()
+          .min(1)
+          .max(300)
+          .parse(request.args.camera ?? 'default'),
       );
     }
+    if (['record.stop', 'record.cancel', 'record.discard'].includes(request.cmd)) clearCountdown();
+    if (
+      ['record.stop', 'record.cancel', 'record.discard'].includes(request.cmd) &&
+      recordingStartup.cancelBeforeIssue()
+    )
+      return { state: 'idle' };
     if (request.cmd === 'record.stop') await syncBubble();
     if (request.cmd === 'camera.blur.set' && request.args.enabled === true)
       broadcast({ event: 'camera-preview-cleared' });
+    let startAttempt: StartupAttempt | undefined;
     if (request.cmd === 'record.start') {
+      startAttempt = recordingStartup.begin();
       startRequests++;
       bubbleSuppressed = false;
       cameraOverlay.hide();
@@ -734,23 +836,33 @@ async function ready() {
     }
     let result;
     try {
+      // Finish idle warm-up before native acquisition takes over the camera.
+      if (startAttempt) {
+        await idlePreview.stop();
+        recordingStartup.issue(startAttempt);
+      }
       result = await supervisor.client.request(request.cmd, request.args);
+    } catch (error) {
+      if (request.cmd === 'record.start') clearCountdown();
+      throw error;
     } finally {
-      if (request.cmd === 'record.start') startRequests--;
+      if (request.cmd === 'record.start') {
+        if (startAttempt) recordingStartup.finish(startAttempt);
+        startRequests--;
+        if (!supervisor.active) void syncIdlePreview();
+      }
     }
     if (request.cmd === 'permissions.settings' && result.url) {
       const u = new URL(result.url);
       if (u.protocol === 'x-apple.systempreferences:') await shell.openExternal(result.url);
     }
+    if (request.cmd === 'permissions.request' && result.camera === 'granted')
+      void syncIdlePreview();
     if (request.cmd === 'teleprompter.set') {
       promptScript = String(request.args.script ?? '');
       promptEnabled = request.args.enabled === true;
       broadcast({ event: 'teleprompter-config', script: promptScript, enabled: promptEnabled });
       if (!promptEnabled) windows.get('teleprompter')?.close();
-    }
-    if (request.cmd === 'record.start') {
-      windows.get('recorder')?.hide();
-      bar();
     }
     return result;
   });
@@ -780,8 +892,13 @@ async function ready() {
   handle('rushes:save-options', async (value) => {
     const next = recordingOptionsSchema.parse(value);
     if (next.editorCommandTemplate.trim()) editorArguments(next.editorCommandTemplate);
-    options = next;
+    const previousCamera = options.camera;
+    options = next.mode === 'camera-only' ? { ...next, systemAudio: false } : next;
     await writeOptions();
+    if (options.camera !== previousCamera && !captureBusy()) {
+      if (options.camera === 'none') await hideCameraBubble();
+      else void syncIdlePreview();
+    }
   });
   handle('rushes:select-area', async (value) => {
     const local = z
@@ -939,21 +1056,7 @@ async function ready() {
     const v = z
       .object({
         id: z.string().min(1).max(200),
-        preset: z.enum([
-          'share',
-          'full',
-          'youtube',
-          'youtube-source',
-          'audio',
-          'audio-wav',
-          'editor-tracks',
-          'srt',
-          'vtt',
-          'txt',
-          'thumbnail',
-          'diagnostics',
-          'chapters',
-        ]),
+        preset: exportPresetSchema,
         atMs: z.number().nonnegative().optional(),
       })
       .parse(value);
@@ -976,7 +1079,7 @@ async function ready() {
     let path: string | undefined;
     if (v.preset === 'editor-tracks') {
       const d = await dialog.showOpenDialog({
-        title: 'Export raw original tracks',
+        title: 'Save separate original screen, camera and audio files',
         properties: ['openDirectory', 'createDirectory'],
       });
       if (!d.canceled) path = join(d.filePaths[0], `Rushes-${v.id}`);
@@ -1131,10 +1234,21 @@ async function ready() {
     desktopNotification,
   );
   supervisor.client.on('event', async (e) => {
-    broadcast(e);
+    const countdownCurrent = countdownSignals.current(e);
+    const tick = recordingStartup.canceling ? undefined : countdownSignals.event(e);
+    if (e.event !== 'countdown' || (countdownCurrent && !recordingStartup.canceling))
+      broadcast(tick === undefined ? e : { ...e, tick });
     if (e.event === 'recording-started') {
       state = 'recording';
       currentId = e.recordingId;
+      idlePreview.invalidate();
+      recordingWindows.event(e, () => {
+        for (const view of ['recorder', 'library', 'settings']) {
+          const window = windows.get(view);
+          if (window && !window.isDestroyed() && window.isVisible() && !window.isMinimized())
+            window.minimize();
+        }
+      });
       bar();
       if (promptEnabled)
         void showTeleprompter().catch((error) =>
@@ -1150,6 +1264,7 @@ async function ready() {
       void syncBubble().catch((error) => broadcast({ event: 'warning', message: String(error) }));
     }
     if (e.event === 'engine-reconnected' && !quitting) {
+      previewFrames.clear();
       const recoveredId = e.status?.recording?.recordingID;
       bubbleSuppressed = recoveredBubbleHidden(currentId, recoveredId, e.state, bubbleSuppressed);
       if (recoveredId !== currentId || e.state === 'idle' || e.state === 'preparing') {
@@ -1171,6 +1286,7 @@ async function ready() {
     }
     if (e.event === 'state-changed' && typeof e.state === 'string') {
       if (cameraOverlay.newTake(state, e.state)) {
+        idlePreview.invalidate();
         if (startRequests === 0) bubbleSuppressed = false;
         windows.get('bubble')?.close();
       }
@@ -1182,6 +1298,7 @@ async function ready() {
       if (typeof stoppedId === 'string')
         void autoShare.recordingStopped(stoppedId, options.autoShare);
       state = 'idle';
+      previewFrames.clear();
       cameraOverlay.hide();
       bubbleSuppressed = false;
       broadcast({ event: 'camera-preview-cleared' });
@@ -1205,6 +1322,8 @@ async function ready() {
   });
   supervisor.client.on('engine-error', (e) => broadcast({ event: 'error', ...e }));
   supervisor.client.on('disconnected', () => {
+    clearCountdown();
+    idlePreview.invalidate();
     cameraOverlay.hide();
     windows.get('bubble')?.close();
     broadcast({ event: 'camera-preview-cleared' });
@@ -1233,6 +1352,7 @@ async function ready() {
       if (promptEnabled) void showTeleprompter().catch(() => {});
     }
     broadcast({ event: 'engine-ready' });
+    void syncIdlePreview();
     viewNotifications.start();
     if (cloudSettings.provider !== 'none')
       void shares

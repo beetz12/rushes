@@ -26,6 +26,7 @@ export class EngineClient extends EventEmitter {
   private connecting?: Promise<void>;
   private connectingSocket?: Socket;
   private buffer = '';
+  private protocolFailed = false;
   private pending = new Map<
     string,
     { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }
@@ -42,6 +43,7 @@ export class EngineClient extends EventEmitter {
         socket.off('error', reject);
         this.socket = socket;
         this.buffer = '';
+        this.protocolFailed = false;
         resolve();
       });
       socket.on('data', (data) => {
@@ -69,6 +71,7 @@ export class EngineClient extends EventEmitter {
     return !!this.socket && !this.socket.destroyed && this.socket.writable;
   }
   ingest(chunk: string) {
+    if (this.protocolFailed) return;
     this.buffer += chunk;
     if (this.buffer.length > 16 * 1024 * 1024) {
       this.socket?.destroy();
@@ -86,8 +89,12 @@ export class EngineClient extends EventEmitter {
       try {
         object = JSON.parse(line);
       } catch {
-        this.emit('engine-error', { code: 'invalid-json', message: 'Invalid engine event' });
-        continue;
+        this.invalidLine(line);
+        return;
+      }
+      if (!object || typeof object !== 'object' || Array.isArray(object)) {
+        this.invalidLine(line);
+        return;
       }
       if (typeof object.event === 'string') {
         this.emit('event', object);
@@ -105,6 +112,19 @@ export class EngineClient extends EventEmitter {
           }),
         );
     }
+  }
+  private invalidLine(line: string) {
+    this.protocolFailed = true;
+    this.buffer = '';
+    this.rejectAll(
+      'Native engine connection interrupted by an invalid response. Your media stays in the recording library.',
+    );
+    this.socket?.destroy();
+    this.emit('engine-error', {
+      code: 'invalid-json',
+      message: 'Invalid engine event',
+      lineBytes: Buffer.byteLength(line, 'utf8'),
+    });
   }
   request(cmd: string, args: Record<string, unknown> = {}, timeout = 120_000): Promise<any> {
     if (!this.connected) return Promise.reject(disconnected());

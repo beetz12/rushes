@@ -353,6 +353,21 @@ h3 {
   object-fit: cover;
   transform: scaleX(-1);
 }
+.camera-only-preview .screen-symbol {
+  display: none;
+}
+.camera-only-preview .preview-camera {
+  position: static;
+  order: -1;
+  width: 150px;
+  height: 150px;
+  flex-shrink: 0;
+  margin-bottom: 12px;
+}
+.camera-only-preview p {
+  margin-bottom: 0;
+  text-align: center;
+}
 .capture-options {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;

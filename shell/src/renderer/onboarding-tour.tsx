@@ -18,12 +18,12 @@ const steps = [
   {
     title: 'Choose the access you need',
     target: 'permissions',
-    body: 'Screen Recording is required. Camera and microphone access are optional: request them only if you want your face or voice in this take. After a denial, open Privacy & Security in System Settings, enable Rushes, then check again. A Screen Recording grant may need a relaunch. Accessibility and Input Monitoring are only for optional advanced tracking.',
+    body: 'Screen Recording is needed when you capture a screen. Camera only leaves screen capture off and needs Camera access. Microphone access is optional for your voice. After a denial, open Privacy & Security in System Settings, enable Rushes, then check again. A Screen Recording grant may need a relaunch. Accessibility and Input Monitoring are only for optional advanced tracking.',
   },
   {
     title: 'Choose what to show',
     target: 'source',
-    body: 'Record an entire display, one window, or a selected rectangle. Choose the actual source below these tabs. For an area, use Select recording area and drag your frame.',
+    body: 'Record an entire display, one window, or a selected rectangle. Camera only turns screen capture off for a talking-head video. Choose the actual screen source below these tabs. For an area, use Select recording area and drag your frame.',
   },
   {
     title: 'Choose your devices',
@@ -33,7 +33,7 @@ const steps = [
   {
     title: 'Start when you are ready',
     target: 'start',
-    body: 'Choose no countdown, 3 seconds or 5 seconds. Start recording begins the real take; Escape cancels its countdown. During a take, the floating bar offers Pause, Resume and Stop. Finish guide does not start a recording.',
+    body: 'Choose no countdown, 3 seconds or 5 seconds. A short tone marks each countdown step; Escape cancels. When the take actually starts, the main window minimizes and the camera bubble and floating Pause, Resume and Stop bar stay available. Finish guide does not start a recording.',
   },
   {
     title: 'Move or hide your camera',
@@ -43,7 +43,7 @@ const steps = [
   {
     title: 'Keep originals; export a video',
     target: 'originals',
-    body: 'Rushes keeps screen, camera, microphone and system audio as separate original tracks for the inputs you enabled. After Stop, review the take in My recordings. Export creates a combined video; sharing uploads a rendered video through your configured provider. Review sharing settings before your first take, including Auto-share. Finish guide leaves you here, ready to choose Start recording.',
+    body: 'Rushes keeps screen, camera, microphone and system audio as separate original tracks for the inputs you enabled. After Stop, review the take in My recordings and choose one combined video or separate original files under Export output. Sharing uploads a rendered video through your configured provider. Review sharing settings before your first take, including Auto-share. Finish guide leaves you here, ready to choose Start recording.',
   },
 ];
 

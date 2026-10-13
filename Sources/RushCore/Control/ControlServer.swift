@@ -126,6 +126,9 @@ final class SocketLineIO: @unchecked Sendable {
                     continue
                 }
                 if sent < 0 && errno == EINTR { continue }
+                // A prefix may already be on the stream. Close under this same
+                // lock so another reply cannot append to an incomplete line.
+                closeWhileLocked()
                 return false
             }
             return true
@@ -212,13 +215,17 @@ final class SocketLineIO: @unchecked Sendable {
 
     func close() {
         writeLock.withLock {
-            guard !closed else { return }
-            closed = true
-            // Wake a blocking reader, but retain the descriptor until its
-            // final syscall returns so the OS cannot reuse it mid-read.
-            _ = Darwin.shutdown(fd, SHUT_RDWR)
-            if activeReads == 0 { Darwin.close(fd) }
+            closeWhileLocked()
         }
+    }
+
+    /// Requires writeLock. Write failures and explicit Close share descriptor
+    /// ownership, including a reader that is still inside its final syscall.
+    private func closeWhileLocked() {
+        guard !closed else { return }
+        closed = true
+        _ = Darwin.shutdown(fd, SHUT_RDWR)
+        if activeReads == 0 { Darwin.close(fd) }
     }
 }
 
