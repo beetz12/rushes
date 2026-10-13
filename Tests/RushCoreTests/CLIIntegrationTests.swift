@@ -291,6 +291,9 @@ final class EngineHarness: @unchecked Sendable {
     private let engineURL: URL
     private let indexPath: URL
     private var process: Process?
+    /// True only after `Process.run()` succeeded. `waitUntilExit` on a
+    /// process that never launched throws.
+    private var engineDidLaunch = false
     private let outputLock = NSLock()
     private var outputText = ""
     private var bootID = 0
@@ -309,7 +312,7 @@ final class EngineHarness: @unchecked Sendable {
         self.recordingsRoot = scratch.appendingPathComponent("root", isDirectory: true)
         self.indexPath = scratch.appendingPathComponent("index.sqlite")
         Self.installCleanupOnce()
-        boot()
+        startVerifiedEngine()
     }
 
     /// The stub engine can exit after a take on the hosted runner. Later CLI
@@ -318,26 +321,109 @@ final class EngineHarness: @unchecked Sendable {
     private func ensureRunning() {
         if process?.isRunning == true { return }
         logEngineReplacement("process had exited")
-        boot()
+        startVerifiedEngine()
     }
 
-    /// Exit 4 means the socket never answered or the engine closed it.
-    /// `isRunning` can still be true while shutdown is stuck, so replace
-    /// the process before the retry.
+    /// Exit 4 on the harness socket means the engine hung up or never
+    /// answered. Reap it completely, then boot a replacement that has
+    /// already answered `ping`, and retry the CLI call once.
     private func replaceEngine() {
         logEngineReplacement("connection closed")
-        if let process, process.isRunning {
-            process.terminate()
-            let deadline = Date().addingTimeInterval(3)
-            while process.isRunning, Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.05)
+        startVerifiedEngine()
+    }
+
+    /// The previous take's engine can still accept on this path after
+    /// `isRunning` flips, and `server.stop()` unlinks whatever file is at
+    /// the path when shutdown finishes. Booting before that socket goes
+    /// quiet makes the retry connect to the dying server (`connection-closed`)
+    /// or watch the replacement exit because the path is still taken.
+    private func startVerifiedEngine() {
+        retireCurrentEngine()
+        var lastOutput = ""
+        for attempt in 1...3 {
+            if attempt > 1 {
+                let detail = lastOutput.replacingOccurrences(of: "\n", with: " ")
+                logEngineReplacement(
+                    "replacement was not accepting connections \(detail.suffix(240))")
+                retireCurrentEngine()
             }
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-                process.waitUntilExit()
+            switch launchEngine() {
+            case .ready:
+                return
+            case .died(let output):
+                lastOutput = output
+            case .timedOut(let output):
+                fatalError("engine never reported ready: \(output)")
             }
         }
-        boot()
+        fatalError("engine never reported ready: \(lastOutput)")
+    }
+
+    /// SIGTERM, then `waitUntilExit`, so the pid cannot be reused and
+    /// shutdown's socket unlink cannot land after the replacement binds.
+    /// If the process is still alive at the deadline, it stays installed
+    /// so the next attempt can signal it again.
+    private func retireCurrentEngine() {
+        let running = process
+        let didLaunch = engineDidLaunch
+        process = nil
+        engineDidLaunch = false
+        if let running, didLaunch {
+            if running.isRunning {
+                running.terminate()
+            }
+            if !reap(running) {
+                process = running
+                engineDidLaunch = true
+                logEngineReplacement("engine did not exit before replacement")
+                return
+            }
+        }
+        stdoutHandle?.readabilityHandler = nil
+        stderrHandle?.readabilityHandler = nil
+        stdoutHandle = nil
+        stderrHandle = nil
+        let quiet = CLIEngineHandover.waitUntilQuiet(
+            timeout: 2,
+            isLive: { CLIEngineHandover.socketIsLive(self.socketPath) })
+        if quiet {
+            try? FileManager.default.removeItem(at: socketPath)
+        } else {
+            logEngineReplacement("socket still accepting after engine exit")
+        }
+    }
+
+    /// One in-flight `waitUntilExit` per pid. A second retire must not call
+    /// `waitUntilExit` again while the first waiter is still blocked.
+    private var reapers: [Int32: DispatchGroup] = [:]
+
+    /// True once the process has been waited on. A false return means it
+    /// may still be alive; the caller keeps the `Process` so the next
+    /// attempt can signal it again.
+    private func reap(_ running: Process) -> Bool {
+        let pid = running.processIdentifier
+        let finished: DispatchGroup
+        if let existing = reapers[pid] {
+            finished = existing
+        } else {
+            let box = ReapBox(running)
+            let group = DispatchGroup()
+            group.enter()
+            reapers[pid] = group
+            DispatchQueue.global(qos: .userInitiated).async {
+                box.process.waitUntilExit()
+                group.leave()
+            }
+            finished = group
+        }
+        if finished.wait(timeout: .now() + 3) == .success {
+            reapers[pid] = nil
+            return true
+        }
+        if pid > 0 { kill(pid, SIGKILL) }
+        let done = finished.wait(timeout: .now() + 2) == .success
+        if done { reapers[pid] = nil }
+        return done
     }
 
     private func logEngineReplacement(_ reason: String) {
@@ -345,7 +431,16 @@ final class EngineHarness: @unchecked Sendable {
         FileHandle.standardError.write(Data(line.utf8))
     }
 
-    private func boot() {
+    private enum EngineLaunch {
+        case ready
+        case died(String)
+        case timedOut(String)
+    }
+
+    /// Starts one engine and returns only after it has printed ready and
+    /// answered `ping` while still running. A ready line alone is not
+    /// enough: the previous listener can still be the process that accepts.
+    private func launchEngine() -> EngineLaunch {
         stdoutHandle?.readabilityHandler = nil
         stderrHandle?.readabilityHandler = nil
         outputLock.lock()
@@ -353,6 +448,10 @@ final class EngineHarness: @unchecked Sendable {
         let bootID = bootID
         outputText = ""
         outputLock.unlock()
+
+        if CLIEngineHandover.socketIsLive(socketPath) {
+            return .died("previous engine still accepting at \(socketPath.path)")
+        }
 
         let process = Process()
         process.executableURL = engineURL
@@ -377,22 +476,56 @@ final class EngineHarness: @unchecked Sendable {
         err.fileHandleForReading.readabilityHandler = capture
         stdoutHandle = out.fileHandleForReading
         stderrHandle = err.fileHandleForReading
-        self.process = process
         do {
             try process.run()
-            engineHarnessProcesses.append(process)
         } catch {
             fatalError("could not spawn the engine: \(error)")
         }
+        engineHarnessProcesses.append(process)
+        self.process = process
+        self.engineDidLaunch = true
         // Wait for the ready line (up to 120 s; a cold start on a loaded CI
-        // VM can take much longer than a warm local run).
+        // VM can take much longer than a warm local run). Ping is bounded
+        // separately so a ready line from a socket that then hangs up does
+        // not count.
         let deadline = Date().addingTimeInterval(120)
+        var readyAt: Date?
         while Date() < deadline {
-            if readyOutput().contains("\"event\":\"ready\"") { return }
-            if !process.isRunning { break }
+            if !process.isRunning { return .died(readyOutput()) }
+            if readyOutput().contains("\"event\":\"ready\"") {
+                if readyAt == nil { readyAt = Date() }
+                if pingOnce() { return .ready }
+                if let readyAt, Date().timeIntervalSince(readyAt) > 2 {
+                    return .died(readyOutput())
+                }
+            }
             Thread.sleep(forTimeInterval: 0.05)
         }
-        fatalError("engine never reported ready: \(readyOutput())")
+        if process.isRunning { return .timedOut(readyOutput()) }
+        return .died(readyOutput())
+    }
+
+    /// One control round trip. False when the socket hangs up, refuses the
+    /// connect, or the process dies before the response — the same
+    /// `connection-closed` the CLI would report.
+    private func pingOnce() -> Bool {
+        guard process?.isRunning == true else { return false }
+        let connection: ControlConnection
+        do {
+            connection = try ControlClient.connect(to: socketPath)
+        } catch {
+            return false
+        }
+        defer { connection.close() }
+        guard process?.isRunning == true else { return false }
+        do {
+            let (response, _) = try connection.roundTrip(
+                ControlRequest(id: "harness-ping", cmd: "ping"),
+                timeout: 2)
+            return response.ok && process?.isRunning == true
+        } catch {
+            return false
+        }
     }
 
     private func readyOutput() -> String {
@@ -415,7 +548,12 @@ final class EngineHarness: @unchecked Sendable {
         // A connect can be refused while the engine is busy, or the process
         // can stay up after it has closed the socket. Replace it and retry
         // once so the test is about the CLI, not a stuck stub engine.
-        if result.status == 4 {
+        // Exit 4 aimed at some other `--socket` (the absent-engine case)
+        // is the CLI's own result; replacing the harness engine there
+        // kills a live server between tests.
+        let harnessRejected = result.status == 4
+            && CLIEngineHandover.targetsEngine(arguments, engineSocket: socketPath.path)
+        if harnessRejected {
             replaceEngine()
             return try runCLIOnce(arguments, timeout: timeout)
         }
@@ -464,6 +602,117 @@ final class EngineHarness: @unchecked Sendable {
         let stderr = String(data: captured.stderr, encoding: .utf8) ?? ""
         return (process.terminationStatus, stdout, stderr)
     }
+}
+
+// MARK: - Socket handover
+
+/// Decides when a stub engine may be replaced. The listen path is shared
+/// across the suite; a new process must not bind it while the previous
+/// one can still accept, and an exit 4 aimed at a different `--socket`
+/// must not be treated as this engine dying.
+enum CLIEngineHandover {
+
+    /// The last `--socket PATH` wins, matching `parseCLI`. No override
+    /// means the harness socket.
+    static func targetsEngine(_ arguments: [String], engineSocket: String) -> Bool {
+        var selected = engineSocket
+        var index = 0
+        while index < arguments.count {
+            if arguments[index] == "--socket" {
+                guard index + 1 < arguments.count else { return false }
+                selected = arguments[index + 1]
+                index += 2
+                continue
+            }
+            index += 1
+        }
+        return selected == engineSocket
+    }
+
+    static func socketIsLive(_ socketPath: URL) -> Bool {
+        guard let connection = try? ControlClient.connect(to: socketPath) else { return false }
+        connection.close()
+        return true
+    }
+
+    /// True only once `isLive` has returned false. A socket that keeps
+    /// accepting through `timeout` is not quiet.
+    static func waitUntilQuiet(
+        timeout: TimeInterval,
+        poll: TimeInterval = 0.05,
+        isLive: () -> Bool
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while isLive() {
+            if Date() >= deadline { return false }
+            Thread.sleep(forTimeInterval: poll)
+        }
+        return true
+    }
+}
+
+private struct HandoverEcho: ControlHandling {
+    func handle(_ request: ControlRequest, context: ControlCommandContext) async {
+        context.reply(.success(id: request.id, result: .object(["pong": .bool(true)])))
+    }
+}
+
+@Suite("CLI engine handover")
+struct CLIEngineHandoverTests {
+
+    @Test("Replacement waits until the previous socket stops accepting")
+    func waitsUntilPreviousSocketIsQuiet() throws {
+        let socket = URL(
+            fileURLWithPath: "/tmp/rctl-handover-\(UUID().uuidString.prefix(8))/control.sock")
+        let directory = socket.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let server = ControlServer(socketPath: socket, handler: HandoverEcho())
+        try server.start()
+        defer { server.stop() }
+
+        let stillLive = CLIEngineHandover.waitUntilQuiet(
+            timeout: 0.2,
+            isLive: { CLIEngineHandover.socketIsLive(socket) })
+        #expect(!stillLive)
+        #expect(CLIEngineHandover.socketIsLive(socket))
+
+        server.stop()
+        let quiet = CLIEngineHandover.waitUntilQuiet(
+            timeout: 2,
+            isLive: { CLIEngineHandover.socketIsLive(socket) })
+        #expect(quiet)
+        #expect(!CLIEngineHandover.socketIsLive(socket))
+
+        let replacement = ControlServer(socketPath: socket, handler: HandoverEcho())
+        try replacement.start()
+        defer { replacement.stop() }
+        let connection = try ControlClient.connect(to: socket)
+        defer { connection.close() }
+        let (response, _) = try connection.roundTrip(
+            ControlRequest(id: "handover", cmd: "ping"), timeout: 2)
+        #expect(response.ok)
+    }
+
+    @Test("An explicit --socket to another path is not the harness engine")
+    func foreignSocketIsNotTheHarnessEngine() {
+        let engine = "/tmp/rctl-cli-test/control.sock"
+        #expect(CLIEngineHandover.targetsEngine(["guide"], engineSocket: engine))
+        #expect(CLIEngineHandover.targetsEngine(
+            ["--socket", engine, "status"], engineSocket: engine))
+        #expect(!CLIEngineHandover.targetsEngine(
+            ["--socket", "/tmp/absent/control.sock", "--no-launch", "guide"],
+            engineSocket: engine))
+        #expect(!CLIEngineHandover.targetsEngine(
+            ["--socket", engine, "--socket", "/tmp/absent/control.sock", "guide"],
+            engineSocket: engine))
+    }
+}
+
+/// `Process` is not sent across the wait queue as a Sendable value; the
+/// box is the only reference the reaper block touches.
+private final class ReapBox: @unchecked Sendable {
+    let process: Process
+    init(_ process: Process) { self.process = process }
 }
 
 private final class CLIOutputCapture: @unchecked Sendable {
