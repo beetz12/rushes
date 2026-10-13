@@ -18,6 +18,7 @@ import {
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
+import { isPrimaryView, windowKey, type PrimaryView } from '../shared/navigation';
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -63,6 +64,7 @@ protocol.registerSchemesAsPrivileged([
   },
 ]);
 const windows = new Map<string, BrowserWindow>();
+let primaryView: PrimaryView = 'recorder';
 const media = new MediaRegistry();
 const exportedFiles = new Set<string>();
 const userDir =
@@ -141,8 +143,23 @@ const broadcast = (event: Record<string, unknown>) => {
   }
 };
 function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions = {}) {
-  const old = windows.get(view);
+  const primary = isPrimaryView(view);
+  const key = windowKey(view);
+  if (primary) primaryView = view;
+  const old = windows.get(key);
   if (old && !old.isDestroyed()) {
+    if (primary) {
+      const navigate = () => {
+        if (!old.isDestroyed() && windows.get(key) === old && primaryView === view)
+          old.webContents.send('rushes:event', { event: 'navigate', view });
+      };
+      if (old.webContents.isLoading()) old.webContents.once('did-finish-load', navigate);
+      else navigate();
+      if (view !== 'recorder' && !captureBusy())
+        void hideCameraBubble().catch((error) =>
+          broadcast({ event: 'warning', message: String(error) }),
+        );
+    }
     if (old.isMinimized()) old.restore();
     old.show();
     old.focus();
@@ -160,7 +177,7 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
     show: false,
     title: view === 'drawing' ? 'Rushes Drawing' : 'Rushes',
     backgroundColor: '#f7f8fa',
-    titleBarStyle: compact ? 'default' : 'hiddenInset',
+    titleBarStyle: compact ? 'default' : 'hidden',
     frame: !compact,
     alwaysOnTop: compact,
     transparent: ['bubble', 'area', 'drawing', 'teleprompter'].includes(view),
@@ -178,7 +195,8 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
     },
     ...extra,
   });
-  windows.set(view, w);
+  windows.set(key, w);
+  if (primary && process.platform === 'darwin') w.setWindowButtonVisibility(false);
   if (compact) {
     // The transient picker contains only selection controls and closes before capture.
     // Protecting a display-sized transparent window obscures desktop screenshots.
@@ -196,15 +214,15 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
       w.webContents.reload();
   });
   w.on('closed', () => {
-    if (windows.get(view) === w) windows.delete(view);
-    if (view === 'recorder' && !captureBusy())
+    if (windows.get(key) === w) windows.delete(key);
+    if (primary && !captureBusy())
       void hideCameraBubble().catch((error) =>
         broadcast({ event: 'warning', message: String(error) }),
       );
     if (view === 'drawing' && drawingEnabled)
       void hideDrawing().catch((error) => broadcast({ event: 'warning', message: String(error) }));
   });
-  if (view === 'recorder') {
+  if (primary) {
     w.on('show', () => void syncIdlePreview());
     w.on('hide', () => {
       if (!captureBusy())
@@ -218,10 +236,19 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
           broadcast({ event: 'warning', message: String(error) }),
         );
     });
+    const reportWindowState = () =>
+      w.webContents.send('rushes:event', {
+        event: 'main-window-state',
+        maximized: w.isMaximized() || w.isFullScreen(),
+      });
+    w.on('maximize', reportWindowState);
+    w.on('unmaximize', reportWindowState);
+    w.on('enter-full-screen', reportWindowState);
+    w.on('leave-full-screen', reportWindowState);
   }
   if (view === 'bubble' || view === 'bar') w.on('moved', () => rememberPosition(view, w));
   w.once('ready-to-show', () => {
-    if (quitting || w.isDestroyed() || windows.get(view) !== w) return;
+    if (quitting || w.isDestroyed() || windows.get(key) !== w) return;
     if (['bubble', 'bar', 'teleprompter', 'drawing', 'drawing-tools'].includes(view))
       w.showInactive();
     else w.show();
@@ -507,7 +534,13 @@ async function syncIdlePreview() {
 }
 function recorderVisible() {
   const recorder = windows.get('recorder');
-  return !!recorder && !recorder.isDestroyed() && recorder.isVisible() && !recorder.isMinimized();
+  return (
+    primaryView === 'recorder' &&
+    !!recorder &&
+    !recorder.isDestroyed() &&
+    recorder.isVisible() &&
+    !recorder.isMinimized()
+  );
 }
 function clearCountdown() {
   countdownSignals.cancel();
@@ -757,7 +790,12 @@ async function ready() {
   trayUpdate();
   app.dock?.hide();
   if (app.isPackaged) app.setAsDefaultProtocolClient('rushes');
-  handle('rushes:bootstrap', () => ({ options, enginePath, packaged: app.isPackaged }));
+  handle('rushes:bootstrap', () => ({
+    options,
+    enginePath,
+    packaged: app.isPackaged,
+    primaryView,
+  }));
   handle('rushes:onboarding', async (value) => {
     const result = await onboarding.action(value);
     if (value !== 'get') {
@@ -956,6 +994,20 @@ async function ready() {
         return showTeleprompter();
       case 'close':
         return windows.get('recorder')?.hide();
+      case 'minimize':
+        return windows.get('recorder')?.minimize();
+      case 'maximize': {
+        const window = windows.get('recorder');
+        if (!window || window.isDestroyed()) return;
+        if (window.isFullScreen()) window.setFullScreen(false);
+        else if (window.isMaximized()) window.unmaximize();
+        else window.maximize();
+        return;
+      }
+      case 'window-state': {
+        const window = windows.get('recorder');
+        return { maximized: !!window && (window.isMaximized() || window.isFullScreen()) };
+      }
       case 'hide-bubble':
         return hideCameraBubble();
       case 'area': {
@@ -1311,7 +1363,7 @@ async function ready() {
       const openReview = () =>
         library.webContents.send('rushes:event', {
           event: 'open-recording',
-          id: e.recordingId ?? currentId,
+          id: stoppedId,
         });
       if (library.webContents.isLoading())
         library.webContents.once('did-finish-load', () => setTimeout(openReview, 100));
@@ -1419,6 +1471,86 @@ async function ready() {
           }
           throw new Error('UI recording smoke state timed out');
         };
+        if (process.env.RUSHES_SMOKE_WINDOWS === '1') {
+          await waitFor(async () =>
+            Boolean(
+              await w.webContents.executeJavaScript(`document.querySelector('.window-chrome')`),
+            ),
+          );
+          const rendererToken = await w.webContents.executeJavaScript(
+            `window.__windowProbe = crypto.randomUUID()`,
+          );
+          const views = [];
+          for (const view of ['library', 'settings', 'recorder', 'library', 'recorder']) {
+            const selected = windowFor(view);
+            if (selected !== w) throw new Error('Navigation created a second main window.');
+            await waitFor(
+              async () =>
+                (await w.webContents.executeJavaScript(`document.documentElement.dataset.view`)) ===
+                view,
+            );
+            if ((await w.webContents.executeJavaScript(`window.__windowProbe`)) !== rendererToken)
+              throw new Error('Navigation reloaded the main renderer.');
+            if (
+              BrowserWindow.getAllWindows().filter((window) => !window.isDestroyed()).length !== 1
+            )
+              throw new Error('Navigation retained a duplicate window.');
+            views.push(view);
+          }
+          const chrome = await w.webContents.executeJavaScript(`({
+            drag: getComputedStyle(document.querySelector('.window-chrome')).getPropertyValue('-webkit-app-region'),
+            controls: [...document.querySelectorAll('.window-control')].map(button => ({
+              label:button.getAttribute('aria-label'), width:button.getBoundingClientRect().width, height:button.getBoundingClientRect().height,
+              region:getComputedStyle(button).getPropertyValue('-webkit-app-region'), radius:getComputedStyle(button).borderRadius
+            }))
+          })`);
+          if (
+            chrome.drag !== 'drag' ||
+            chrome.controls.length !== 3 ||
+            chrome.controls.some(
+              (button: any) =>
+                button.width !== button.height ||
+                button.width !== 14 ||
+                button.region !== 'no-drag',
+            )
+          )
+            throw new Error('Window drag or circle geometry is invalid.');
+          const before = w.getBounds();
+          w.setPosition(before.x + 40, before.y + 30);
+          const moved = w.getBounds();
+          if (!w.isMovable() || moved.x === before.x || moved.y === before.y)
+            throw new Error('Main window cannot move.');
+          await w.webContents.executeJavaScript(
+            `document.querySelector('.window-maximize').click()`,
+          );
+          await waitFor(async () => w.isMaximized());
+          await w.webContents.executeJavaScript(
+            `document.querySelector('.window-maximize').click()`,
+          );
+          await waitFor(async () => !w.isMaximized());
+          await w.webContents.executeJavaScript(
+            `document.querySelector('.window-minimize').click()`,
+          );
+          await waitFor(async () => w.isMinimized());
+          windowFor('recorder');
+          await waitFor(async () => !w.isMinimized());
+          await w.webContents.executeJavaScript(`document.querySelector('.window-close').click()`);
+          await waitFor(async () => !w.isVisible());
+          windowFor('recorder');
+          if (process.env.RUSHES_SMOKE_SCREENSHOT)
+            await writeFile(
+              process.env.RUSHES_SMOKE_SCREENSHOT,
+              (await w.webContents.capturePage()).toPNG(),
+            );
+          cycle = {
+            views,
+            chrome,
+            movable: w.isMovable(),
+            before,
+            moved,
+            windows: BrowserWindow.getAllWindows().length,
+          };
+        }
 
         if (process.env.RUSHES_SMOKE_EXTRAS === '1') {
           const settings = windowFor('settings');
@@ -1483,9 +1615,13 @@ async function ready() {
         if (process.env.RUSHES_SMOKE_RECORD_STUB === '1') {
           if (process.env.RUSHES_TEST_ENGINE_STUB !== '1')
             throw new Error('UI recording smoke requires explicit synthetic engine mode');
-          await w.webContents.executeJavaScript(
-            `[...document.querySelectorAll('button')].find(b=>b.textContent.includes('Start recording')).click()`,
+          windowFor('library');
+          await waitFor(
+            async () =>
+              (await w.webContents.executeJavaScript(`document.documentElement.dataset.view`)) ===
+              'library',
           );
+          w.webContents.send('rushes:event', { event: 'hotkey-start' });
           await waitFor(async () => {
             const s = await supervisor.client.request('status');
             return s.state === 'recording';
@@ -1501,7 +1637,8 @@ async function ready() {
           });
           const list = await supervisor.client.request('list');
           if (!list.recordings.length) throw new Error('Stopped take missing from library');
-          const library = windows.get('library')!;
+          const library = windows.get('recorder')!;
+          if (library !== w) throw new Error('Stopped take opened a second main window');
           await waitFor(async () =>
             Boolean(
               await library.webContents.executeJavaScript(
@@ -1521,7 +1658,15 @@ async function ready() {
           const review = await library.webContents.executeJavaScript(
             `({text:document.body.innerText,video:document.querySelector('video')?.src,ready:document.querySelector('video')?.readyState})`,
           );
-          cycle = { capture: 'synthetic', recordings: list.recordings.length, review };
+          if (BrowserWindow.getAllWindows().length !== 1)
+            throw new Error('Stopped take retained a second window');
+          cycle = {
+            ...cycle,
+            capture: 'synthetic',
+            recordings: list.recordings.length,
+            review,
+            reviewWindows: BrowserWindow.getAllWindows().length,
+          };
           if (process.env.RUSHES_SMOKE_SCREENSHOT)
             await writeFile(
               process.env.RUSHES_SMOKE_SCREENSHOT,

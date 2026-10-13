@@ -74,6 +74,9 @@ export const windowSchema = z
       'settings',
       'recorder',
       'close',
+      'minimize',
+      'maximize',
+      'window-state',
       'area',
       'drawing',
       'drawing-hide',
@@ -278,7 +281,12 @@ export function previewAcknowledgment(raw: unknown): PreviewAcknowledgment {
 export interface RushesAPI {
   onboarding(action: OnboardingAction): Promise<OnboardingRecord>;
   request(cmd: string, args?: Record<string, unknown>): Promise<any>;
-  bootstrap(): Promise<{ options: RecordingOptions; enginePath: string; packaged: boolean }>;
+  bootstrap(): Promise<{
+    options: RecordingOptions;
+    enginePath: string;
+    packaged: boolean;
+    primaryView?: string;
+  }>;
   saveOptions(options: RecordingOptions): Promise<void>;
   presets(
     action: 'list' | 'save' | 'delete',

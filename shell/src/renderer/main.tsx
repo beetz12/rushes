@@ -59,6 +59,7 @@ import {
 import { ZoomEditor } from './zoom-editor';
 import { OnboardingTour } from './onboarding-tour';
 import { CountdownAudio } from './countdown-audio';
+import { isPrimaryView } from '../shared/navigation';
 document.documentElement.dataset.view = location.hash.slice(1) || 'recorder';
 const api = window.rushes;
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -85,7 +86,19 @@ function Icon({ name, size = 20 }: { name: string; size?: number }) {
   return <Glyph size={size} strokeWidth={1.7} aria-hidden="true" />;
 }
 function App() {
-  const view = location.hash.slice(1) || 'recorder';
+  const [view, setView] = useState(location.hash.slice(1) || 'recorder');
+  const viewRef = useRef(view);
+  const receivedNavigation = useRef(false);
+  const startRef = useRef<() => void>(() => {});
+  const [openRecording, setOpenRecording] = useState<{ id: string }>();
+  const navigate = useCallback((next: string) => {
+    if (!isPrimaryView(next)) return;
+    viewRef.current = next;
+    document.documentElement.dataset.view = next;
+    history.replaceState(null, '', `#${next}`);
+    setView(next);
+    setOpenRecording(undefined);
+  }, []);
   const [errors, dispatchError] = useReducer(appErrors, initialAppErrors);
   const [note, setNote] = useState('');
   const error = appErrorText(errors);
@@ -144,10 +157,32 @@ function App() {
       setError('Open Rushes in the desktop app to connect to the native recording engine.');
       return;
     }
-    api.bootstrap().then((v) => setOptions(v.options));
+    api.bootstrap().then((v) => {
+      setOptions(v.options);
+      if (
+        !receivedNavigation.current &&
+        isPrimaryView(viewRef.current) &&
+        isPrimaryView(v.primaryView)
+      )
+        navigate(v.primaryView);
+    });
     void api.presets('list').then(setPresets);
     void refresh();
     const off = api.onEvent((e) => {
+      if (e.event === 'navigate' && isPrimaryView(e.view)) {
+        receivedNavigation.current = true;
+        navigate(e.view);
+      }
+      if (e.event === 'open-recording' && typeof e.id === 'string') {
+        receivedNavigation.current = true;
+        navigate('library');
+        setOpenRecording({ id: e.id });
+      }
+      if (e.event === 'hotkey-start') {
+        receivedNavigation.current = true;
+        navigate('recorder');
+        startRef.current();
+      }
       if (e.event === 'error') setError(String(e.message ?? 'Native engine error'), e.code);
       if (e.event === 'warning') setNote(String(e.message ?? e.code));
       if (e.event === 'engine-ready') void refresh();
@@ -182,7 +217,7 @@ function App() {
         const remaining = Number((e.result as any)?.remaining ?? e.remaining);
         setCountdown(remaining);
         if (remaining <= 0) countdownAudio.cancel();
-        if (view === 'recorder' && typeof e.tick === 'number')
+        if (viewRef.current === 'recorder' && typeof e.tick === 'number')
           void countdownAudio.tick(e.tick).catch(() => {});
       }
       if (e.event === 'countdown-cleared') {
@@ -253,17 +288,16 @@ function App() {
       await refresh();
       return r;
     });
+  startRef.current = () => {
+    void start();
+  };
   useEffect(() => {
     if (!api || view !== 'recorder') return;
-    const off = api.onEvent((e) => {
-      if (e.event === 'hotkey-start') void start();
-    });
     const key = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && countdown !== null) void control('record.cancel');
     };
     window.addEventListener('keydown', key);
     return () => {
-      off();
       window.removeEventListener('keydown', key);
     };
   }, [view, options, countdown]);
@@ -415,6 +449,7 @@ function App() {
     );
   return (
     <div className="app">
+      <WindowChrome run={run} />
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-icon">r</div>
@@ -806,7 +841,7 @@ function App() {
               )}
             </>
           ) : view === 'library' ? (
-            <Library run={run} setNote={setNote} />
+            <Library run={run} setNote={setNote} openRecording={openRecording} />
           ) : (
             <Settings
               permissions={permissions}
@@ -827,6 +862,61 @@ function App() {
           onError={setError}
         />
       )}
+    </div>
+  );
+}
+function WindowChrome({ run }: { run: (action: () => Promise<any>) => Promise<any> }) {
+  const [maximized, setMaximized] = useState(false);
+  useEffect(() => {
+    if (!api) return;
+    void api
+      .window('window-state')
+      .then((state) => setMaximized(state.maximized))
+      .catch(() => {});
+    return api.onEvent((event) => {
+      if (event.event === 'main-window-state') setMaximized(event.maximized === true);
+    });
+  }, []);
+  return (
+    <div className="window-chrome" aria-label="Window title bar">
+      <div className="window-controls">
+        <button
+          className="window-control window-close"
+          aria-label="Close window"
+          title="Close window"
+          onClick={() => {
+            void run(() => api.window('close'));
+          }}
+        >
+          <svg viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M2 2 8 8M8 2 2 8" />
+          </svg>
+        </button>
+        <button
+          className="window-control window-minimize"
+          aria-label="Minimize window"
+          title="Minimize window"
+          onClick={() => {
+            void run(() => api.window('minimize'));
+          }}
+        >
+          <svg viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M2 5H8" />
+          </svg>
+        </button>
+        <button
+          className="window-control window-maximize"
+          aria-label={maximized ? 'Restore window' : 'Maximize window'}
+          title={maximized ? 'Restore window' : 'Maximize window'}
+          onClick={() => {
+            void run(() => api.window('maximize'));
+          }}
+        >
+          <svg viewBox="0 0 10 10" aria-hidden="true">
+            <path d="M2 6V2H6M4 8H8V4" />
+          </svg>
+        </button>
+      </div>
     </div>
   );
 }
@@ -977,7 +1067,7 @@ function AreaSelector() {
     </div>
   );
 }
-function Library({ run, setNote }: any) {
+function Library({ run, setNote, openRecording }: any) {
   const [rows, setRows] = useState<any[]>([]),
     [selected, setSelected] = useState<string | null>(null),
     [filter, setFilter] = useState(''),
@@ -1004,10 +1094,12 @@ function Library({ run, setNote }: any) {
           (e.event === 'job-changed' && job?.status === 'done')
         )
           void reload();
-        if (e.event === 'open-recording') setSelected(String(e.id));
       }),
     [reload],
   );
+  useEffect(() => {
+    if (openRecording) setSelected(openRecording.id);
+  }, [openRecording]);
   useEffect(() => {
     if (!undo) return;
     const timer = setTimeout(() => setUndo(null), Math.max(0, undo.expires - Date.now()));
