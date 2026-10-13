@@ -5,7 +5,11 @@ import Testing
 
 @Suite("Offline mixed audio concurrency",.serialized)
 struct AudioMixConcurrencyTests {
-    @Test func reorderedMixedExportsDecodeUnderConcurrentIndependentReaders() async throws {
+    // Several encoders at once crash VideoToolbox on GitHub-hosted macOS
+    // (signal 11, AppleM2ScalerParavirtDriver missing). One writer at a time
+    // finishes. The test still runs outside CI.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["CI"] != "true"))
+    func reorderedMixedExportsDecodeUnderConcurrentIndependentReaders() async throws {
         var fixtures:[SyntheticExportFixture]=[]
         defer { for fixture in fixtures { fixture.cleanup() } }
         for _ in 0..<6 { fixtures.append(try await SyntheticExportFixture()) }

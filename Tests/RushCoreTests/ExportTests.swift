@@ -28,11 +28,11 @@ struct SyntheticExportFixture {
     static func video(to url:URL,camera:Bool,allGreen:Bool = false,frameCount:Int = 60,spatialHalves:Bool = false) async throws {
         let width=camera ? 160 : 320,height=camera ? 160 : 180
         let writer=try AVAssetWriter(outputURL:url,fileType:.mov)
-        let input=AVAssetWriterInput(mediaType:.video,outputSettings:[AVVideoCodecKey:AVVideoCodecType.h264,AVVideoWidthKey:width,AVVideoHeightKey:height])
+        let input=AVAssetWriterInput(mediaType:.video,outputSettings:fixtureH264Settings(width:width,height:height))
         let adaptor=AVAssetWriterInputPixelBufferAdaptor(assetWriterInput:input,sourcePixelBufferAttributes:[kCVPixelBufferPixelFormatTypeKey as String:kCVPixelFormatType_32BGRA,kCVPixelBufferWidthKey as String:width,kCVPixelBufferHeightKey as String:height])
         writer.add(input); guard writer.startWriting() else { throw renderFailure("Fixture writer failed") }; writer.startSession(atSourceTime:.zero)
         for frame in 0..<frameCount {
-            while !input.isReadyForMoreMediaData { try await Task.sleep(for:.milliseconds(1)) }
+            try await waitUntilReadyForMedia(input, writer: writer)
             var pixel:CVPixelBuffer?
             // Fixtures need valid source pixels, independent of the encoder's
             // asynchronously created/managed adaptor pool.
@@ -54,21 +54,21 @@ struct SyntheticExportFixture {
             CVPixelBufferUnlockBaseAddress(pixel,[])
             guard adaptor.append(pixel,withPresentationTime:CMTime(value:Int64(frame),timescale:30)) else { throw renderFailure("Fixture append") }
         }
-        input.markAsFinished(); writer.endSession(atSourceTime:CMTime(value:Int64(frameCount),timescale:30)); await writer.finishWriting()
-        guard writer.status == .completed else { throw renderFailure(writer.error?.localizedDescription ?? "Fixture finish") }
+        input.markAsFinished(); writer.endSession(atSourceTime:CMTime(value:Int64(frameCount),timescale:30))
+        try await finishWriting(writer, within: 90)
     }
     static func audio(to url:URL,frequency:Float,onsetMs:Double = 0) async throws {
         let writer=try AVAssetWriter(outputURL:url,fileType:.mov)
         let input=AVAssetWriterInput(mediaType:.audio,outputSettings:[AVFormatIDKey:kAudioFormatMPEG4AAC,AVSampleRateKey:48_000,AVNumberOfChannelsKey:1,AVEncoderBitRateKey:128_000])
         writer.add(input); guard writer.startWriting() else { throw renderFailure("Audio fixture writer") }; writer.startSession(atSourceTime:.zero)
         for frame in stride(from:0,to:96_000,by:1024) {
-            while !input.isReadyForMoreMediaData { try await Task.sleep(for:.milliseconds(1)) }
+            try await waitUntilReadyForMedia(input, writer: writer)
             let count=min(1024,96_000-frame)
             let sample=try audioSample(frame:frame,count:count,frequency:frequency,onsetFrame:Int(onsetMs*48))
             guard input.append(sample) else { throw renderFailure(writer.error?.localizedDescription ?? "Audio fixture append") }
         }
-        input.markAsFinished(); writer.endSession(atSourceTime:CMTime(seconds:2,preferredTimescale:600)); await writer.finishWriting()
-        guard writer.status == .completed else { throw renderFailure(writer.error?.localizedDescription ?? "Audio fixture finish") }
+        input.markAsFinished(); writer.endSession(atSourceTime:CMTime(seconds:2,preferredTimescale:600))
+        try await finishWriting(writer, within: 90)
     }
     static func audioSample(frame:Int,count:Int,frequency:Float,onsetFrame:Int = 0) throws -> CMSampleBuffer {
         var asbd=AudioStreamBasicDescription(mSampleRate:48_000,mFormatID:kAudioFormatLinearPCM,mFormatFlags:kAudioFormatFlagIsFloat|kAudioFormatFlagIsPacked,mBytesPerPacket:4,mFramesPerPacket:1,mBytesPerFrame:4,mChannelsPerFrame:1,mBitsPerChannel:32,mReserved:0)
