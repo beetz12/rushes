@@ -165,6 +165,29 @@ struct ControlCLIIntegrationTests {
         #expect(report["ok"] as? Bool == true)
     }
 
+    @Test("Consecutive duration stops keep the same engine alive without retries")
+    func consecutiveStopsKeepEngineAlive() throws {
+        let initial = try Self.runCLI(["status"])
+        try #require(initial.status == 0, "stderr: \(initial.stderr)")
+        let pid = try #require(try Self.stdoutJSON(initial.stdout)["pid"] as? Int)
+        for _ in 0..<3 {
+            let capture = try Self.runCLI([
+                "record", "start", "--display", "main", "--mic", "default",
+                "--duration", "0.4", "--wait",
+            ])
+            try #require(capture.status == 0, "stderr: \(capture.stderr)")
+            let lines = capture.stdout.split(separator: "\n").map(String.init)
+            let events = try lines.map(Self.stdoutJSON)
+            let id = try #require(events.first { $0["event"] as? String == "recording-started" }?["id"] as? String)
+            let verify = try Self.runCLI(["verify", id])
+            try #require(verify.status == 0, "stderr: \(verify.stderr)")
+            #expect(try Self.stdoutJSON(verify.stdout)["ok"] as? Bool == true)
+            let status = try Self.runCLI(["status"])
+            try #require(status.status == 0, "stderr: \(status.stderr)")
+            #expect(try Self.stdoutJSON(status.stdout)["pid"] as? Int == pid)
+        }
+    }
+
     @Test("record stop with nothing active exits 1 with not-recording on stderr")
     func stopWithoutRecording() throws {
         let result = try Self.runCLI(["record", "stop"])
@@ -186,6 +209,9 @@ struct ControlCLIIntegrationTests {
 
     @Test("No engine on the socket exits 4 with engine-unreachable")
     func engineAbsent() throws {
+        let before = try Self.runCLI(["status"])
+        try #require(before.status == 0)
+        let pid = try #require(try Self.stdoutJSON(before.stdout)["pid"] as? Int)
         let deadSocket = URL(fileURLWithPath: "/tmp/rctl-absent-\(UUID().uuidString.prefix(8))/control.sock")
         let result = try Self.runCLI(["--socket", deadSocket.path, "--no-launch", "guide"])
         #expect(result.status == 4)
@@ -194,6 +220,9 @@ struct ControlCLIIntegrationTests {
         let payload = error?["error"] as? [String: Any]
         #expect(payload?["code"] as? String == "engine-unreachable")
         #expect((payload?["socket"] as? String) == deadSocket.path)
+        let after = try Self.runCLI(["status"])
+        try #require(after.status == 0)
+        #expect(try Self.stdoutJSON(after.stdout)["pid"] as? Int == pid)
     }
 
     @Test("CLI launches an absent engine on demand using isolated diagnostic roots")
@@ -312,37 +341,42 @@ final class EngineHarness: @unchecked Sendable {
         boot()
     }
 
-    /// The stub engine can exit after a take on the hosted runner. Later CLI
-    /// calls use the same recordings root and index, so boot another one
-    /// instead of failing the suite.
-    private func ensureRunning() {
-        if process?.isRunning == true { return }
-        logEngineReplacement("process had exited")
-        boot()
+    /// Retain the first failure. Restarting the fixture erases the engine's
+    /// stderr and may repeat a record.start that already created a take.
+    private func reportEngineFailure() {
+        let state: String
+        if let process {
+            state = process.isRunning ? "pid=\(process.processIdentifier) running" : "pid=\(process.processIdentifier) exit=\(process.terminationStatus) reason=\(process.terminationReason.rawValue)"
+        } else { state = "no process" }
+        let line = "CLI_ENGINE_FAILURE \(state) socket=\(socketPath.path)\nENGINE_OUTPUT \(readyOutput().suffix(8192))\n"
+        FileHandle.standardError.write(Data(line.utf8))
+        if let process, !process.isRunning { reportOwnCrash(process.processIdentifier) }
     }
 
-    /// Exit 4 means the socket never answered or the engine closed it.
-    /// `isRunning` can still be true while shutdown is stuck, so replace
-    /// the process before the retry.
-    private func replaceEngine() {
-        logEngineReplacement("connection closed")
-        if let process, process.isRunning {
-            process.terminate()
-            let deadline = Date().addingTimeInterval(3)
-            while process.isRunning, Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.05)
-            }
-            if process.isRunning {
-                kill(process.processIdentifier, SIGKILL)
-                process.waitUntilExit()
+    /// Only a report belonging to the generated fixture's PID is emitted;
+    /// never dump other applications' crash reports or the environment.
+    private func reportOwnCrash(_ pid: Int32) {
+        guard let library = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first else { return }
+        let folder = library.appendingPathComponent("Logs/DiagnosticReports")
+        guard let urls = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: [.fileSizeKey]) else { return }
+        for url in urls where url.lastPathComponent.hasPrefix("rushcore-engine-") && url.pathExtension == "ips" {
+            guard let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, size <= 1_048_576,
+                  let data = try? Data(contentsOf: url), let newline = data.firstIndex(of: 10),
+                  let crash = try? JSONSerialization.jsonObject(with: data.suffix(from: data.index(after: newline))) as? [String: Any],
+                  (crash["pid"] as? NSNumber)?.int32Value == pid,
+                  let executable = crash["procPath"] as? String,
+                  URL(fileURLWithPath: executable).resolvingSymlinksInPath().path == engineURL.resolvingSymlinksInPath().path else { continue }
+            let threads = crash["threads"] as? [[String: Any]] ?? []
+            let index = crash["faultingThread"] as? Int ?? -1
+            let frames = threads.indices.contains(index) ? threads[index]["frames"] as? [[String: Any]] ?? [] : []
+            let summary: [String: Any] = [
+                "pid": pid, "exception": crash["exception"] ?? [:], "termination": crash["termination"] ?? [:],
+                "frames": frames.prefix(20).map { $0.filter { ["symbol", "sourceFile", "sourceLine"].contains($0.key) } },
+            ]
+            if let encoded = try? JSONSerialization.data(withJSONObject: summary, options: [.sortedKeys]) {
+                FileHandle.standardError.write(Data("CLI_ENGINE_CRASH ".utf8) + encoded + Data([10]))
             }
         }
-        boot()
-    }
-
-    private func logEngineReplacement(_ reason: String) {
-        let line = "CLI harness replaced the stub engine at \(socketPath.path) (\(reason))\n"
-        FileHandle.standardError.write(Data(line.utf8))
     }
 
     private func boot() {
@@ -410,15 +444,12 @@ final class EngineHarness: @unchecked Sendable {
     func runCLI(
         _ arguments: [String], timeout: TimeInterval
     ) throws -> (status: Int32, stdout: String, stderr: String) {
-        ensureRunning()
         let result = try runCLIOnce(arguments, timeout: timeout)
-        // A connect can be refused while the engine is busy, or the process
-        // can stay up after it has closed the socket. Replace it and retry
-        // once so the test is about the CLI, not a stuck stub engine.
-        if result.status == 4 {
-            replaceEngine()
-            return try runCLIOnce(arguments, timeout: timeout)
-        }
+        // An explicit different socket is the expected engine-absent test.
+        let overridden = arguments.firstIndex(of: "--socket").map { index in
+            arguments.indices.contains(index + 1) && arguments[index + 1] != socketPath.path
+        } ?? false
+        if result.status == 4 && !overridden { reportEngineFailure() }
         return result
     }
 
