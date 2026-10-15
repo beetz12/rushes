@@ -13,37 +13,32 @@ const steps = [
   {
     title: 'Your first recording',
     target: '',
-    body: 'A short guide to access, sources and recording controls. You can use the highlighted controls as you go. Nothing records until you choose Start recording.',
+    body: 'Choose what to show, check access and devices, then record. You can use the highlighted controls as you go. Nothing records until you choose Start recording. Skip hides this guide; Recording guide reopens it anytime.',
   },
   {
-    title: 'Choose the access you need',
-    target: 'permissions',
-    body: 'Screen Recording is needed when you capture a screen. Camera only leaves screen capture off and needs Camera access. Microphone access is optional for your voice. After a denial, open Privacy & Security in System Settings, enable Rushes, then check again. A Screen Recording grant may need a relaunch. Accessibility and Input Monitoring are only for optional advanced tracking.',
+    title: 'What do you want to record?',
+    target: 'capture-mode',
+    body: 'Screen + camera is for a walkthrough with your face visible. Screen only leaves the camera off. Camera only turns screen capture off for a talking-head video. Your enabled inputs are saved as separate originals.',
   },
   {
-    title: 'Choose what to show',
+    title: 'Choose your screen content',
     target: 'source',
-    body: 'Record an entire display, one window, or a selected rectangle. Camera only turns screen capture off for a talking-head video. Choose the actual screen source below these tabs. For an area, use Select recording area and drag your frame.',
+    body: 'For a screen recording, choose Entire screen, A window, or Select area, then choose the actual source below. Select recording area lets you draw a frame on your desktop. Camera only leaves this screen source off.',
   },
   {
-    title: 'Choose your devices',
+    title: 'Allow only the access you need',
+    target: 'permissions',
+    body: 'Use the access buttons for the inputs you enabled. Camera only does not need Screen Recording access. If access was denied, open Privacy & Security in System Settings, enable Rushes, then check again. Screen Recording access may require a relaunch.',
+  },
+  {
+    title: 'Check camera and microphone',
     target: 'devices',
-    body: 'Camera off and Microphone off work for a silent screen recording. Select a camera to open its preview, a microphone for your voice, and System audio for sound from your Mac. Use Refresh devices after connecting a device.',
+    body: 'Choose your camera to see its preview and your microphone to include your voice. Microphone off means no voice track. System audio includes sound from your Mac in screen recordings. Refresh devices after connecting a new device.',
   },
   {
-    title: 'Start when you are ready',
+    title: 'Ready for your first take',
     target: 'start',
-    body: 'Choose no countdown, 3 seconds or 5 seconds. A short tone marks each countdown step; Escape cancels. When the take actually starts, the main window minimizes and the camera bubble and floating Pause, Resume and Stop bar stay available. Finish guide does not start a recording.',
-  },
-  {
-    title: 'Move or hide your camera',
-    target: 'bubble-help',
-    body: 'Drag the floating camera bubble to move it. Its × button hides the overlay during a take while your camera track continues. When idle, × also stops the preview. You can choose the camera again to reopen it. Bubble size is in Settings.',
-  },
-  {
-    title: 'Keep originals; export a video',
-    target: 'originals',
-    body: 'Rushes keeps screen, camera, microphone and system audio as separate original tracks for the inputs you enabled. After Stop, review the take in My recordings and choose one combined video or separate original files under Export output. Sharing uploads a rendered video through your configured provider. Review sharing settings before your first take, including Auto-share. Finish guide leaves you here, ready to choose Start recording.',
+    body: 'Start recording begins the audible countdown and minimizes this window. Drag the floating camera bubble to move it; × hides the bubble while keeping its camera track. Use the floating bar to Pause, Resume or Stop. After Stop, review your take and choose Save video, Save separate tracks or Create share link. Finish guide leaves you ready to record.',
   },
 ];
 

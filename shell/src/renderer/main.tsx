@@ -61,6 +61,13 @@ import { OnboardingTour } from './onboarding-tour';
 import { CountdownAudio } from './countdown-audio';
 import { isPrimaryView } from '../shared/navigation';
 import { reviewVideoSources } from '../shared/review-video';
+import {
+  captureIntent,
+  captureIntentOptions,
+  recordingReadiness,
+  type CaptureIntent,
+  type ScreenSelection,
+} from '../shared/recording-setup';
 document.documentElement.dataset.view = location.hash.slice(1) || 'recorder';
 const api = window.rushes;
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
@@ -119,6 +126,8 @@ function App() {
   });
   const [permissions, setPermissions] = useState<any>({});
   const [preview, setPreview] = useState('');
+  const lastCamera = useRef('default');
+  const lastScreen = useRef<ScreenSelection | undefined>(undefined);
   const [countdown, setCountdown] = useState<number | null>(null);
   const countdownAudio = useMemo(() => new CountdownAudio(), []);
   const [guideTarget, setGuideTarget] = useState<string | null>(null);
@@ -269,6 +278,8 @@ function App() {
   };
   const start = () =>
     run(async () => {
+      const readiness = recordingReadiness(options, permissions, status.state);
+      if (readiness.blockingReason) throw new Error(readiness.blockingReason);
       await api.saveOptions(options);
       const args = recordingStartArguments(options);
       if (options.countdownSeconds) await countdownAudio.prepare().catch(() => {});
@@ -320,29 +331,56 @@ function App() {
       }
       if (await updateOptions({ camera })) await api.request('camera.preview.start', { camera });
     });
-  const chooseMode = (mode: RecordingOptions['mode']) => {
-    if (mode !== 'camera-only')
-      return updateOptions({
-        mode,
-        source:
-          mode === 'window'
-            ? (targets.windows[0]?.id ?? '')
-            : (targets.displays.find((d: any) => d.isMain)?.id ?? 'main'),
-      });
-    return run(async () => {
-      const camera =
-        options.camera === 'none' ? (targets.cameras[0]?.id ?? 'default') : options.camera;
-      setPreview('');
-      if (!(await updateOptions({ mode, camera, systemAudio: false }))) return;
-      if (permissions.camera !== 'granted') {
-        await api.request(
-          permissions.camera === 'denied' ? 'permissions.settings' : 'permissions.request',
-          { permission: 'camera' },
-        );
-        await refresh();
-      } else await api.request('camera.preview.start', { camera });
+  const chooseMode = (mode: 'display' | 'window' | 'area') =>
+    updateOptions({
+      mode,
+      source:
+        mode === 'window'
+          ? (targets.windows[0]?.id ?? '')
+          : (targets.displays.find((d: any) => d.isMain)?.id ?? 'main'),
     });
-  };
+  const readiness = recordingReadiness(options, permissions, status.state);
+  const intent = captureIntent(options);
+  const selectIntent = (next: CaptureIntent) =>
+    run(async () => {
+      if (options.camera !== 'none') lastCamera.current = options.camera;
+      if (options.mode !== 'camera-only')
+        lastScreen.current = { mode: options.mode, source: options.source, area: options.area };
+      const camera =
+        options.camera !== 'none'
+          ? options.camera
+          : lastCamera.current === 'default'
+            ? (targets.cameras[0]?.id ?? 'default')
+            : lastCamera.current;
+      const chosen = captureIntentOptions(options, next, camera, lastScreen.current);
+      if (!(await updateOptions(chosen))) return;
+      setPreview('');
+      if (chosen.camera === 'none') await api.request('camera.preview.stop');
+      else {
+        let access = permissions;
+        if (access.camera !== 'granted') {
+          access = await api.request(
+            access.camera === 'denied' ? 'permissions.settings' : 'permissions.request',
+            { permission: 'camera' },
+          );
+          await refresh();
+        }
+        if (access.camera === 'granted')
+          await api.request('camera.preview.start', { camera: chosen.camera });
+      }
+    });
+  const sourceLabel =
+    options.mode === 'camera-only'
+      ? 'Screen capture is off'
+      : options.mode === 'area'
+        ? options.area
+          ? `${Math.round(options.area.width)} × ${Math.round(options.area.height)} pt selected`
+          : 'No area selected yet'
+        : options.mode === 'window'
+          ? targets.windows.find((item: any) => item.id === options.source)?.title ||
+            'Choose a window below'
+          : targets.displays.find((item: any) => item.id === options.source)?.name ||
+            'Main display';
   if (view === 'bubble')
     return (
       <div
@@ -555,10 +593,10 @@ function App() {
             <>
               <div className="page-heading">
                 <div>
-                  <p className="eyebrow">MAKE SOMETHING CLEAR</p>
-                  <h1>A little video goes a long way.</h1>
+                  <p className="eyebrow">RECORD</p>
+                  <h1>New recording</h1>
                   <p className="subtitle">
-                    Record your screen, your camera, or both. Keep every track.
+                    Choose what to capture, check your devices, then press Start.
                   </p>
                 </div>
                 <button
@@ -578,202 +616,227 @@ function App() {
                   refresh={refresh}
                   run={run}
                   screenRequired={options.mode !== 'camera-only'}
+                  cameraRequired={options.camera !== 'none'}
+                  microphoneRequired={options.mic !== 'none'}
                 />
               )}
-              <div className="presets-row">
-                <select
-                  aria-label="Saved recording preset"
-                  defaultValue=""
-                  onChange={(e) => {
-                    if (presets[e.target.value]) {
-                      setOptions(presets[e.target.value]);
-                      const chosen = presets[e.target.value];
-                      void api
-                        .saveOptions(chosen)
-                        .then(() => {
-                          if (chosen.camera !== 'none' && permissions.camera === 'granted')
-                            return api.request('camera.preview.start', { camera: chosen.camera });
-                          return api.request('camera.preview.stop');
-                        })
-                        .catch((e) => setError(String(e), e?.code));
-                    }
-                  }}
-                >
-                  <option value="">Choose a saved preset</option>
-                  {Object.keys(presets).map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  aria-label="Preset name"
-                  placeholder="Name this setup…"
-                  value={presetName}
-                  onChange={(e) => setPresetName(e.target.value)}
-                />
-                <button
-                  className="secondary"
-                  disabled={!presetName.trim()}
-                  onClick={() =>
-                    run(async () => {
-                      setPresets(await api.presets('save', presetName, options));
-                      setPresetName('');
-                      setNote('Recording preset saved.');
-                    })
-                  }
-                >
-                  Save preset
-                </button>
-              </div>
               <div className="studio-card">
-                <div data-tour="source">
-                  <div className="source-tabs">
-                    {[
-                      ['display', 'Entire screen'],
-                      ['window', 'A window'],
-                      ['area', 'Select area'],
-                      ['camera-only', 'Camera only'],
-                    ].map(([mode, label]) => (
-                      <button
-                        key={mode}
-                        className={options.mode === mode ? 'selected' : ''}
-                        disabled={active || busy || countdown !== null}
-                        onClick={() => chooseMode(mode as RecordingOptions['mode'])}
-                      >
-                        <Icon name={mode === 'camera-only' ? 'camera' : 'screen'} size={18} />
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  <div
-                    className={`studio-preview ${options.mode === 'camera-only' ? 'camera-only-preview' : ''}`}
-                  >
-                    <div className="screen-symbol">
-                      <Icon name={options.mode === 'camera-only' ? 'camera' : 'screen'} size={50} />
-                    </div>
-                    <h2>
-                      {options.mode === 'camera-only'
-                        ? 'Just you, on camera'
-                        : options.mode === 'window'
-                          ? 'Choose a window'
-                          : options.mode === 'area'
-                            ? 'A focused frame'
-                            : 'Your screen, clearly'}
-                    </h2>
-                    <p>
-                      {options.mode === 'camera-only'
-                        ? 'Screen capture is off. Enabled camera and microphone inputs stay separate.'
-                        : options.mode === 'area'
-                          ? options.area
-                            ? `${Math.round(options.area.width)} × ${Math.round(options.area.height)} pt selected`
-                            : 'Drag a rectangle around what matters.'
-                          : 'Screen and camera are captured as separate tracks.'}
-                    </p>
-                    {options.mode === 'camera-only' ? null : options.mode === 'area' ? (
-                      <button className="secondary" onClick={() => api.window('area')}>
-                        Select recording area
-                      </button>
-                    ) : (
-                      <select
-                        aria-label="Recording source"
-                        value={options.source}
-                        onChange={(e) => updateOptions({ source: e.target.value })}
-                      >
-                        {options.mode === 'display' ? (
-                          <>
-                            <option value="main">Main display</option>
-                            {targets.displays.map((d: any) => (
-                              <option key={d.id} value={d.id}>
-                                {d.name} · {d.widthPoints} × {d.heightPoints}
-                              </option>
-                            ))}
-                          </>
-                        ) : (
-                          targets.windows.map((w: any) => (
-                            <option key={w.id} value={w.id}>
-                              {w.title || w.owningApplication || w.id}
-                            </option>
-                          ))
-                        )}
-                      </select>
-                    )}
-                    {options.camera !== 'none' && (
-                      <div className="preview-camera">
-                        {preview ? (
-                          <img src={preview} alt="Live camera" />
-                        ) : (
-                          <Icon name="camera" size={36} />
-                        )}
+                <div
+                  className="capture-intents"
+                  role="group"
+                  aria-label="What to record"
+                  data-tour="capture-mode"
+                >
+                  {(
+                    [
+                      [
+                        'screen-camera',
+                        'Screen + camera',
+                        'Walk through something together',
+                        'screen',
+                      ],
+                      ['screen', 'Screen only', 'Show your screen without a camera', 'screen'],
+                      ['camera', 'Camera only', 'Talk to your audience, screen off', 'camera'],
+                    ] as const
+                  ).map(([value, label, description, icon]) => (
+                    <button
+                      key={value}
+                      aria-pressed={intent === value}
+                      disabled={active || busy || countdown !== null}
+                      className={intent === value ? 'capture-intent selected' : 'capture-intent'}
+                      onClick={() => void selectIntent(value)}
+                    >
+                      <Icon name={icon} size={22} />
+                      <strong>{label}</strong>
+                      <small>{description}</small>
+                    </button>
+                  ))}
+                </div>
+                <div className="studio-body">
+                  <div data-tour="source">
+                    {options.mode !== 'camera-only' && (
+                      <div className="source-tabs" role="group" aria-label="Screen capture area">
+                        {[
+                          ['display', 'Entire screen'],
+                          ['window', 'A window'],
+                          ['area', 'Select area'],
+                        ].map(([mode, label]) => (
+                          <button
+                            key={mode}
+                            aria-pressed={options.mode === mode}
+                            className={options.mode === mode ? 'selected' : ''}
+                            disabled={active || busy || countdown !== null}
+                            onClick={() => chooseMode(mode as 'display' | 'window' | 'area')}
+                          >
+                            <Icon name={mode === 'camera-only' ? 'camera' : 'screen'} size={18} />
+                            {label}
+                          </button>
+                        ))}
                       </div>
                     )}
+                    <div
+                      className={`studio-preview ${options.mode === 'camera-only' ? 'camera-only-preview' : ''}`}
+                    >
+                      <div className="screen-symbol">
+                        <Icon
+                          name={options.mode === 'camera-only' ? 'camera' : 'screen'}
+                          size={50}
+                        />
+                      </div>
+                      <h2>
+                        {options.mode === 'camera-only'
+                          ? 'Just you, on camera'
+                          : options.mode === 'window'
+                            ? 'Choose a window'
+                            : options.mode === 'area'
+                              ? 'A focused frame'
+                              : 'Your screen, clearly'}
+                      </h2>
+                      <p>
+                        {options.mode === 'camera-only'
+                          ? 'Screen capture is off. Enabled camera and microphone inputs stay separate.'
+                          : options.mode === 'area'
+                            ? options.area
+                              ? `${Math.round(options.area.width)} × ${Math.round(options.area.height)} pt selected`
+                              : 'Drag a rectangle around what matters.'
+                            : 'Choose the screen content you want to include.'}
+                      </p>
+                      <strong className="selected-source" aria-label="Selected capture source">
+                        {sourceLabel}
+                      </strong>
+                      {options.mode === 'camera-only' ? null : options.mode === 'area' ? (
+                        <button
+                          className="secondary"
+                          disabled={active || busy}
+                          onClick={() => api.window('area')}
+                        >
+                          Select recording area
+                        </button>
+                      ) : (
+                        <select
+                          aria-label="Recording source"
+                          disabled={active || busy}
+                          value={options.source}
+                          onChange={(e) => updateOptions({ source: e.target.value })}
+                        >
+                          {options.mode === 'display' ? (
+                            <>
+                              <option value="main">Main display</option>
+                              {targets.displays.map((d: any) => (
+                                <option key={d.id} value={d.id}>
+                                  {d.name} · {d.widthPoints} × {d.heightPoints}
+                                </option>
+                              ))}
+                            </>
+                          ) : (
+                            targets.windows.map((w: any) => (
+                              <option key={w.id} value={w.id}>
+                                {w.title || w.owningApplication || w.id}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                      )}
+                      {options.camera !== 'none' && (
+                        <div className="preview-camera">
+                          {preview ? (
+                            <img src={preview} alt="Live camera" />
+                          ) : (
+                            <Icon name="camera" size={36} />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="capture-options" data-tour="devices">
+                    <label>
+                      <span>
+                        <Icon name="camera" />
+                        Camera
+                      </span>
+                      <select
+                        aria-label="Camera device"
+                        disabled={active}
+                        value={options.camera}
+                        onChange={(e) => void chooseCamera(e.target.value)}
+                      >
+                        <option value="none">Camera off</option>
+                        <option value="default">Default camera</option>
+                        {targets.cameras.map((c: any) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>
+                        <Icon name="mic" />
+                        Microphone
+                      </span>
+                      <select
+                        aria-label="Microphone device"
+                        disabled={active}
+                        value={options.mic}
+                        onChange={(e) => {
+                          const mic = e.target.value;
+                          if (mic !== 'none' && permissions.microphone !== 'granted')
+                            void run(async () => {
+                              await api.request('permissions.request', {
+                                permission: 'microphone',
+                              });
+                              await refresh();
+                              updateOptions({ mic });
+                            });
+                          else updateOptions({ mic });
+                        }}
+                      >
+                        <option value="none">Microphone off</option>
+                        {targets.microphones.map((c: any) => (
+                          <option key={c.id} value={c.id}>
+                            {c.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>
+                        <Icon name="screen" />
+                        System audio{' '}
+                        {options.mode === 'camera-only' && <small>· needs screen capture</small>}
+                      </span>
+                      <select
+                        aria-label="System audio"
+                        disabled={active || options.mode === 'camera-only'}
+                        value={String(options.systemAudio)}
+                        onChange={(e) => updateOptions({ systemAudio: e.target.value === 'true' })}
+                      >
+                        <option value="false">Off</option>
+                        <option value="true">On</option>
+                      </select>
+                    </label>
                   </div>
                 </div>
-                <div className="capture-options" data-tour="devices">
-                  <label>
-                    <span>
-                      <Icon name="camera" />
-                      Camera
-                    </span>
-                    <select
-                      aria-label="Camera device"
-                      disabled={active}
-                      value={options.camera}
-                      onChange={(e) => void chooseCamera(e.target.value)}
-                    >
-                      <option value="none">Camera off</option>
-                      <option value="default">Default camera</option>
-                      {targets.cameras.map((c: any) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>
-                      <Icon name="mic" />
-                      Microphone
-                    </span>
-                    <select
-                      aria-label="Microphone device"
-                      disabled={active}
-                      value={options.mic}
-                      onChange={(e) => {
-                        const mic = e.target.value;
-                        if (mic !== 'none' && permissions.microphone !== 'granted')
-                          void run(async () => {
-                            await api.request('permissions.request', { permission: 'microphone' });
-                            await refresh();
-                            updateOptions({ mic });
-                          });
-                        else updateOptions({ mic });
-                      }}
-                    >
-                      <option value="none">Microphone off</option>
-                      {targets.microphones.map((c: any) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    <span>
-                      <Icon name="screen" />
-                      System audio{' '}
-                      {options.mode === 'camera-only' && <small>· needs screen capture</small>}
-                    </span>
-                    <select
-                      aria-label="System audio"
-                      disabled={active || options.mode === 'camera-only'}
-                      value={String(options.systemAudio)}
-                      onChange={(e) => updateOptions({ systemAudio: e.target.value === 'true' })}
-                    >
-                      <option value="false">Off</option>
-                      <option value="true">On</option>
-                    </select>
-                  </label>
+                <div
+                  className={`recording-readiness ${readiness.blockingReason ? 'needs-attention' : ''}`}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <Icon name={readiness.blockingReason ? 'record' : 'check'} size={18} />
+                  <div>
+                    <strong>
+                      {active
+                        ? 'Recording in progress'
+                        : (readiness.blockingReason ?? 'Ready to record')}
+                    </strong>
+                    {!active && (
+                      <span>
+                        {readiness.voiceOff
+                          ? 'Microphone is off — your voice will not be recorded.'
+                          : 'Your microphone is included.'}
+                      </span>
+                    )}
+                  </div>
                 </div>
                 <div className="record-footer" data-tour="start">
                   <label className="countdown-label">
@@ -801,14 +864,7 @@ function App() {
                   ) : (
                     <button
                       className="primary"
-                      disabled={
-                        busy ||
-                        (options.mode !== 'camera-only' && permissions.screen !== 'granted') ||
-                        (options.mode === 'camera-only' && options.camera === 'none') ||
-                        (options.camera !== 'none' && permissions.camera !== 'granted') ||
-                        (options.mic !== 'none' && permissions.microphone !== 'granted') ||
-                        (options.mode === 'window' && !options.source)
-                      }
+                      disabled={busy || countdown !== null || Boolean(readiness.blockingReason)}
                       onClick={start}
                     >
                       <span className="white-record" />
@@ -820,8 +876,71 @@ function App() {
               </div>
               <div className="studio-note" data-tour="originals">
                 <Icon name="check" size={16} />
-                Original tracks stay on your Mac. Share only when you choose.
+                <span>
+                  <strong>
+                    {readiness.tracks.length ? readiness.tracks.join(' + ') : 'No inputs selected'}
+                  </strong>{' '}
+                  · saved as separate originals.
+                  <br />
+                  {options.autoShare
+                    ? 'Auto-share is on: the finished video uploads after Stop.'
+                    : 'Saved on this Mac. Nothing uploads until you choose Share.'}
+                  {options.autoShare && (
+                    <button className="text-button" onClick={() => api.window('settings')}>
+                      Change sharing settings
+                    </button>
+                  )}
+                </span>
               </div>
+              <details className="recording-preferences">
+                <summary>Saved setups</summary>
+                <div className="presets-row">
+                  <select
+                    aria-label="Saved recording preset"
+                    defaultValue=""
+                    onChange={(e) => {
+                      if (presets[e.target.value]) {
+                        setOptions(presets[e.target.value]);
+                        const chosen = presets[e.target.value];
+                        void api
+                          .saveOptions(chosen)
+                          .then(() => {
+                            if (chosen.camera !== 'none' && permissions.camera === 'granted')
+                              return api.request('camera.preview.start', { camera: chosen.camera });
+                            return api.request('camera.preview.stop');
+                          })
+                          .catch((e) => setError(String(e), e?.code));
+                      }
+                    }}
+                  >
+                    <option value="">Choose a saved preset</option>
+                    {Object.keys(presets).map((name) => (
+                      <option key={name} value={name}>
+                        {name}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    aria-label="Preset name"
+                    placeholder="Name this setup…"
+                    value={presetName}
+                    onChange={(e) => setPresetName(e.target.value)}
+                  />
+                  <button
+                    className="secondary"
+                    disabled={!presetName.trim()}
+                    onClick={() =>
+                      run(async () => {
+                        setPresets(await api.presets('save', presetName, options));
+                        setPresetName('');
+                        setNote('Recording preset saved.');
+                      })
+                    }
+                  >
+                    Save preset
+                  </button>
+                </div>
+              </details>
               <div className="bubble-help" data-tour="bubble-help">
                 <span>Camera bubble: drag to move · × hides it · choose a size in Settings.</span>
                 {options.camera !== 'none' && (
@@ -921,15 +1040,26 @@ function WindowChrome({ run }: { run: (action: () => Promise<any>) => Promise<an
     </div>
   );
 }
-function PermissionPanel({ permissions, refresh, run, screenRequired = true }: any) {
+function PermissionPanel({
+  permissions,
+  refresh,
+  run,
+  screenRequired = true,
+  cameraRequired = false,
+  microphoneRequired = false,
+}: any) {
+  const required: Record<string, boolean> = {
+    screen: screenRequired,
+    camera: cameraRequired,
+    microphone: microphoneRequired,
+  };
   return (
     <div className="permission-card" data-tour="permissions">
       <div>
         <h3>Choose your recording access.</h3>
         <p>
-          {screenRequired
-            ? 'Screen Recording is needed for screen capture. Camera and microphone are optional.'
-            : 'Camera access is needed for camera-only recording. Screen Recording can stay off; microphone is optional.'}
+          Allow access for the inputs in this setup. You can turn an input off instead. Camera-only
+          recording leaves screen capture off.
         </p>
       </div>
       <div className="permission-list">
@@ -941,7 +1071,7 @@ function PermissionPanel({ permissions, refresh, run, screenRequired = true }: a
           <div key={key}>
             <span>
               {label}
-              {key === (screenRequired ? 'screen' : 'camera') ? ' · required' : ' · optional'}
+              {required[key] ? ' · needed for this setup' : ' · optional'}
             </span>
             <span className="muted">{permissions[key] ?? 'Checking…'}</span>
             {permissions[key] === 'granted' ? (
@@ -1646,6 +1776,10 @@ function Review({ id, back, run, setNote, trashed }: any) {
           ← All recordings
         </button>
         <div className="review-actions">
+          <button className="primary" disabled={exportBusy} onClick={() => doExport('share')}>
+            <Icon name="download" />
+            {exportBusy ? 'Exporting…' : 'Save video'}
+          </button>
           <button
             className="secondary"
             disabled={exportBusy}
@@ -1653,51 +1787,58 @@ function Review({ id, back, run, setNote, trashed }: any) {
             onClick={() => doExport('editor-tracks')}
           >
             <Icon name="download" />
-            {exportBusy ? 'Exporting…' : 'Export separate tracks'}
+            {exportBusy ? 'Exporting…' : 'Save separate tracks'}
           </button>
-          <button
-            className="secondary"
-            title="Move recording to macOS Trash"
-            onClick={() =>
-              run(async () => {
-                if (
-                  await api.confirm('Move this recording and its original tracks to macOS Trash?')
-                )
-                  trashed(await api.request('library.trash', { id }));
-              })
-            }
-          >
-            <Icon name="trash" />
-            Trash
-          </button>
-          <button
-            className="secondary"
-            onClick={() =>
-              run(async () => {
-                const report = await api.request('verify', { id });
-                setNote(
-                  report.ok
-                    ? `Verified ${report.trackChecks.filter((t: any) => !t.skipped).length} tracks. Media decodes and timing checks pass.`
-                    : `Verification found issues: ${report.issues.join('; ')}`,
-                );
-              })
-            }
-          >
-            <Icon name="check" size={16} />
-            Verify tracks
-          </button>
-          <button
-            className="secondary"
-            onClick={() =>
-              run(async () => {
-                const first = recording.tracks.find((t: any) => t.present);
-                if (first) await api.reveal(first.path);
-              })
-            }
-          >
-            <Icon name="folder" size={16} />
-            Show in Finder
-          </button>
+          <details className="review-more">
+            <summary>More actions</summary>
+            <div className="review-more-menu">
+              <button
+                className="secondary"
+                title="Move recording to macOS Trash"
+                onClick={() =>
+                  run(async () => {
+                    if (
+                      await api.confirm(
+                        'Move this recording and its original tracks to macOS Trash?',
+                      )
+                    )
+                      trashed(await api.request('library.trash', { id }));
+                  })
+                }
+              >
+                <Icon name="trash" />
+                Trash
+              </button>
+              <button
+                className="secondary"
+                onClick={() =>
+                  run(async () => {
+                    const report = await api.request('verify', { id });
+                    setNote(
+                      report.ok
+                        ? `Verified ${report.trackChecks.filter((t: any) => !t.skipped).length} tracks. Media decodes and timing checks pass.`
+                        : `Verification found issues: ${report.issues.join('; ')}`,
+                    );
+                  })
+                }
+              >
+                <Icon name="check" size={16} />
+                Verify tracks
+              </button>
+              <button
+                className="secondary"
+                onClick={() =>
+                  run(async () => {
+                    const first = recording.tracks.find((t: any) => t.present);
+                    if (first) await api.reveal(first.path);
+                  })
+                }
+              >
+                <Icon name="folder" size={16} />
+                Show in Finder
+              </button>
+            </div>
+          </details>
         </div>
       </div>
       <input
@@ -2206,207 +2347,80 @@ function Review({ id, back, run, setNote, trashed }: any) {
           )}
         </div>
         <aside className="review-sidebar">
-          <RecordingJobs id={id} run={run} onCompleted={() => void refreshAnalysis()} />
-          <h3>Make it yours.</h3>
-          <label className="field">
-            Layout
-            <select value={layout} onChange={(e) => setLayout(e.target.value)}>
-              {[
-                ['bubble', 'Camera bubble'],
-                ['overlap', 'Overlap'],
-                ['side-by-side', 'Side by side'],
-                ['presenter', 'Presenter'],
-                ['camera-only', 'Camera only'],
-                ['screen-only', 'Screen only'],
-              ].map(([value, label]) => (
-                <option key={value} value={value}>
-                  {label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            Camera size
-            <input
-              aria-label="Camera bubble size"
-              type="range"
-              min=".12"
-              max=".45"
-              step=".01"
-              value={bubbleSize}
-              onChange={(e) => setBubbleSize(Number(e.target.value))}
-            />
-          </label>
-          <label className="check-label">
-            <input
-              type="checkbox"
-              checked={videoSources.cameraPrimary || bubbleVisible}
-              disabled={videoSources.cameraPrimary}
-              onChange={(e) => setBubbleVisible(e.target.checked)}
-            />
-            Show camera
-          </label>
-          {videoSources.cameraPrimary && (
-            <p className="muted">Your camera is the main video in this layout.</p>
-          )}
-          <label className="field">
-            Bubble shape
-            <select value={bubbleShape} onChange={(e) => setBubbleShape(e.target.value)}>
-              <option value="circle">Circle</option>
-              <option value="squircle">Rounded square</option>
-            </select>
-          </label>
-          <div className="bubble-corners">
-            {[
-              [0.15, 0.2],
-              [0.85, 0.2],
-              [0.15, 0.8],
-              [0.85, 0.8],
-            ].map((center, index) => (
-              <button
-                key={index}
-                aria-label={`Camera corner ${index + 1}`}
-                onClick={() => setBubbleCenter(center)}
-              >
-                {['↖', '↗', '↙', '↘'][index]}
-              </button>
-            ))}
-          </div>
-          <label className="check-label">
-            <input type="checkbox" checked={mirror} onChange={(e) => setMirror(e.target.checked)} />
-            Mirror camera
-          </label>
-          <hr />
-          <label className="field">
-            Microphone volume
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step=".05"
-              value={micGain}
-              onChange={(e) => setMicGain(Number(e.target.value))}
-            />
-          </label>
-          <label className="field">
-            System audio volume
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step=".05"
-              value={systemGain}
-              onChange={(e) => setSystemGain(Number(e.target.value))}
-            />
-          </label>
-          <label className="check-label">
-            <input type="checkbox" checked={burnIn} onChange={(e) => setBurnIn(e.target.checked)} />
-            Burn captions into export
-          </label>
-          <button className="secondary full-width" onClick={save}>
-            Save edits
-          </button>
-          <hr />
-          <label className="field">
-            Export output
-            <select
-              aria-label="Export output"
-              value={exportOutput}
-              onChange={(e) => setExportOutput(e.target.value as ExportOutput)}
-            >
-              <option value="combined">One file · combined video</option>
-              <option value="separate">Separate original files · screen, camera and audio</option>
-            </select>
-          </label>
-          {exportOutput === 'combined' && (
-            <>
-              <label className="field">
-                Export format
-                <select
-                  aria-label="Export format"
-                  value={preset}
-                  onChange={(e) => setPreset(e.target.value as ExportPreset)}
-                >
-                  {[
-                    ['share', 'Share MP4 · 1080p'],
-                    ['youtube', 'YouTube · 1080p60'],
-                    ['youtube-source', 'YouTube · source size at 60fps'],
-                    ['full', 'Full quality MOV'],
-                    ['audio', 'Audio only · M4A'],
-                    ['audio-wav', 'Audio only · WAV'],
-                    ['diagnostics', 'Diagnostics bundle'],
-                    ['thumbnail', 'YouTube thumbnail'],
-                    ['vtt', 'WebVTT captions'],
-                    ['srt', 'SRT captions'],
-                    ['chapters', 'Chapters text'],
-                    ['txt', 'Transcript text'],
-                  ].map(([value, label]) => (
-                    <option key={value} value={value}>
-                      {label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <p className="muted">
-                Video formats combine the camera and screen using your chosen layout.
-              </p>
-            </>
-          )}
-          {exportOutput === 'separate' && (
+          <section className="share-section" aria-label="Share this video">
+            <h3>Share this video</h3>
             <p className="muted">
-              Saves each enabled input to its own file in one folder, plus timing metadata for
-              editing. Full original camera backgrounds and source audio remain intact. Edits apply
-              to combined exports; originals stay unchanged.
+              Create a link when you are ready. This uploads your finished video.
             </p>
-          )}
-          <button
-            className="secondary full-width"
-            disabled={exportBusy}
-            onClick={() => doExport(selectedExportPreset(exportOutput, preset))}
-          >
-            <Icon name="download" />
-            {exportBusy
-              ? 'Exporting…'
-              : exportOutput === 'separate'
-                ? 'Save separate original files'
-                : 'Export recording'}
-          </button>
-          <button
-            className="secondary full-width"
-            onClick={() =>
-              run(async () => {
-                await autosave.flush();
-                const result = await api.openEditor(id);
-                if (!result.canceled)
-                  setNote(
-                    result.revealed
-                      ? 'Raw originals exported and revealed in Finder.'
-                      : 'Editor command started with raw originals.',
-                  );
-              })
-            }
-          >
-            Open in editor
-          </button>
-          <button
-            className="secondary full-width"
-            disabled={copyBusy}
-            onClick={() =>
-              run(async () => {
-                setCopyBusy(true);
-                try {
-                  await autosave.flush();
-                  await api.copyVideoFile(id);
-                  setNote('Edited video file copied. Paste it into your destination app.');
-                } finally {
-                  setCopyBusy(false);
+            <button
+              className="primary full-width"
+              disabled={shareBusy}
+              onClick={() =>
+                run(async () => {
+                  setShareBusy(true);
+                  try {
+                    await autosave.run(() => api.request('edit.save', { id }));
+                    const r = await api.share(
+                      id,
+                      Object.keys(sharePolicyDraft).length ? sharePolicyDraft : undefined,
+                    );
+                    setSharePolicyDraft({});
+                    setLink(r.url);
+                    setShareStage((previous) =>
+                      previous === 'ready' ? 'ready' : (r.state ?? 'processing'),
+                    );
+                    setNote(
+                      r.state === 'ready'
+                        ? 'Share link copied. Video is ready.'
+                        : 'Share link copied. The video is being prepared.',
+                    );
+                  } finally {
+                    setShareBusy(false);
+                  }
+                })
+              }
+            >
+              <Icon name="link" />
+              {link ? 'Copy share link' : 'Create share link'}
+            </button>
+            {shareStage && (
+              <p className="fine-print">
+                {shareStage === 'ready'
+                  ? 'Video is ready.'
+                  : shareStage === 'failed'
+                    ? 'Sharing needs a retry.'
+                    : `Preparing video: ${shareStage}${shareStage === 'uploading' ? ` · ${sharePercent}%` : ''}`}
+              </p>
+            )}
+            {link && <input aria-label="Share link" readOnly value={link} />}
+            <ShareAccess
+              id={id}
+              link={link}
+              draft={sharePolicyDraft}
+              change={setSharePolicyDraft}
+              run={run}
+              setNote={setNote}
+            />
+            <p className="fine-print">
+              Sharing uses your configured bucket or Worker.
+              <button
+                className="text-button"
+                onClick={() =>
+                  run(async () => {
+                    await autosave.flush();
+                    await api.window('settings');
+                  })
                 }
-              })
-            }
+              >
+                Sharing settings
+              </button>
+            </p>
+          </section>
+          <p
+            className={draftState === 'failed' ? 'alert error' : 'fine-print'}
+            role="status"
+            aria-live="polite"
           >
-            {copyBusy ? 'Preparing video file…' : 'Copy video file'}
-          </button>
-          <p className="fine-print" role="status">
             {draftState === 'saved'
               ? 'Draft saved automatically.'
               : draftState === 'failed'
@@ -2420,58 +2434,226 @@ function Review({ id, back, run, setNote, trashed }: any) {
               Retry draft save
             </button>
           )}
-          <button
-            className="primary full-width"
-            disabled={shareBusy}
-            onClick={() =>
-              run(async () => {
-                setShareBusy(true);
-                try {
-                  await autosave.run(() => api.request('edit.save', { id }));
-                  const r = await api.share(
-                    id,
-                    Object.keys(sharePolicyDraft).length ? sharePolicyDraft : undefined,
-                  );
-                  setSharePolicyDraft({});
-                  setLink(r.url);
-                  setShareStage((previous) =>
-                    previous === 'ready' ? 'ready' : (r.state ?? 'processing'),
-                  );
-                  setNote(
-                    r.state === 'ready'
-                      ? 'Share link copied. Video is ready.'
-                      : 'Share link copied. The video is being prepared.',
-                  );
-                } finally {
-                  setShareBusy(false);
-                }
-              })
-            }
-          >
-            <Icon name="link" />
-            Copy share link
-          </button>
-          {shareStage && (
-            <p className="fine-print">
-              {shareStage === 'ready'
-                ? 'Video is ready.'
-                : shareStage === 'failed'
-                  ? 'Sharing needs a retry.'
-                  : `Preparing video: ${shareStage}${shareStage === 'uploading' ? ` · ${sharePercent}%` : ''}`}
-            </p>
-          )}
-          {link && <input aria-label="Share link" readOnly value={link} />}
-          <ShareAccess
-            id={id}
-            link={link}
-            draft={sharePolicyDraft}
-            change={setSharePolicyDraft}
-            run={run}
-            setNote={setNote}
-          />
-          <p className="fine-print">
-            Sharing uses your configured bucket or Worker. Setup in Settings.
-          </p>
+          <details className="review-section">
+            <summary>Layout &amp; appearance</summary>
+            <label className="field">
+              Layout
+              <select
+                aria-label="Video layout"
+                value={layout}
+                onChange={(e) => setLayout(e.target.value)}
+              >
+                {[
+                  ['bubble', 'Camera bubble'],
+                  ['overlap', 'Overlap'],
+                  ['side-by-side', 'Side by side'],
+                  ['presenter', 'Presenter'],
+                  ['camera-only', 'Camera only'],
+                  ['screen-only', 'Screen only'],
+                ].map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              Camera size
+              <input
+                aria-label="Camera bubble size"
+                type="range"
+                min=".12"
+                max=".45"
+                step=".01"
+                value={bubbleSize}
+                onChange={(e) => setBubbleSize(Number(e.target.value))}
+              />
+            </label>
+            <label className="check-label">
+              <input
+                type="checkbox"
+                checked={videoSources.cameraPrimary || bubbleVisible}
+                disabled={videoSources.cameraPrimary}
+                onChange={(e) => setBubbleVisible(e.target.checked)}
+              />
+              Show camera
+            </label>
+            {videoSources.cameraPrimary && (
+              <p className="muted">Your camera is the main video in this layout.</p>
+            )}
+            <label className="field">
+              Bubble shape
+              <select value={bubbleShape} onChange={(e) => setBubbleShape(e.target.value)}>
+                <option value="circle">Circle</option>
+                <option value="squircle">Rounded square</option>
+              </select>
+            </label>
+            <div className="bubble-corners">
+              {[
+                [0.15, 0.2],
+                [0.85, 0.2],
+                [0.15, 0.8],
+                [0.85, 0.8],
+              ].map((center, index) => (
+                <button
+                  key={index}
+                  aria-label={`Camera corner ${index + 1}`}
+                  onClick={() => setBubbleCenter(center)}
+                >
+                  {['↖', '↗', '↙', '↘'][index]}
+                </button>
+              ))}
+            </div>
+            <label className="check-label">
+              <input
+                type="checkbox"
+                checked={mirror}
+                onChange={(e) => setMirror(e.target.checked)}
+              />
+              Mirror camera
+            </label>
+            <hr />
+            <label className="field">
+              Microphone volume
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step=".05"
+                value={micGain}
+                onChange={(e) => setMicGain(Number(e.target.value))}
+              />
+            </label>
+            <label className="field">
+              System audio volume
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step=".05"
+                value={systemGain}
+                onChange={(e) => setSystemGain(Number(e.target.value))}
+              />
+            </label>
+            <label className="check-label">
+              <input
+                type="checkbox"
+                checked={burnIn}
+                onChange={(e) => setBurnIn(e.target.checked)}
+              />
+              Burn captions into export
+            </label>
+            <button className="secondary full-width" onClick={save}>
+              Save edits
+            </button>
+            <hr />
+          </details>
+          <details className="review-section">
+            <summary>More export options</summary>
+            <label className="field">
+              Export output
+              <select
+                aria-label="Export output"
+                value={exportOutput}
+                onChange={(e) => setExportOutput(e.target.value as ExportOutput)}
+              >
+                <option value="combined">One file · combined video</option>
+                <option value="separate">Separate original files · screen, camera and audio</option>
+              </select>
+            </label>
+            {exportOutput === 'combined' && (
+              <>
+                <label className="field">
+                  Export format
+                  <select
+                    aria-label="Export format"
+                    value={preset}
+                    onChange={(e) => setPreset(e.target.value as ExportPreset)}
+                  >
+                    {[
+                      ['share', 'Share MP4 · 1080p'],
+                      ['youtube', 'YouTube · 1080p60'],
+                      ['youtube-source', 'YouTube · source size at 60fps'],
+                      ['full', 'Full quality MOV'],
+                      ['audio', 'Audio only · M4A'],
+                      ['audio-wav', 'Audio only · WAV'],
+                      ['diagnostics', 'Diagnostics bundle'],
+                      ['thumbnail', 'YouTube thumbnail'],
+                      ['vtt', 'WebVTT captions'],
+                      ['srt', 'SRT captions'],
+                      ['chapters', 'Chapters text'],
+                      ['txt', 'Transcript text'],
+                    ].map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p className="muted">
+                  Video formats combine the camera and screen using your chosen layout.
+                </p>
+              </>
+            )}
+            {exportOutput === 'separate' && (
+              <p className="muted">
+                Saves each enabled input to its own file in one folder, plus timing metadata for
+                editing. Full original camera backgrounds and source audio remain intact. Edits
+                apply to combined exports; originals stay unchanged.
+              </p>
+            )}
+            <button
+              className="secondary full-width"
+              disabled={exportBusy}
+              onClick={() => doExport(selectedExportPreset(exportOutput, preset))}
+            >
+              <Icon name="download" />
+              {exportBusy
+                ? 'Exporting…'
+                : exportOutput === 'separate'
+                  ? 'Save separate original files'
+                  : 'Export recording'}
+            </button>
+            <button
+              className="secondary full-width"
+              onClick={() =>
+                run(async () => {
+                  await autosave.flush();
+                  const result = await api.openEditor(id);
+                  if (!result.canceled)
+                    setNote(
+                      result.revealed
+                        ? 'Raw originals exported and revealed in Finder.'
+                        : 'Editor command started with raw originals.',
+                    );
+                })
+              }
+            >
+              Open in editor
+            </button>
+            <button
+              className="secondary full-width"
+              disabled={copyBusy}
+              onClick={() =>
+                run(async () => {
+                  setCopyBusy(true);
+                  try {
+                    await autosave.flush();
+                    await api.copyVideoFile(id);
+                    setNote('Edited video file copied. Paste it into your destination app.');
+                  } finally {
+                    setCopyBusy(false);
+                  }
+                })
+              }
+            >
+              {copyBusy ? 'Preparing video file…' : 'Copy video file'}
+            </button>
+          </details>
+          <details className="review-section">
+            <summary>Background processing</summary>
+            <RecordingJobs id={id} run={run} onCompleted={() => void refreshAnalysis()} />
+          </details>
         </aside>
       </div>
     </>
@@ -2528,7 +2710,14 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
         <ProductionSettings run={run} />
         <section className="settings-card">
           <h2>Permissions</h2>
-          <PermissionPanel permissions={permissions} refresh={refresh} run={run} />
+          <PermissionPanel
+            permissions={permissions}
+            refresh={refresh}
+            run={run}
+            screenRequired={options.mode !== 'camera-only'}
+            cameraRequired={options.camera !== 'none'}
+            microphoneRequired={options.mic !== 'none'}
+          />
           <h3>Keyboard shortcuts</h3>
           <div className="shortcut-row">
             <span>Open recorder / stop recording</span>

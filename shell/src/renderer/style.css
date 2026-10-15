@@ -1623,3 +1623,282 @@ textarea:focus-visible {
     padding: 16px;
   }
 }
+
+/* Recording setup presents the input decision before optional preferences. */
+.recording-preferences {
+  margin-bottom: 18px;
+  color: #56636d;
+}
+.recording-preferences summary,
+.review-section summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: 12px 0;
+}
+.recording-preferences .presets-row {
+  margin: 8px 0 12px;
+  flex-wrap: wrap;
+}
+.capture-intents {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 12px;
+  padding: 16px;
+}
+.capture-intent {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
+  text-align: left;
+  border: 1px solid #dfe4e8;
+  border-radius: 12px;
+  padding: 16px;
+  min-width: 0;
+  background: #fff;
+}
+.capture-intent strong {
+  font-size: 14px;
+}
+.capture-intent small {
+  color: #64717d;
+  line-height: 1.5;
+}
+.capture-intent.selected {
+  background: #fff5f2;
+  border-color: #e55c49;
+  box-shadow: 0 0 0 1px #e55c49;
+}
+.capture-intent.selected svg {
+  color: #d94e3b;
+}
+.selected-source {
+  font-size: 13px;
+  margin: 0 0 14px;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.studio-preview {
+  height: 250px;
+}
+.studio-preview p {
+  color: #697680;
+  font-size: 12px;
+  text-align: center;
+}
+.capture-options label span,
+.capture-options select,
+.countdown-label,
+.countdown-label select {
+  font-size: 12px;
+}
+.recording-readiness {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: #f2f8f4;
+  color: #2e6545;
+  padding: 14px 24px;
+  border-top: 1px solid #e6eee8;
+}
+.recording-readiness.needs-attention {
+  background: #fff8ed;
+  color: #80571e;
+}
+.recording-readiness strong,
+.recording-readiness span {
+  display: block;
+  line-height: 1.5;
+}
+.recording-readiness span {
+  color: #56636d;
+  font-size: 12px;
+}
+.studio-note {
+  align-items: flex-start;
+  line-height: 1.7;
+}
+.studio-note .text-button {
+  display: inline;
+  margin-left: 8px;
+}
+.share-section h3 {
+  margin-bottom: 8px;
+}
+.share-section .muted {
+  font-size: 12px;
+  line-height: 1.6;
+}
+.review-section {
+  border-top: 1px solid #e4e8eb;
+  margin-top: 18px;
+}
+.review-section > summary {
+  font-size: 13px;
+  color: #43525e;
+}
+.review-section .field:first-of-type {
+  margin-top: 12px;
+}
+.review-actions {
+  flex-wrap: wrap;
+}
+@media (max-width: 830px) {
+  .review-sidebar {
+    display: block;
+  }
+}
+@media (max-width: 680px) {
+  .capture-intents {
+    gap: 8px;
+    padding: 12px;
+  }
+  .capture-intent {
+    padding: 12px 10px;
+  }
+  .capture-intent small {
+    display: none;
+  }
+  .capture-intent strong {
+    font-size: 12px;
+  }
+  .capture-options {
+    grid-template-columns: 1fr;
+  }
+  .record-footer {
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+}
+.review-more {
+  position: relative;
+}
+.review-more > summary {
+  padding: 11px 14px;
+  cursor: pointer;
+  color: #64717d;
+  border: 1px solid #dfe4e8;
+  background: #fff;
+  border-radius: 8px;
+}
+.review-more-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 15;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 190px;
+  padding: 8px;
+  border: 1px solid #e2e7eb;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 30px #17212b18;
+}
+.review-more-menu .secondary {
+  justify-content: flex-start;
+}
+.studio-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(220px, 0.85fr);
+}
+.studio-body .capture-options {
+  grid-template-columns: 1fr;
+  border-left: 1px solid #edf0f2;
+  gap: 14px;
+  padding: 22px;
+  align-content: center;
+}
+.studio-body .studio-preview {
+  height: 200px;
+  padding: 18px;
+  border-bottom: 0;
+}
+.studio-body .screen-symbol {
+  display: none;
+}
+.studio-body .studio-preview h2 {
+  font-size: 16px;
+}
+.studio-body .camera-only-preview {
+  height: 256px;
+}
+.studio-body .camera-only-preview .preview-camera {
+  width: 120px;
+  height: 120px;
+  margin-bottom: 8px;
+}
+.studio-body .studio-preview:not(.camera-only-preview) .preview-camera {
+  width: 64px;
+  height: 64px;
+  left: 14px;
+  bottom: 14px;
+  border-width: 3px;
+}
+.studio-body .source-tabs {
+  gap: 2px;
+  padding: 6px;
+}
+.studio-body .source-tabs button {
+  gap: 4px;
+  padding: 10px 5px;
+  font-size: 11px;
+}
+.capture-intents {
+  padding: 16px;
+}
+.capture-intent {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 6px 10px;
+  padding: 14px;
+  align-items: center;
+}
+.capture-intent small {
+  grid-column: 1 / -1;
+}
+.recording-preferences {
+  margin-top: 12px;
+}
+.share-section .text-button {
+  margin-left: 4px;
+}
+@media (max-height: 850px) and (min-width: 831px) {
+  html[data-view='recorder'] .page {
+    padding-top: 22px;
+  }
+  html[data-view='recorder'] .page-heading {
+    margin-bottom: 20px;
+  }
+  html[data-view='recorder'] .eyebrow {
+    display: none;
+  }
+  html[data-view='recorder'] h1 {
+    font-size: 28px;
+    margin-bottom: 8px;
+  }
+}
+@media (max-width: 830px) {
+  .studio-body {
+    grid-template-columns: 1fr;
+  }
+  .studio-body .capture-options {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border-left: 0;
+    border-top: 1px solid #edf0f2;
+  }
+}
+@media (max-width: 680px) {
+  .capture-intent {
+    display: flex;
+    align-items: flex-start;
+    padding: 10px;
+  }
+  .studio-body .capture-options {
+    grid-template-columns: 1fr;
+  }
+}
