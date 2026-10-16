@@ -1,0 +1,751 @@
+{
+  "schema": "rushes.independent-browser-candidate/1",
+  "reviewer": "browser_candidate_checker",
+  "recordedAt": "2026-10-12T19:17:32.471532+00:00",
+  "base": "853ff16",
+  "sourceRootEquivalent": "5f76b32083975b2657fc950d9284db61bd07b53d",
+  "sourceReviewedLocal": "0ed2faf2d95ad9216ca673f352a60b8ab4053a3e",
+  "c3Verdict": "PASS",
+  "overallVerdict": "FAIL",
+  "launchReady": false,
+  "gateResults": [
+    {
+      "name": "worker-check",
+      "exit": 0,
+      "passed": 67,
+      "failed": 0,
+      "log": "service-verified.log"
+    },
+    {
+      "name": "browser-build",
+      "exit": 0,
+      "log": "browser-build.log"
+    },
+    {
+      "name": "capture-current",
+      "browser": "155.0.8059.39",
+      "exit": 0,
+      "passed": 18,
+      "failed": 0,
+      "log": "capture-155.log"
+    },
+    {
+      "name": "capture-previous",
+      "browser": "154.0.8037.92",
+      "exit": 0,
+      "passed": 18,
+      "failed": 0,
+      "log": "capture-154.log"
+    },
+    {
+      "name": "ui-after-path-repair",
+      "browser": "155.0.8059.39",
+      "exit": 0,
+      "passed": 36,
+      "failed": 0,
+      "log": "ui.log"
+    },
+    {
+      "name": "clean",
+      "exit": 0,
+      "firstLine": "0",
+      "log": "clean.log"
+    },
+    {
+      "name": "notice-negative-controls",
+      "exit": 0,
+      "passed": 5
+    },
+    {
+      "name": "notices",
+      "exit": 0,
+      "directDependencies": 36,
+      "derivedFiles": 2,
+      "log": "notices.log"
+    },
+    {
+      "name": "clean-negative-controls",
+      "exit": 0,
+      "passed": 3
+    },
+    {
+      "name": "Windows-CI-single-native-step-source-shape",
+      "exit": 0,
+      "scope": "Source shape only; no Windows execution",
+      "proof": "ci-step-recheck.json"
+    },
+    {
+      "name": "final-R3-build",
+      "exit": 0,
+      "rootRevision": "5f76b32",
+      "log": "r3-final-build.log"
+    },
+    {
+      "name": "R3-five-case-current",
+      "exit": 0,
+      "browser": "155.0.8059.39",
+      "rootRevision": "5f76b32",
+      "proof": "r3-recheck.json"
+    },
+    {
+      "name": "startup-Pause-watcher-current",
+      "exit": 0,
+      "rootRevision": "5f76b32",
+      "proof": "r3-startup-pause.json"
+    },
+    {
+      "name": "cancel-stop-event-ownership-current",
+      "exit": 0,
+      "rootRevision": "5f76b32",
+      "proof": "r3-cancel.json"
+    },
+    {
+      "name": "strict-provider-duration-ceiling",
+      "exit": 0,
+      "proof": "r3-provider-ceiling.json"
+    },
+    {
+      "name": "R3-before-cancel-refinement-capture-current",
+      "exit": 0,
+      "browser": "155.0.8059.39",
+      "passed": 19,
+      "failed": 0,
+      "log": "r3-capture-155.log"
+    },
+    {
+      "name": "R3-before-cancel-refinement-capture-previous",
+      "exit": 0,
+      "browser": "154.0.8037.92",
+      "passed": 19,
+      "failed": 0,
+      "log": "r3-capture-154.log"
+    },
+    {
+      "name": "final-capture-previous",
+      "exit": 0,
+      "browser": "154.0.8037.92",
+      "rootRevision": "5f76b32",
+      "passed": 21,
+      "failed": 0,
+      "log": "r3-final-capture-154.log"
+    },
+    {
+      "name": "final-changed-source-clean",
+      "exit": 0,
+      "firstLine": "0",
+      "log": "r3-final-clean.log"
+    }
+  ],
+  "findings": [
+    {
+      "id": "R1",
+      "priority": 2,
+      "state": "repaired",
+      "repairRoot": "95aa8f7",
+      "probe": "path-probe.json"
+    },
+    {
+      "id": "R2",
+      "priority": 2,
+      "state": "repaired",
+      "file": ".github/workflows/browser.yml",
+      "line": 44,
+      "repairRoot": "bb1d818",
+      "recheck": "ci-step-recheck.json"
+    },
+    {
+      "id": "R3",
+      "priority": 2,
+      "state": "repaired",
+      "file": "browser/src/capture/index.ts",
+      "line": 170,
+      "probe": "limit-probe.json",
+      "repairRoot": "5f76b32083975b2657fc950d9284db61bd07b53d",
+      "repairHistory": [
+        "5f2cae5",
+        "c196cee",
+        "7d12f9a",
+        "baa7275",
+        "5f76b32"
+      ],
+      "recheck": [
+        "r3-recheck.json",
+        "r3-startup-pause.json",
+        "r3-cancel.json",
+        "r3-provider-ceiling.json",
+        "r3-final-capture-154.log"
+      ],
+      "retainedFailureEvidence": [
+        "limit-probe.json",
+        "r3-browser-build.log",
+        "r3-recheck-initial-harness.log",
+        "r3-startup-pause-failure.json"
+      ]
+    }
+  ],
+  "m1": {
+    "status": "FAIL/unmet",
+    "newLongRun": false,
+    "retainedFailedMetrics": [
+      "m1/long-565fdf4/metrics.json",
+      "m1/long-preview-565fdf4/metrics.json",
+      "m1/diagnostic240-2-d023ba4/metrics.json"
+    ],
+    "currentCandidateTenMinuteVerified": false,
+    "physicalBackgroundMinimizedVerified": false,
+    "physicalWindowsMacPickerVerified": false,
+    "externalFolderKillVerified": false
+  },
+  "prohibitedActionsPerformed": {
+    "realDeviceCapture": false,
+    "sharedGUI": false,
+    "providerMutation": false,
+    "sharedBeadsWrite": false,
+    "publicPushOrPR": false
+  },
+  "proofRoot": "/Users/dave/.goal-loop/loom-clone/host/2026-10-12-browser/candidate-review",
+  "probeDetails": {
+    "lateReady": {
+      "runtime": "v22.22.0",
+      "browser": "155.0.8059.39",
+      "error": "video source ended. The saved portion is being finalized.",
+      "states": [
+        "failed"
+      ],
+      "readyArrived": 1,
+      "lateDelivered": 1,
+      "terminated": 1,
+      "escapedSession": false,
+      "durationMs": 150.29999999701977,
+      "allSourcesEnded": true,
+      "drafts": []
+    },
+    "limitAnalog": {
+      "runtime": "v22.22.0",
+      "browser": "155.0.8059.39",
+      "scope": "Short real-time analog using an isolated 1-second declared limit; not a ten-minute test",
+      "capture": {
+        "declaredLimitMs": 1000,
+        "state": "complete",
+        "durationMs": 1016.9000000059605,
+        "overrunMs": 16.900000005960464,
+        "decodedDurationMs": 969,
+        "events": [
+          {
+            "timeMs": 27.200000002980232,
+            "kind": "start-screen"
+          },
+          {
+            "timeMs": 27.299999997019768,
+            "kind": "start-camera"
+          },
+          {
+            "timeMs": 58,
+            "kind": "start-tab-audio"
+          },
+          {
+            "timeMs": 58,
+            "kind": "start-microphone"
+          },
+          {
+            "timeMs": 58.20000000298023,
+            "kind": "start-composed"
+          },
+          {
+            "timeMs": 1016.6000000089407,
+            "kind": "take-limit"
+          },
+          {
+            "timeMs": 1016.9000000059605,
+            "kind": "stop-request"
+          },
+          {
+            "timeMs": 1039,
+            "kind": "recorders-stopped"
+          }
+        ],
+        "states": [
+          "recording",
+          "stopping",
+          "complete",
+          "failed"
+        ]
+      },
+      "service": {
+        "durationMs": 600016.900000006,
+        "status": 400,
+        "payload": {
+          "error": {
+            "code": "INVALID_REQUEST",
+            "message": "The request is invalid."
+          }
+        }
+      }
+    },
+    "finalR3": {
+      "runtime": "v22.22.0",
+      "browser": "155.0.8059.39",
+      "rootRepair": "5f76b32",
+      "scope": "Bounded one-second analog, synthetic media, no ten-minute/background claim",
+      "lateWorkerScope": "Hold a real worker limit message; postpone the main deadline only to isolate worker ownership; cancel before delivering held event",
+      "rows": [
+        {
+          "behavior": "normal",
+          "state": "complete",
+          "durationMs": 800.7999999970198,
+          "wallMs": 930.2999999970198,
+          "pauses": [],
+          "trackBytes": [
+            3605,
+            4778,
+            12719,
+            12719,
+            28882
+          ],
+          "decodedDurationMs": 759,
+          "states": [
+            "recording",
+            "stopping",
+            "complete"
+          ],
+          "allEnded": true
+        },
+        {
+          "stillPaused": true,
+          "behavior": "paused",
+          "state": "complete",
+          "durationMs": 804.7999999970198,
+          "wallMs": 1436.2000000029802,
+          "pauses": [
+            {
+              "startMs": 268.5,
+              "endMs": 773.3999999910593
+            }
+          ],
+          "trackBytes": [
+            3697,
+            5429,
+            12719,
+            12719,
+            28967
+          ],
+          "decodedDurationMs": 750,
+          "states": [
+            "recording",
+            "paused",
+            "recording",
+            "stopping",
+            "complete"
+          ],
+          "allEnded": true
+        },
+        {
+          "behavior": "delayed",
+          "state": "interrupted",
+          "durationMs": 1212.1000000089407,
+          "wallMs": 1239.2000000029802,
+          "pauses": [],
+          "note": "Automatic stop was delayed beyond the take limit. Saved originals remain available; this take is interrupted.",
+          "trackBytes": [
+            3311,
+            4269,
+            19481,
+            19481,
+            35512
+          ],
+          "decodedDurationMs": null,
+          "states": [
+            "recording",
+            "stopping",
+            "interrupted"
+          ],
+          "allEnded": true
+        },
+        {
+          "behavior": "cancel-late-deadline",
+          "actualLimitObserved": 0,
+          "states": [
+            "recording",
+            "failed"
+          ],
+          "before": [
+            "recording",
+            "failed"
+          ],
+          "allEnded": true,
+          "drafts": []
+        },
+        {
+          "behavior": "cancel-late-worker-limit",
+          "actualLimitObserved": 1,
+          "states": [
+            "recording",
+            "failed"
+          ],
+          "before": [
+            "recording",
+            "failed"
+          ],
+          "allEnded": true,
+          "drafts": []
+        }
+      ],
+      "pageErrors": [],
+      "serviceCeiling": {
+        "status": 400,
+        "payload": {
+          "error": {
+            "code": "INVALID_REQUEST",
+            "message": "The request is invalid."
+          }
+        }
+      },
+      "reservedSeconds": 600,
+      "passed": true
+    },
+    "startupPauseFailure": {
+      "runtime": "v22.22.0",
+      "browser": "155.0.8059.39",
+      "scope": "Hold the initial recording journal save; pause is valid after encoder starts but before start promise resolves; observe actual watchdog installation",
+      "rows": [
+        {
+          "pauseEarly": false,
+          "afterStart": 1,
+          "afterResume": 1,
+          "states": [
+            "recording"
+          ]
+        },
+        {
+          "pauseEarly": true,
+          "afterStart": 0,
+          "afterResume": 0,
+          "states": [
+            "recording",
+            "paused",
+            "recording"
+          ]
+        }
+      ]
+    },
+    "startupPauseRepaired": {
+      "runtime": "v22.22.0",
+      "browser": "155.0.8059.39",
+      "scope": "Hold the initial recording journal save; pause is valid after encoder starts but before start promise resolves; observe actual watchdog installation",
+      "rows": [
+        {
+          "pauseEarly": false,
+          "afterStart": 1,
+          "afterResume": 1,
+          "states": [
+            "recording"
+          ]
+        },
+        {
+          "pauseEarly": true,
+          "afterStart": 1,
+          "afterResume": 1,
+          "states": [
+            "recording",
+            "paused",
+            "recording"
+          ]
+        }
+      ]
+    },
+    "cancelBoundary": {
+      "runtime": "v22.22.0",
+      "browser": "155.0.8059.39",
+      "scope": "Real synthetic recorder stop events deliberately held; 15-second timeout accelerated to35ms only in private fault model; no GPU release claim",
+      "before": {
+        "settled": 0,
+        "states": [
+          "recording",
+          "failed"
+        ],
+        "sourcesEnded": true,
+        "hasDraft": true
+      },
+      "after": {
+        "settled": 2,
+        "states": [
+          "recording",
+          "failed"
+        ],
+        "drafts": 0
+      },
+      "nextResult": {
+        "state": "complete",
+        "tracks": [
+          "screen",
+          "camera",
+          "microphone",
+          "tab-audio",
+          "composed"
+        ],
+        "offsetSpreadMs": 35.099999994039536,
+        "decodedDurationMs": 629
+      },
+      "jointBefore": {
+        "stopDone": false,
+        "cancelDone": false,
+        "sourcesEnded": true
+      },
+      "jointAfter": {
+        "stopDone": true,
+        "cancelDone": true,
+        "drafts": 0
+      },
+      "timed": {
+        "timeoutError": "Encoder stop confirmation timed out during cancellation. Discarded draft cleanup will still finish.",
+        "bounds": [
+          15000
+        ],
+        "drafts": 0,
+        "sourcesEnded": true
+      },
+      "errors": []
+    },
+    "providerCeiling": {
+      "runtime": "v22.22.0",
+      "scope": "Actual Worker/SQLite with controlled provider duration, no provider account mutation",
+      "overCeiling": {
+        "providerDuration": 600.001,
+        "status": 422,
+        "payload": {
+          "error": {
+            "code": "PROVIDER_DURATION",
+            "message": "The provider duration exceeds this recording allowance."
+          }
+        },
+        "reservation": {
+          "state": "reserved",
+          "reserved_seconds": 600
+        }
+      },
+      "atCeiling": {
+        "providerDuration": 600,
+        "status": 200,
+        "state": "ready",
+        "durationMs": 600000,
+        "reservation": {
+          "state": "settled",
+          "actual_seconds": 600
+        }
+      }
+    }
+  },
+  "proofSha256": {
+    "r3-recheck.log": "3e2da6b9ad4eed9b512aed8bb1f82e050947250429fa252db1768b20e13685ce",
+    "r3-startup-pause-failure.json": "872e6b79258268dafa343992f6cd2f85488991122b7cff0fdb0d79af3fab87dc",
+    "r3-deadline-final.log": "6194d9ed560f4bcb420be6cd7a67bc303706ffea6a8952d8d014a4b934065049",
+    "ui.log": "7df0e9cdfc8d1071f998961d1604bb7e79eccffb1a789147b312f635fefab49b",
+    "limit-probe.log": "596e070ed2f203ab7e97b75ac958ad7aaa15902d9223fdcfd8dfdf6969a3aaf3",
+    "r3-provider-ceiling.json": "371e35b57aaf1089ace355c84866e0c850e50e1f7556ec4392f1c47a8cf11ec9",
+    "late-ready-exploratory-149.json": "c6b28a9b1103b463b24289cee9dcf67718078d4cbcfb28770e22cce8a3d70b12",
+    "browser-bundle-scan.json": "24af5576fe44cb0309e510f5336d34b991adcc72fe2a440d64735c41f0efa88c",
+    "r3-cancel.log": "c41964bc0f2206ab157b4d2c629fc61dc7390302b89fc7aa0dbb5aaa2a75eafd",
+    "limit-probe.mjs": "51054193abfbfa97a1e95e66648557525ce45b074be9d8d67e1ae481c5661c1f",
+    "r3-final-clean.log": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "r3-recheck.mjs": "f2d73903e0713853a9ad1aa00c3b7b127377d3dea28ba3a864fa7f085bece9cd",
+    "r3-recheck-initial.mjs": "e9f0c14a89d0c7f3cdbec21d54bacd7756fb6ec011af7fe70d19427746cd8b13",
+    "clean.log": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "r3-cancel-probe.mjs": "6baa6b60e21babc10ab8f021791f0ad4642c3b3c497618ab0196f094d5ff7c27",
+    "r3-recheck-initial-harness.log": "4f0b2856dfc8f9785acaa50c54a07768ba70a3173380e07059d8cc5169dda0f7",
+    "late-ready-probe.mjs": "f58ea3591c1063ccf4729e939a631b1e7a977f3a2744b9c6b62e2d03800a11ea",
+    "capture-155.log": "426c3dd05f23c26856d874e5c87dc8c3eec8d766b7f0203dd17cee3a64ebd3fe",
+    "service.log": "4e0109b3d0827a3c74301d3c7e7ee0921438a327dc2d6298b59a16e0fd6b8d6b",
+    "r3-provider-ceiling.log": "5a8fe038a1b20be6303c4313ca2fbcfd96d97b69d576db39e3d6ad7f3a3b3a93",
+    "notices.log": "8c2f2544456cbb17b37a54d6db1ee1aef0ab11e2b596c02e2cdef883e87948db",
+    "service-verified.log": "2e48076b146456356aa06a067b4adbb3e97032d2aa61031394d5c325f1be6076",
+    "capture-154.log": "cca104778e1e0a270bcf98623c84611068477c21056515bdd3d0413cf127f676",
+    "nonmedia-contract-observer.log": "8af72336bec319278deecea176db714d0cb7a66d7e0a5a888880682d7dfb8833",
+    "r3-startup-pause-probe.mjs": "282c3ed0c2f65a4946812ddb906d15cd37bdd3c20f822d842613a987764233ec",
+    "r3-recheck-final.log": "64df570ec93a011b21d1ecd9f58a77c725c6c8ed30bed140140f9a2d00e04989",
+    "limit-probe.json": "42a2788a48fca541ebc7f25d2b174b5f71b3a03b07f4dce5d8f21b0cf415d1f7",
+    "r3-final-capture-154.log": "e8b64716e9c196123970fb520efebcde82e1cff0841b7ba8ccde1fe85e95924b",
+    "r3-cancel.json": "5166aad45b7a8fc7dec3ce6c02db5d15e05c22f4af4a7cafaf6436725d3a56e6",
+    "r3-browser-build-repaired.log": "3ca3b49f147f13bfbd7522ac14be9be203c9e7caa49eb3bfd387c81c9fd395f9",
+    "browser-build.log": "6c93a64e6246bedd66abacce89874a13d099ec35c7762b11c3e7a3764581f193",
+    "r3-startup-pause.json": "17bce71cebf1b68065786a10403c1e882832102d7124d9f9fabb066ea7a933ff",
+    "r3-browser-build.log": "aeb9ad48acba6be1653d395511a73918e9df0627be2df5a3e0aa8134b881fbee",
+    "late-ready.json": "6140b808f7e47b6c6f32a0828313f8635e87b94bbd8a7d2dcef4afb23022edb3",
+    "r3-startup-pause.log": "4c520e8e1ba65d9b12506187861a7c494dbe00b568dae4e7d6389fc37dda9a36",
+    "r3-source-inventory.json": "869c5296c0d96a30918ca6d424e035bf65faf437a6ac5d2b2bfd5a8134737612",
+    "r3-startup-pause-failure.log": "4c520e8e1ba65d9b12506187861a7c494dbe00b568dae4e7d6389fc37dda9a36",
+    "r3-final-source-inventory.json": "30859020688f11d3b3d6201946e79419597542bef234fdc4c34e1a309576ece0",
+    "ci-step-recheck.json": "7ac845d1a986d40c1071a4c6773e3e18d82e055a06f9f770f9463772b0e1d5b2",
+    "r3-clean.log": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "r3-provider-ceiling.mjs": "f453722040cf561bb244080bb572660dfd8120cf15a4817256358d52004e7baa",
+    "r3-recheck-c196.json": "86b9b58344af1948578ef254d3559b85f068d80c3bd44a1d7c381fa3479cf8fe",
+    "r3-capture-155.log": "70518775b5a006606dace9dd765e2ceba447bc36fd3675fb8e5692364ac22b50",
+    "r3-startup-pause-repaired.log": "53c7743ec2e7574c84b2d478b6f6a1178f5c8243ae0b9baef0fef9ebce566428",
+    "r3-recheck.json": "4151ba8caad8ef5b2cd4955fb30b6b1fbe25308c2d71a67e435009e1189d665b",
+    "r3-final-build.log": "143e3d1fcbebf67eb853ec1445e90e4caffd88ac0f499f1db7d0c4285a92d5a1",
+    "r3-capture-154.log": "3ba9492f2484133e135010dbdb9477f4f0c30e6d6f3d227b9803a21d79a43d6b",
+    "path-probe.json": "cc1707ea4732b4b325f06de3f6dbff3e06e0a4fd979be0dfb9c29027c2b3fa3b"
+  },
+  "codeRepairVerdict": "QUALIFIED_PASS",
+  "makerReportedOnly": {
+    "currentFullBrowserGate": {
+      "rootRevision": "5f76b32",
+      "exit": 0,
+      "passed": 66,
+      "failed": 0,
+      "durationSeconds": 94.912,
+      "independentlyRepeated": false
+    },
+    "retainedFailures": [
+      "unfinished file-parallel gate",
+      "104ms calibration spread on root65 over unchanged100ms assertion"
+    ],
+    "physicalMacThreeMinutePath": {
+      "reportedBy": "root",
+      "reviewerPerformedOrRepeated": false,
+      "durationMs": 181954.9,
+      "separateTracks": 4,
+      "scope": "No voice-intelligibility, long sync, Windows, ten-minute or minimized/background claim"
+    }
+  },
+  "sourceInventory": {
+    "rootRevision": "5f76b32083975b2657fc950d9284db61bd07b53d",
+    "reviewerSetupHead": "0ed2faf2d95ad9216ca673f352a60b8ab4053a3e",
+    "businessFiles": {
+      ".github/workflows/browser.yml": {
+        "sha256": "f3486de8c8f0109f5d0cf20c626f1415df00f0bdce0ac7525d4208ef3a66ce12",
+        "sameAsRoot": true
+      },
+      "browser-worker/migrations/0001_browser_service.sql": {
+        "sha256": "f2644a43028410e1e053a90d900d35a29f38c5c66fd98163bb62aeff6f0b3038",
+        "sameAsRoot": true
+      },
+      "browser-worker/migrations/0002_provider_budget_safety.sql": {
+        "sha256": "8d5753b46233d5d962d22192c81b30c7d4be061e56610b3bdc557461ac9d7d87",
+        "sameAsRoot": true
+      },
+      "browser-worker/migrations/0003_session_families.sql": {
+        "sha256": "3229673ced41e892e8373b588bb3a814072ed4ba083598cf581a19c72277bc66",
+        "sameAsRoot": true
+      },
+      "browser-worker/migrations/rollback/0001_browser_service.sql": {
+        "sha256": "d9daf5ae624cf11fc3f5689a3a619a0d84bd703379bd0c451af1a09196255153",
+        "sameAsRoot": true
+      },
+      "browser-worker/package.json": {
+        "sha256": "851d1ea69d4deb8c7857af3c981b04a7e880911bce4963311a5f18cca3ce5adf",
+        "sameAsRoot": true
+      },
+      "browser-worker/schema.sql": {
+        "sha256": "4418d962f49aee9b22db6ccf099c4a8dc897a00cbd95e4965899b158754d288b",
+        "sameAsRoot": true
+      },
+      "browser-worker/src/auth.ts": {
+        "sha256": "66b6d89a5d2e51ba5b886eab88e4f679fba61ec7f4dccb863e6a9cf3c23efddf",
+        "sameAsRoot": true
+      },
+      "browser-worker/src/billing.ts": {
+        "sha256": "bfabdfd5bf72a90333b5b666ca5abc35f1387984388bd07dd1f2c309725ea4d6",
+        "sameAsRoot": true
+      },
+      "browser-worker/src/budget.ts": {
+        "sha256": "bf223a020397f8e0713537a3a650ff876179825284706d00819f7a32165bf40e",
+        "sameAsRoot": true
+      },
+      "browser-worker/src/cleanup.ts": {
+        "sha256": "871e3f169bda83361d19b4c937c264ed0bc992f2d60c135d95599f3029a0945a",
+        "sameAsRoot": true
+      },
+      "browser-worker/src/crypto.ts": {
+        "sha256": "fac88fd251a9213d09fa88c444b5941f464f920d1d749a2907efdecacefc4dcd",
+        "sameAsRoot": true
+      },
+      "browser-worker/src/index.ts": {
+        "sha256": "d95c52bdcd6e2937d5a699e39edb0a9e81eff68f5064db25923579caf6635b81",
+        "sameAsRoot": true
+      },
+      "browser-worker/src/platform.ts": {
+        "sha256": "ba366ff63ffe2bbc0d6e5e9bb463d2bf1b903250a0fc2ece2647faedf78a1d17",
+        "sameAsRoot": true
+      },
+      "browser-worker/src/providers.ts": {
+        "sha256": "3df0ea69a35b399d30927632a1bbaad8ad439ba7396c4191c8896fb1e699de0f",
+        "sameAsRoot": true
+      },
+      "browser-worker/src/records.ts": {
+        "sha256": "85c9913a7871f8116f5d51cd9fca6ca2ede539c492b84824fd6bb42a265e2b3a",
+        "sameAsRoot": true
+      },
+      "browser-worker/src/shares.ts": {
+        "sha256": "4f364c4e366b308c9960a6ac16441260171cc2e8db35113603d3e2554c461cca",
+        "sameAsRoot": true
+      },
+      "browser/package.json": {
+        "sha256": "1dea56c59729d60489483a412126707797eac9eb0acb4aeb3e6a67fc4b61240c",
+        "sameAsRoot": true
+      },
+      "browser/src/api.ts": {
+        "sha256": "1abd2c112e1fb5c3471b4c5399f363523d5bcda05e40a071454c6667b9735680",
+        "sameAsRoot": true
+      },
+      "browser/src/capture/cadence.ts": {
+        "sha256": "f3e2a966215c3623b7794fa863b0f9e310ecbc97a09a4d521275b98c7bd48914",
+        "sameAsRoot": true
+      },
+      "browser/src/capture/composition.worker.ts": {
+        "sha256": "9241bbf33ec11b9f0981291506080e9178ded6141cec46c306c53850b04a5b7e",
+        "sameAsRoot": true
+      },
+      "browser/src/capture/index.ts": {
+        "sha256": "63a921c75256a746cf0074480df5923e5d1817d5c13bd8c9b071f0be4e956674",
+        "sameAsRoot": true
+      },
+      "browser/src/capture/storage.ts": {
+        "sha256": "a7787c68bfd03b90da22b963946e532c67ac022565103e4fe6fdba78ef2e6a64",
+        "sameAsRoot": true
+      },
+      "browser/src/components/Cloud.tsx": {
+        "sha256": "855c4a49a3e121da0a3c82746735c90d9eb3e6dfb4d5f2cc8b6dee4941aa84ac",
+        "sameAsRoot": true
+      },
+      "browser/src/components/Guide.tsx": {
+        "sha256": "9f06eaa84b2155998c13acaa6cad81ddc4d0868360e0df4e833ce6fea40ef99c",
+        "sameAsRoot": true
+      },
+      "browser/src/components/Review.tsx": {
+        "sha256": "e28e79327e4e961ec9e68515802f68135fb6ae0dcceb15abffec34d192f2dc82",
+        "sameAsRoot": true
+      },
+      "browser/src/components/Studio.tsx": {
+        "sha256": "eef648d69d9086fcdd3632a12cb8db62c1d7f51356e2fefa45d24818e6e47f50",
+        "sameAsRoot": true
+      },
+      "browser/src/components/common.tsx": {
+        "sha256": "01b8a705b5bb35e4189cf3fa41a0f1e00184a5afdb27ebb2b79e31f4475dc6f7",
+        "sameAsRoot": true
+      },
+      "browser/src/contracts.ts": {
+        "sha256": "a3077bac2f5017c5c35e763ba7f58249596a9fd71e78ad6df3aea3538ed8c2c6",
+        "sameAsRoot": true
+      },
+      "browser/src/main.tsx": {
+        "sha256": "0cb5cd0e1777193a34f51becba714dfed5f26822b1e89a36f42391bca8719a96",
+        "sameAsRoot": true
+      },
+      "browser/src/style.css": {
+        "sha256": "f36d5195bb4b86963f045a334d0f88637c3d827e9f0b5d19e1b9695e2563fa63",
+        "sameAsRoot": true
+      },
+      "browser/src/upload.ts": {
+        "sha256": "45773efda1756b18084a4fa2d20bbcd17cdc9a98f427ef161cf339afd48d5de2",
+        "sameAsRoot": true
+      }
+    },
+    "nativeDiagnosticFixtureDifferences": [
+      "browser/test/matrix-fixture.mjs",
+      "browser/test/matrix-native-observation.mjs",
+      "browser/test/matrix-native.test.mjs",
+      "browser/test/matrix.mjs"
+    ],
+    "nativeDiagnosticRun": false
+  }
+}

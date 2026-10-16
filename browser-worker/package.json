@@ -1,0 +1,7 @@
+{
+  "name": "@rushes/browser-worker", "version": "0.1.0", "private": true, "license": "MIT", "type": "module",
+  "engines": { "node": ">=22.22.0 <23" },
+  "scripts": { "build": "tsc --noEmit && node build.mjs", "test": "node --test test/*.test.mjs", "check": "npm run build && npm test" },
+  "dependencies": { "zod": "4.6.6" },
+  "devDependencies": { "@types/node": "22.18.10", "typescript": "7.0.2", "esbuild": "0.28.2" }
+}

@@ -1,0 +1,75 @@
+name: browser
+on:
+  push:
+    branches: [main, codex/rushes-browser-cloud]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      maximum_take:
+        description: Run the protected ten-minute matrix (failures block acceptance)
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  browser:
+    name: ${{ matrix.os }} / Chrome ${{ matrix.chrome }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        chrome: [current, previous]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+      - name: Install service test dependencies
+        run: npm --prefix browser-worker ci --no-audit --no-fund
+      - name: Install browser test dependencies
+        run: npm --prefix browser ci --no-audit --no-fund
+      - name: Isolated official current or previous Chrome
+        run: node scripts/install-test-chrome.mjs --generation ${{ matrix.chrome }} --destination "${{ runner.temp }}/rushes-test-chrome"
+      - name: Install decode tools on Mac
+        if: runner.os == 'macOS'
+        run: brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+      - name: Install decode tools on Windows
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+      - name: Build and check service
+        run: npm --prefix browser-worker run check
+      - name: Build browser
+        run: npm --prefix browser run build
+      - name: Capture, UI and actual service seam checks
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-proof
+          RUSHES_UI_PROOF: ${{ runner.temp }}/rushes-browser-ui
+        run: npm --prefix browser test
+      - name: Independent short recording matrix
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-proof
+        run: node browser/test/matrix.mjs
+      - name: Protected maximum take
+        if: github.event_name == 'workflow_dispatch' && inputs.maximum_take
+        env:
+          RUSHES_M1_LONG: '1'
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-maximum
+        run: node browser/test/matrix.mjs
+      - name: Preserve fixture evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-${{ matrix.os }}-${{ matrix.chrome }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/rushes-browser-proof/metrics.json
+            ${{ runner.temp }}/rushes-browser-proof/*.webm
+            ${{ runner.temp }}/rushes-browser-proof/*.log
+            ${{ runner.temp }}/rushes-browser-ui/*.png
+            ${{ runner.temp }}/rushes-browser-ui/unclosed-*.json
+            ${{ runner.temp }}/rushes-browser-maximum/metrics.json
+            ${{ runner.temp }}/rushes-browser-maximum/*.webm
+            ${{ runner.temp }}/rushes-browser-maximum/*.log
