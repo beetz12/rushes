@@ -432,10 +432,19 @@ test('a second tab observes a live draft without marking it interrupted or start
       try { await (await createDraftStore()).remove(id); return false; } catch (error) { return error.message.includes('another tab'); }
     }, id);
     assert.equal(refused, true);
-    await first.evaluate(async () => { await window.live.session.stop(); await window.live.cleanup(); });
+    const ownerStop = await first.evaluate(async () => {
+      const manifest = await window.live.session.stop();
+      const warnings = [...window.live.warnings];
+      await window.live.cleanup(); return { manifest, warnings };
+    });
     const stopped = await second.evaluate(async id => {
       const { createDraftStore } = await import('/src/capture/storage.ts'); return (await createDraftStore()).load(id);
     }, id);
+    const terminal = manifest => ({ state: manifest.state, durationMs: manifest.durationMs,
+      recoveryNote: manifest.recoveryNote, tracks: manifest.tracks.map(track => ({ kind: track.kind, bytes: track.bytes,
+        chunks: track.chunks.length })), failures: manifest.events.filter(event => event.kind === 'failure') });
+    console.log('Second-tab terminal result', JSON.stringify({ owner: terminal(ownerStop.manifest),
+      warnings: ownerStop.warnings, observed: terminal(stopped) }));
     assert.equal(stopped.state, 'complete');
   } finally { await context.close(); }
 });

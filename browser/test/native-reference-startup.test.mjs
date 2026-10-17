@@ -19,7 +19,7 @@ const run = new (Object.getPrototypeOf(async function() {}).constructor)(
    if (false) { ${branch} }
    return { source, suppliedReference, metrics };`);
 
-function controlled(firstPacket, { requireSilent = false, ignoreSilent = false, observingReference = true, videoStopError } = {}) {
+function controlled(firstPacket, { requireSilent = false, requireQuantum = false, ignoreSilent = false, observingReference = true, videoStopError } = {}) {
   void firstPacket.catch(() => undefined);
   const calls = [], track = { stop() { calls.push('audio-stop'); } };
   const audio = { stream: { getAudioTracks() { return [track]; }, getTracks() { return [track]; } } };
@@ -27,6 +27,7 @@ function controlled(firstPacket, { requireSilent = false, ignoreSilent = false, 
   class Context {
     constructor(options) {
       if (requireSilent && options?.sinkId?.type !== 'none') throw new Error('Generated environment has no physical audio output');
+      if (requireQuantum && options?.latencyHint !== 128 / 48000) throw new Error('Generated environment needs an explicit128-frame quantum request');
       this.sinkId = ignoreSilent ? '' : options?.sinkId ?? '';
       this.state = 'suspended'; this.currentTime = 0; this.sampleRate = 48000;
     }
@@ -71,7 +72,7 @@ test('missing initial PCM refuses video creation and retires the owned audio obs
 
 
 test('actual generated setup works without a physical output device', async () => {
-  const fixture = controlled(Promise.resolve({ timestampUs: 100000, observedPageMs: 101 }), { requireSilent: true });
+  const fixture = controlled(Promise.resolve({ timestampUs: 100000, observedPageMs: 101 }), { requireSilent: true, requireQuantum: true });
   const result = await fixture.start();
   assert.ok(fixture.calls.includes('pcm-observed'));
   assert.ok(fixture.calls.includes('video-create'));

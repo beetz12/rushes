@@ -44,3 +44,14 @@ Only existing short qualifications opt in; no180s/600s trace or acceptance waive
 
 This is test instrumentation. It neither changes production recording nor
 establishes a physical sensor clock, a historical stall cause, or release readiness.
+
+
+The native-generated48k source requests numeric `latencyHint: 128 / 48000`.
+Pinned Chromium's exact-latency policy selects its minimum when the request is at
+or below that minimum ([buffer policy](https://raw.githubusercontent.com/chromium/chromium/155.0.8059.84/media/base/audio_latency.cc)).
+The matched Mac/current experiment measured480-frame interactive callbacks versus
+128-frame exact callbacks. Both runs passed short qualification; the earlier
+480-path jitter/composed-artifact failure did not reproduce. This is a declared
+generated-source configuration, not an earned historical repair or a change to
+the product mixer's5ms model. Actual callback configuration is retained in short
+traces; fresh short/180s/platform/maximum qualification remains required.

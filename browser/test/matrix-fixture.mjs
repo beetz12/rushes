@@ -97,7 +97,7 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
     // Begin observing actual PCM before creating the native video source. Merely
     // opening its disk sink does not prove that any head samples were received.
     try {
-      toneContext = new AudioContext({ sampleRate: 48000, sinkId: { type: 'none' } });
+      toneContext = new AudioContext({ sampleRate: 48000, latencyHint: 128 / 48000, sinkId: { type: 'none' } });
       if (toneContext.sinkId?.type !== 'none') throw new Error('Silent fixture audio output is unavailable');
       metrics.generatedAudioOutput = { type: toneContext.sinkId.type, sampleRate: toneContext.sampleRate };
       await toneContext.audioWorklet.addModule(new URL('./matrix-tone.worklet.mjs', import.meta.url));
