@@ -60,5 +60,30 @@ class NoticesTests(unittest.TestCase):
         metadata.write_text(json.dumps({"version": "1.0.0", "license": "AGPL-3.0-only"}))
         self.assertIn("dependency license needs review", self.result().stderr)
 
+    def test_browser_source_and_dependencies_receive_the_same_notice_gate(self):
+        source = self.root / "browser/src/Example.ts"
+        source.parent.mkdir(parents=True)
+        source.write_text("// Derived from example/repo@sha:file (MIT). See THIRD_PARTY_NOTICES.md.\n")
+        self.assertIn("missing exact provenance row: browser/src/Example.ts", self.result().stderr)
+        notices = self.root / "THIRD_PARTY_NOTICES.md"
+        browser_row = "| browser/src/Example.ts | example/repo | sha | file | MIT (licenses/MIT-example.txt) | Author | None |\n"
+        notices.write_text(self.row + browser_row)
+        self.assertEqual(self.result().returncode, 0)
+        source.unlink()
+        self.assertIn("notice names absent file: browser/src/Example.ts", self.result().stderr)
+        source.write_text("// Original generated fixture\n")
+        metadata = self.root / "browser/node_modules/example/package.json"
+        metadata.parent.mkdir(parents=True)
+        metadata.write_text(json.dumps({"version": "1.0.0", "license": "MIT"}))
+        (self.root / "browser/package.json").write_text(json.dumps({"dependencies": {"example": "1.0.0"}}))
+        self.assertIn("missing pinned dependency notice: browser/example@1.0.0", self.result().stderr)
+        notices.write_text(self.row + browser_row + "| npm: browser/example@1.0.0 | MIT | licenses/npm-example-1.0.0.txt |\n")
+        (self.root / "licenses/npm-example-1.0.0.txt").write_text("Generated MIT licence fixture")
+        self.assertEqual(self.result().returncode, 0)
+        metadata.write_text(json.dumps({"version": "2.0.0", "license": "MIT"}))
+        self.assertIn("missing pinned dependency notice: browser/example@2.0.0", self.result().stderr)
+        metadata.write_text(json.dumps({"version": "1.0.0", "license": "AGPL-3.0-only"}))
+        self.assertIn("dependency license needs review: browser/example", self.result().stderr)
+
 if __name__ == "__main__":
     unittest.main()

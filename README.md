@@ -22,10 +22,8 @@ shared clock, local-first on your Mac, drivable by your AI agents.
 
 </div>
 
-Use Rushes for client walkthroughs, bug reports, code demos, tutorials, YouTube
-production, and any moment where showing the work is faster than scheduling
-another call — especially when the recording is raw material you keep editing,
-not a link you send once.
+Record a walkthrough for a client, capture a bug, or demonstrate code. Keep the
+separate tracks when you want to edit the result for a tutorial or video.
 
 ## Features
 
@@ -140,3 +138,13 @@ rules before your first pull request; the one gate is
 - `docs/process/reader-brief.md`: the rules the research notes follow.
 - `tools/checks/`: the scripts that verify the notes and the plan.
 - [ROADMAP.md](ROADMAP.md): what's done, what's next.
+
+
+## Shared browser recorder (experimental)
+
+The experimental [browser client](browser/README.md) provides local screen/camera/
+microphone recording and separate-track export, targeting pinned Chrome on
+Windows and Mac. Shared CI is configured for generated-media checks on both
+systems; cross-platform qualification remains in progress. The hosted account,
+processing and billing backend stays private. This source publication does not
+announce a production cloud launch; runtime and provider qualification continue.
