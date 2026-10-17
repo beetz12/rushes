@@ -68,7 +68,7 @@ for surface in shell cloud viewer worker browser; do
 done
 
 # New shared browser code, tests and CI helpers receive the same clean-room gate.
-clean_paths+=(browser scripts/install-test-chrome.mjs scripts/check-browser-recorder.mjs .github/workflows/browser-recorder.yml)
+clean_paths+=(browser scripts/install-test-chrome.mjs scripts/check-browser-recorder.mjs .github/workflows/browser-recorder.yml verification/engine_crash_report.py verification/test_engine_crash_report.py .github/workflows/ci.yml)
 
 echo "== clean-room check on our source =="
 python3 tools/checks/test_clean_inputs.py
@@ -76,6 +76,9 @@ clean_output=$(python3 -I tools/checks/check_clean.py "${clean_paths[@]}")
 echo "$clean_output"
 first=${clean_output%%$'\n'*}
 [ "$first" = "0" ] || { echo "check_clean reported $first"; exit 1; }
+
+echo "== owned engine crash evidence controls =="
+python3 -m unittest discover -s verification -p 'test_engine_crash_report.py'
 
 echo "== published browser boundary controls =="
 python3 tools/checks/test_browser_boundary.py

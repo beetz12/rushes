@@ -58,7 +58,25 @@ jobs:
           export PATH="$HOME/.nvm/versions/node/v${pin#v}/bin:$PATH"
           node scripts/install-test-chrome.mjs --generation current --destination "$RUNNER_TEMP/rushes-umbrella-chrome"
       - name: Gate
-        run: bash scripts/check.sh
+        run: |
+          set -euo pipefail
+          bash scripts/check.sh 2>&1 | tee "$RUNNER_TEMP/rushes-source-gate.log"
+      - name: Collect only owned engine crash stack metadata
+        if: always()
+        run: |
+          if [ -x .build/debug/rushcore-engine ] && [ -f "$RUNNER_TEMP/rushes-source-gate.log" ]; then
+            python3 verification/engine_crash_report.py --log "$RUNNER_TEMP/rushes-source-gate.log" --engine .build/debug/rushcore-engine --output "$RUNNER_TEMP/rushes-owned-crash.json"
+          else
+            echo '{"availability":"unavailable","reason":"built engine or gate log absent"}' > "$RUNNER_TEMP/rushes-owned-crash.json"
+          fi
+      - name: Preserve bounded generated-engine stack metadata
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: owned-engine-crash-metadata
+          path: ${{ runner.temp }}/rushes-owned-crash.json
+          retention-days: 1
+          if-no-files-found: warn
 
   smoke:
     name: release engine + CLI smoke (stub capture)

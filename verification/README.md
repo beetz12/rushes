@@ -34,3 +34,14 @@ ignored wrong-type duration, and input time that retained paused wall time.
 These are regression contracts, not maker implementation suggestions. Capture,
 UI, exports, external hosting and macOS permissions require separate real
 checks; synthetic success does not establish their readiness.
+
+
+Owned engine crash evidence in CI: the CLI harness retains the first request,
+bounded partial stdout, exact executable path, launch bracket and observed exit.
+`engine_crash_report.py` matches only an unexpected signal11 boot to the built
+Mach-O UUID, PID and launch interval. It projects at most64 stack frames; raw
+reports, registers, environment, application messages and memory summaries are
+excluded. macOS can redact paths and can date the report after process exit.
+Missing or ambiguous reports remain unavailable. A passing collector or local
+fixture is not a fix for the intermittent native crash. The ordinary Gate keeps
+its actual exit through pipefail; its always-step uploads only the projected JSON.

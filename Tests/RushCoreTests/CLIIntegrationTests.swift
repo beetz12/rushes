@@ -590,6 +590,7 @@ final class EngineHarness: @unchecked Sendable {
         stderrHandle = handles.stderr
         do {
             try process.run()
+            capture.markLaunchCompleted()
         } catch {
             fatalError("could not spawn the engine: \(error)")
         }
@@ -654,11 +655,19 @@ final class EngineHarness: @unchecked Sendable {
         _ arguments: [String], timeout: TimeInterval
     ) throws -> (status: Int32, stdout: String, stderr: String) {
         ensureRunning()
-        let result = try runCLIOnce(arguments, timeout: timeout)
+        let result: (status: Int32, stdout: String, stderr: String)
+        do { result = try runCLIOnce(arguments, timeout: timeout) }
+        catch {
+            if CLIEngineHandover.targetsEngine(arguments, engineSocket: socketPath.path) {
+                output.reportFirstFailure(process: process, arguments: arguments, cliStatus: nil,
+                    cliError: String(describing: error), cliOutput: "")
+            }
+            throw error
+        }
         if result.status == 4,
            CLIEngineHandover.targetsEngine(arguments, engineSocket: socketPath.path) {
             output.reportFirstFailure(process: process, arguments: arguments, cliStatus: result.status,
-                cliError: result.stderr)
+                cliError: result.stderr, cliOutput: result.stdout)
         }
         return result
     }
@@ -721,6 +730,10 @@ struct CLIEngineEvidence: Codable {
     var stderrTail: String
     var stderrHead: String
     var outputComplete: Bool
+    var executablePath: String?
+    var launchAfterUnixMs: Double?
+    var launchBeforeUnixMs: Double?
+    var observedExitUnixMs: Double?
 }
 
 final class CLIEngineOutputLedger: @unchecked Sendable {
@@ -729,11 +742,17 @@ final class CLIEngineOutputLedger: @unchecked Sendable {
     private var stdout = Data(), stderr = Data(), stderrHead = Data()
     private var stdoutBytes = 0, stderrBytes = 0
     private var stdoutEnded = false, stderrEnded = false
+    private var executablePath: String?
+    private var launchAfterUnixMs: Double?, launchBeforeUnixMs: Double?, observedExitUnixMs: Double?
     private var failureReported = false, requestedRetirement = false
     private var exitStatus: Int32?, terminationReason: Int?, exitedPID: Int32?
     init(bootID: Int) { self.bootID = bootID }
 
     func install(on process: Process, beforeStdoutAppend: @escaping @Sendable () -> Void = {}) -> (stdout: FileHandle, stderr: FileHandle) {
+        changed.lock()
+        executablePath = process.executableURL?.resolvingSymlinksInPath().path
+        launchAfterUnixMs = Date().timeIntervalSince1970 * 1000
+        changed.unlock()
         let out = Pipe(), err = Pipe()
         process.standardOutput = out; process.standardError = err
         out.fileHandleForReading.readabilityHandler = { [self] handle in
@@ -744,12 +763,16 @@ final class CLIEngineOutputLedger: @unchecked Sendable {
         err.fileHandleForReading.readabilityHandler = { [self] in append($0.availableData, standardOutput: false) }
         process.terminationHandler = { [self] child in
             changed.lock()
+            observedExitUnixMs = Date().timeIntervalSince1970 * 1000
             exitStatus = child.terminationStatus; terminationReason = child.terminationReason.rawValue
             exitedPID = child.processIdentifier; let report = failureReported
             changed.broadcast(); changed.unlock()
             if report { Self.emit("CLI_ENGINE_EXIT", snapshot(process: child)) }
         }
         return (out.fileHandleForReading, err.fileHandleForReading)
+    }
+    func markLaunchCompleted() {
+        changed.lock(); launchBeforeUnixMs = Date().timeIntervalSince1970 * 1000; changed.unlock()
     }
     private func append(_ data: Data, standardOutput: Bool) {
         changed.lock(); defer { changed.unlock() }
@@ -790,14 +813,19 @@ final class CLIEngineOutputLedger: @unchecked Sendable {
             terminationReason: terminationReason ?? (running ? nil : process?.terminationReason.rawValue),
             requestedRetirement: requestedRetirement, stdoutBytes: stdoutBytes, stderrBytes: stderrBytes,
             stdoutTail: String(decoding: stdout, as: UTF8.self), stderrTail: String(decoding: stderr, as: UTF8.self),
-            stderrHead: String(decoding: stderrHead, as: UTF8.self), outputComplete: stdoutEnded && stderrEnded)
+            stderrHead: String(decoding: stderrHead, as: UTF8.self), outputComplete: stdoutEnded && stderrEnded,
+            executablePath: executablePath, launchAfterUnixMs: launchAfterUnixMs, launchBeforeUnixMs: launchBeforeUnixMs,
+            observedExitUnixMs: observedExitUnixMs ?? (running ? nil : Date().timeIntervalSince1970 * 1000))
     }
-    func reportFirstFailure(process: Process?, arguments: [String], cliStatus: Int32, cliError: String) {
+    func reportFirstFailure(process: Process?, arguments: [String], cliStatus: Int32?, cliError: String, cliOutput: String) {
         changed.lock(); let first = !failureReported; failureReported = true; changed.unlock()
         guard first else { return }
         let evidence = snapshot(process: process)
         Self.emit("CLI_ENGINE_FIRST_FAILURE", evidence)
-        let request = ["arguments": arguments.joined(separator: " "), "status": String(cliStatus), "error": String(cliError.suffix(8192))]
+        let request = ["arguments": arguments.joined(separator: " "), "status": cliStatus.map { String($0) } ?? "unavailable",
+                       "error": String(cliError.suffix(8192)), "stdoutBytes": String(cliOutput.utf8.count),
+                       "stdoutHead": String(decoding: Data(cliOutput.utf8).prefix(8192), as: UTF8.self),
+                       "stdoutTail": String(decoding: Data(cliOutput.utf8).suffix(8192), as: UTF8.self)]
         if let encoded = try? JSONSerialization.data(withJSONObject: request, options: [.sortedKeys]) {
             FileHandle.standardError.write(Data("CLI_FIRST_REQUEST ".utf8) + encoded + Data([10]))
         }
