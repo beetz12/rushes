@@ -30,10 +30,11 @@ nodeTest.test('missing, duplicated, wrong-unit, shifted or cross-owner trace coo
 async function retirementFixture(testContext, failSetup, stallRetirement = false, rejectEnd = false) {
   const temporary = await files.mkdtemp(paths.join(operatingSystem.tmpdir(), 'rushes-cold-trace-'));
   testContext.after(() => files.rm(temporary, { recursive: true }));
-  const directory = paths.join(temporary, 'evidence'), calls = [];
+  const directory = paths.join(temporary, 'evidence'), calls = [], requests = [];
   class Session extends EventEmitter {
-    async send(method) {
+    async send(method, parameters) {
       calls.push(method);
+      requests.push({ method, parameters });
       if (method === 'Tracing.end') {
         queueMicrotask(() => this.emit('Tracing.tracingComplete', { stream: 'owned-stream', dataLossOccurred: false }));
         if (rejectEnd) throw new Error('end acknowledgement lost');
@@ -50,7 +51,7 @@ async function retirementFixture(testContext, failSetup, stallRetirement = false
     if (stallRetirement) return new Promise(() => {});
     throw new Error(evaluations === 1 ? 'partial setup rejected' : 'metadata retirement rejected');
   } };
-  return { directory, calls, browser: { version: () => 'diagnostic-unit-fixture', newBrowserCDPSession: async () => session }, page };
+  return { directory, calls, requests, browser: { version: () => 'diagnostic-unit-fixture', newBrowserCDPSession: async () => session }, page };
 }
 
 nodeTest.test('metadata retirement failure still ends the trace, retains raw bytes and closes its stream', async context => {
@@ -61,6 +62,16 @@ nodeTest.test('metadata retirement failure still ends the trace, retains raw byt
   assert.deepEqual(JSON.parse(await files.readFile(paths.join(f.directory, 'trace.json'), 'utf8')), { traceEvents: [] });
   const report = JSON.parse(await files.readFile(paths.join(f.directory, 'report.json'), 'utf8'));
   assert.equal(report.traceReceipt.dataLossOccurred, false); assert.ok(report.errors.some(error => error.includes('metadata retirement rejected')));
+});
+
+nodeTest.test('audio diagnostics request native callback and graph categories only when explicitly enabled', async context => {
+  const f = await retirementFixture(context, false);
+  const trace = await beginColdTrace(f.browser, f.page, f.directory, { audioDiagnostics: true });
+  await assert.rejects(trace.finish({ generated: true }), /metadata retirement rejected/);
+  const categories = f.requests.find(row => row.method === 'Tracing.start').parameters.traceConfig.includedCategories;
+  for (const category of ['disabled-by-default-audio', 'webaudio', 'mediastream', 'disabled-by-default-webaudio.audionode', 'disabled-by-default-mediastream'])
+    assert.ok(categories.includes(category));
+  await assert.rejects(beginColdTrace(f.browser, f.page, f.directory, { audioDiagnostics: 'true' }), /must be boolean/);
 });
 
 nodeTest.test('partial setup failure preserves both errors and independently retires the native trace', async context => {

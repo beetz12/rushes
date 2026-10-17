@@ -1,14 +1,25 @@
 // Test-owned fake media only; never imported by the product bundle.
-export async function nativeReferenceClock(){
+export async function nativeReferenceClock(seed){
   const within=async(operation,label)=>{let timer;try{return await Promise.race([operation,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(label+' timed out')),1500);})]);}finally{clearTimeout(timer);}};
   const result={scope:'Test-only native scalar clock conversion; prescribed unit slope, no callback-arrival or export phase correction',timeOrigin:performance.timeOrigin,crossOriginIsolated,privacyResolutionMs:crossOriginIsolated?0.005:0.1,observations:[],cleanupErrors:[]};
   let source,reader,generator,writer,video,sourceFrame;
   try{
+   let base;
+   if(seed!==undefined){
+    if(!seed||seed.kind!=='chromium-cdp-timeticks'||seed.token!==globalThis.__rushesNativeClockOwner
+      ||seed.timeOrigin!==performance.timeOrigin||!Number.isSafeInteger(seed.timestampUs)||seed.timestampUs<=60000000
+      ||!Number.isSafeInteger(seed.timestampUs+1000000)||!Number.isFinite(seed.beforePageMs)||!Number.isFinite(seed.afterPageMs)
+      ||typeof seed.token!=='string'||!seed.token||seed.beforePageMs<0||seed.afterPageMs<seed.beforePageMs
+      ||performance.now()<seed.afterPageMs||performance.now()-seed.beforePageMs>1500)
+      throw new Error('Invalid, stale or cross-document native clock seed');
+    base=seed.timestampUs;result.sourceScalar={timestampUs:base,source:seed.kind};
+   }else{
    source=await within(navigator.mediaDevices.getUserMedia({video:{width:320,height:180},audio:false}),'fake source');
    reader=new MediaStreamTrackProcessor({track:source.getVideoTracks()[0],maxBufferSize:1}).readable.getReader();
    const item=await within(reader.read(),'native fake frame');if(item.done)throw new Error('No source frame');sourceFrame=item.value;
-   const base=sourceFrame.timestamp;result.sourceScalar={timestampUs:base,format:sourceFrame.format,width:sourceFrame.codedWidth,height:sourceFrame.codedHeight};
+   base=sourceFrame.timestamp;result.sourceScalar={timestampUs:base,format:sourceFrame.format,width:sourceFrame.codedWidth,height:sourceFrame.codedHeight};
    sourceFrame.close();sourceFrame=undefined;await within(reader.cancel(),'clock source retirement');reader=undefined;source.getTracks().forEach(track=>track.stop());source=undefined;
+   }
    if(!Number.isSafeInteger(base))throw new Error('Source timestamp is not a safe integer');
    generator=new MediaStreamTrackGenerator({kind:'video'});writer=generator.writable.getWriter();
    video=document.createElement('video');video.muted=true;video.playsInline=true;video.width=16;video.height=16;video.srcObject=new MediaStream([generator]);document.body.append(video);
@@ -41,7 +52,7 @@ export async function nativeReferenceClock(){
     const frame=new VideoFrame(bytes,{format:'RGBA',codedWidth:16,codedHeight:16,timestamp:stamp});
     try{await within(writer.write(frame),'sentinel write');}finally{frame.close();}
     const actual=await within(observed,'sentinel rVFC');result.observations.push({index,id,providedTimestampUs:stamp,...actual});
-    if(!Number.isFinite(actual.metadata.captureTime))throw new Error('rVFC captureTime missing; no scalar conversion');
+    if(!Number.isFinite(actual.metadata.captureTime)||actual.metadata.captureTime<=0)throw new Error('rVFC captureTime missing or nonpositive; no scalar conversion');
     if(!Number.isFinite(actual.metadata.mediaTime))throw new Error('Sentinel mediaTime is missing or non-finite');
     if(!Number.isSafeInteger(actual.metadata.presentedFrames)||actual.metadata.presentedFrames<=0)throw new Error('Sentinel presented-frame count is missing or invalid');
     if(Math.abs(actual.metadata.mediaTime*1e6-stamp)>1)throw new Error('Sentinel mediaTime identity mismatch');

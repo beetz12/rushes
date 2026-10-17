@@ -91,6 +91,7 @@ jobs:
         timeout-minutes: 3
         env:
           RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_NATIVE_TRACE_PROOF: '1'
           RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-native-short
         run: node browser/test/matrix.mjs
       - name: Supplied-reference180s qualification
@@ -130,6 +131,8 @@ jobs:
             ${{ runner.temp }}/rushes-browser-maximum/*.log
             ${{ runner.temp }}/rushes-browser-maximum/normal-stop/*.log
             ${{ runner.temp }}/rushes-browser-native-short/metrics.json
+            ${{ runner.temp }}/rushes-browser-native-short/native-trace/report.json
+            ${{ runner.temp }}/rushes-browser-native-short/native-trace/trace.json
             ${{ runner.temp }}/rushes-browser-native-short/*.log
             ${{ runner.temp }}/rushes-browser-native-short/supplied-reference.f32le
             ${{ runner.temp }}/rushes-browser-native-short/normal-stop/*.webm
@@ -171,6 +174,7 @@ jobs:
         timeout-minutes: 3
         env:
           RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_NATIVE_TRACE_PROOF: '1'
           RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-independent-native-short
         run: node browser/test/matrix.mjs
       - name: Preserve independent short evidence before a later step can fail
@@ -183,6 +187,8 @@ jobs:
           path: |
             ${{ runner.temp }}/rushes-test-chrome/release.json
             ${{ runner.temp }}/rushes-independent-native-short/metrics.json
+            ${{ runner.temp }}/rushes-independent-native-short/native-trace/report.json
+            ${{ runner.temp }}/rushes-independent-native-short/native-trace/trace.json
             ${{ runner.temp }}/rushes-independent-native-short/*.log
             ${{ runner.temp }}/rushes-independent-native-short/supplied-reference.f32le
             ${{ runner.temp }}/rushes-independent-native-short/normal-stop/*.webm

@@ -19,6 +19,8 @@ import { decodedSync } from './decoded-media.mjs';
 import { productSyncSourceVerdict, requireProductSyncSource } from './matrix-source-qualification.mjs';
 import { inspectHistogramPayload } from './matrix-native-observation.mjs';
 import { macHostState, isVerifiedUnlockedMac, assertUnlockedMac, monitorMacLock } from './matrix-host-state.mjs';
+import { nativeClockSeed } from './native-clock-seed.mjs';
+import { beginColdTrace, requireNativeClockTrace } from './cold-trace.mjs';
 
 const run = promisify(execFile), sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const bounded = async (operation, milliseconds, label) => {
@@ -38,6 +40,10 @@ const sourceControl = process.env.RUSHES_M1_SOURCE_CONTROL === '1';
 if (sourceControl && (sourceMode !== 'container' || long || reference)) throw new Error('Direct control requires bounded8s container mode');
 const allocationDiagnostic = process.env.RUSHES_M1_ALLOCATION_DIAGNOSTIC === '1';
 const diagnostic = process.env.RUSHES_M1_DIAGNOSTIC === '1' || allocationDiagnostic;
+const nativeTraceRequested = process.env.RUSHES_M1_NATIVE_TRACE_PROOF === '1';
+if (process.env.RUSHES_M1_NATIVE_TRACE_PROOF !== undefined && !nativeTraceRequested) throw new Error('Native trace option must be1');
+if (nativeTraceRequested && (sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl))
+  throw new Error('Native audio tracing is limited to the existing short supplied-reference qualification');
 const diagnosticDurationMs = allocationDiagnostic ? 180000 : 240000;
 const macLockRequired = allocationDiagnostic || (long && process.platform === 'darwin');
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -54,6 +60,8 @@ evidence.fileHashes = {};
 for (const filename of ['test/matrix.mjs', 'test/matrix-fixture.mjs', 'test/matrix-media.mjs', 'test/matrix-source.worker.mjs', 'test/matrix-native-observation.mjs', 'test/matrix-host-state.mjs', 'test/matrix-calibration.mjs', 'test/matrix-tone.worklet.mjs', 'test/media-coordinates.mjs', 'test/decoded-media.mjs', 'test/synchronized-media.mjs',
   'test/matrix-source-qualification.mjs', 'test/native-reference-clock.mjs', 'test/native-reference-witness.mjs', 'test/native-reference-analysis.mjs', 'src/capture/index.ts', 'src/capture/audio.ts', 'src/capture/audio-frame.ts', 'src/capture/audio.worker.ts', 'src/capture/pcm-mixer.ts', 'src/capture/composition.worker.ts', 'src/capture/storage.ts'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
+for (const filename of ['test/native-clock-seed.mjs', 'test/cold-trace.mjs'])
+  evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 evidence.fileHashes['src/capture/cadence.ts'] = createHash('sha256').update(await readFile(join(root, 'src/capture/cadence.ts'))).digest('hex');
 evidence.fileHashes['test/native-optical-roi.mjs'] = createHash('sha256').update(await readFile(join(root, 'test/native-optical-roi.mjs'))).digest('hex');
 evidence.lifecycle.push({ name: 'decode-tool-identity-start', at: new Date().toISOString() });
@@ -69,6 +77,17 @@ async function stage(name, details) { evidence.lifecycle.push({ name, ...details
 let processHandle, browser, server, origin, page;
 let stderrWrites = Promise.resolve();
 let histogramSession, hostMonitor, latestHostSample;
+let nativeTrace, nativeTraceFinished = false;
+async function finishNativeTrace(context) {
+  if (!nativeTrace || nativeTraceFinished) return;
+  nativeTraceFinished = true;
+  try {
+    evidence.nativeTrace = await nativeTrace.finish(context);
+    const capability = evidence.recording?.metrics.clockCapability ?? evidence.preparationMetrics?.clockCapability;
+    evidence.nativeClockTrace = requireNativeClockTrace(evidence.nativeTrace, capability);
+  } catch (error) { evidence.failures.push(`Native trace: ${error.stack || error}`); }
+  await save();
+}
 evidence.macHostPrerequisite = { required: macLockRequired, continuousLongMonitor: long && !diagnostic && process.platform === 'darwin',
   scope: process.platform === 'darwin' ? 'Mac lock prerequisite only; no physical background or display-on claim' : 'Mac lock evidence is not applicable on this platform' };
 const histogramName = 'Media.VideoCapture.Track.FrameDrop.DeviceCapture';
@@ -105,10 +124,11 @@ async function requireUnlockedHost(stage) {
 async function startMatrixTake(options = {}) {
   await requireUnlockedHost('before-media-preparation');
   await stage('page-preparation-start');
+  const clockSeed = sourceMode === 'native-reference' && !evidence.recording ? await nativeClockSeed(page) : undefined;
   await bounded(page.evaluate(async options => {
     const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
     window.matrixTake = await prepareMatrix(options);
-  }, { ...options, sourceMode, referenceWitness: sourceMode === 'native-reference' && !evidence.recording }), 30000, 'Matrix page preparation');
+  }, { ...options, sourceMode, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed }), 30000, 'Matrix page preparation');
   await stage('page-preparation-ready');
   await requireUnlockedHost('before-recording-start');
   await bounded(page.evaluate(() => window.matrixTake.start()), 30000, 'Matrix recording startup');
@@ -355,6 +375,7 @@ try {
   await stage('browser-launch-start');
   const context = await launch(media);
   await stage('browser-launch-ready');
+  if (nativeTraceRequested) nativeTrace = await beginColdTrace(browser, page, join(proof, 'native-trace'), { audioDiagnostics: true });
   if (long && !diagnostic && process.platform === 'darwin') {
     evidence.hostObservationCoverage = 'Independent approximately2s lock metadata monitor, with fresh reads before each launch/start; unobserved intervals are not proven unlocked';
     hostMonitor = monitorMacLock({ read: macHostState,
@@ -434,6 +455,9 @@ try {
     evidence.sourceObservationFile = await mediaFileEvidence(observationPath);
     await save();
   }
+  // Retain PCM first. A diagnostic qualification failure must not discard media
+  // or prevent the original independent source/decode predicates from running.
+  await finishNativeTrace({ stage: 'normal-stop', manifest: evidence.recording.manifest.state });
   const manifest = evidence.recording.manifest;
   check('normal Stop is complete', () => assert.equal(manifest.state, 'complete'));
   check('observer faults are reported rather than accepted', () => assert.deepEqual(evidence.recording.metrics.observerErrors, []));
@@ -559,6 +583,7 @@ try {
     catch (failure) { evidence.observerErrorReadFailure = String(failure); }
   }
 } finally {
+  await finishNativeTrace({ stage: 'failure-or-final-retirement' });
   check('independent fixture pages never boot the Rushes App', () => assert.deepEqual(evidence.appRequests, []));
   if (hostMonitor) {
     try { await hostMonitor.stop(); hostMonitor.assert(); }

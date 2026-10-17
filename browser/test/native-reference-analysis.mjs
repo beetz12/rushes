@@ -54,6 +54,9 @@ export function qualifyNativeReference(snapshot, bytes) {
   assert.ok(coordinates.joins.every(join => Math.abs(join.gapMs) <= 250), 'Supplied audio has a gap over250ms');
   assert.ok(coordinates.firstSeconds <= first && coordinates.endSeconds >= last, 'PCM must cover actual observed video extent');
   const decoded = referenceSync({ visual, visualEdges, bytes, coordinates,
+    // Observation intentionally starts before video acquisition. Check the
+    // actual initial optical state, retaining (and validating) all pre-video PCM.
+    initialAudioPresentationSeconds: first + 0.08,
     timeBasis: 'same-Window supplied-track reference timestamps',
     conversionUncertaintyMs: converter.conservativeSameRealmConversionUncertaintyMs + 1000 / 48000 });
   requireDecodedAlignment(decoded.points);

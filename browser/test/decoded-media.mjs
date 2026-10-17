@@ -35,9 +35,9 @@ export async function decodedSync(videoFile, audioFile, { evidenceDirectory = di
 
 
 // Actual optical/PCM observations, independent of the source generator and recorder events.
-export function referenceSync({ visual, visualEdges, bytes, coordinates, rate = 48000, count = 1920, timeBasis, conversionUncertaintyMs = 0 }) {
+export function referenceSync({ visual, visualEdges, bytes, coordinates, rate = 48000, count = 1920, timeBasis, conversionUncertaintyMs = 0, initialAudioPresentationSeconds }) {
   assert.ok(Number.isFinite(conversionUncertaintyMs) && conversionUncertaintyMs >= 0);
-  let maxWindowDiscontinuityMs = 0;
+  let maxWindowDiscontinuityMs = 0, initialAnchorDistanceMs = 0;
   const power = (sample, frequency) => {
     const start = Math.round(sample - count / 2), coefficient = 2 * Math.cos(2 * Math.PI * frequency / rate);
     if (start < 0 || start + count > bytes.length / 4) throw new Error('Audio ordinal window is outside decoded PCM');
@@ -64,7 +64,21 @@ export function referenceSync({ visual, visualEdges, bytes, coordinates, rate = 
     return [strongest(500), strongest(4000)];
   };
   const audioOrdinal = sample => { const [low, high] = audioBanks(sample); return low + 64 * high; };
-  const firstVideoOrdinal = visual[0].ordinal, firstAudioOrdinal = audioOrdinal(rate * 0.08);
+  let anchorSample = rate * 0.08;
+  if (initialAudioPresentationSeconds !== undefined) {
+    assert.ok(Number.isFinite(initialAudioPresentationSeconds)
+      && initialAudioPresentationSeconds - count / rate / 2 >= visual[0].seconds
+      && initialAudioPresentationSeconds + count / rate / 2 < visualEdges[0].seconds,
+    'The initial source anchor window must stay inside the actually observed initial video state');
+    const actual = coordinates.nearestPresentation(initialAudioPresentationSeconds);
+    anchorSample = actual.sample;
+    initialAnchorDistanceMs = actual.distanceMs;
+    const start = Math.round(anchorSample - count / 2);
+    assert.ok(coordinates.atSample(start) >= visual[0].seconds
+      && coordinates.atSample(start + count - 1) < visualEdges[0].seconds,
+    'The actual PCM anchor window must stay inside the observed initial video state');
+  }
+  const firstVideoOrdinal = visual[0].ordinal, firstAudioOrdinal = audioOrdinal(anchorSample);
   assert.equal(firstAudioOrdinal, firstVideoOrdinal, 'First audio/video ordinals must anchor to the same actual source phase');
   const selected = temporalEdges(visualEdges, visual[0].seconds, visual.at(-1).seconds);
   return { timeBasis,
@@ -102,6 +116,6 @@ export function referenceSync({ visual, visualEdges, bytes, coordinates, rate = 
         // Charge the full half-window and final binary-search bracket; no
         // continuous-source timing or spectral sub-window accuracy is assumed.
         uncertaintyMs: count / rate * 500 + (last - first) * 500
-          + maxWindowDiscontinuityMs + Math.max(preceding.distanceMs, following.distanceMs) + conversionUncertaintyMs };
+          + maxWindowDiscontinuityMs + initialAnchorDistanceMs + Math.max(preceding.distanceMs, following.distanceMs) + conversionUncertaintyMs };
     }) };
 }

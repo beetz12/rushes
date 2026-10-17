@@ -39,6 +39,32 @@ test('actual PCM/optical sample reference accepts a known source and preserves37
   assert.ok(shifted.decoded.points.every((point, index) => Math.abs(point.driftMs - baseline.decoded.points[index].driftMs - 37) < 2));
 });
 
+test('pre-video PCM silence is retained while the initial ordinal is checked at the actual video interval', () => {
+  const { snapshot, bytes } = suppliedFixture(), baseline = qualifyNativeReference(snapshot, bytes);
+  const prefixSamples = 9600, prefixed = Buffer.concat([Buffer.alloc(prefixSamples * 4), bytes]);
+  const delayed = structuredClone(snapshot); delayed.wallMs += 200;
+  for (const row of delayed.metrics.calibrationInputEdges) row.timestamp += 200000;
+  for (const row of [delayed.metrics.sourceObserverRetirement.optical, delayed.metrics.frames['native-input']]) {
+    row.firstTimestamp += 200000; row.lastTimestamp += 200000;
+  }
+  const witness = delayed.metrics.suppliedReference;
+  witness.bytes = witness.actualFileBytes = prefixed.length;
+  witness.frames = Array.from({ length: 420 }, (_, index) => ({ timestampUs: 100000 + index * 10000,
+    rate: 48000, frames: 480, channels: 1 }));
+  const qualified = qualifyNativeReference(delayed, prefixed);
+  assert.equal(qualified.wholeExtentCovered, true);
+  assert.equal(qualified.decoded.anchor.firstAudioOrdinal, 0);
+  for (let index = 0; index < 3; index++)
+    assert.ok(Math.abs(qualified.decoded.points[index].driftMs - baseline.decoded.points[index].driftMs) < 2);
+  const silentInsideVideo = Buffer.from(prefixed); silentInsideVideo.fill(0, 9600 * 4, 16000 * 4);
+  assert.throws(() => qualifyNativeReference(delayed, silentInsideVideo), /silent or missing/);
+  const waveformDelayed = Buffer.from(prefixed), displacement = 14400;
+  for (let sample = prefixSamples; sample < prefixSamples + displacement; sample++)
+    bytes.copy(waveformDelayed, sample * 4, (3840 + sample % 1920) * 4, (3841 + sample % 1920) * 4);
+  bytes.copy(waveformDelayed, (prefixSamples + displacement) * 4, 0, bytes.length - displacement * 4);
+  assert.throws(() => qualifyNativeReference(delayed, waveformDelayed), /bracket|exceeds100ms/);
+});
+
 test('missing source data, wrong realm/take, nonmonotonic clocks and between-anchor holes fail closed', () => {
   const { snapshot, bytes } = suppliedFixture();
   const mutations = [

@@ -27,10 +27,42 @@ export function checkPrescribedTraceMarks(events, observations) {
       throw new Error('Prescribed trace coordinates changed origin, units or owner');
   }
   return { fixedUnits: 'microseconds', unitSlope: 1, traceOriginUs: origin, owner,
+    callTimes: observations.map(observation => ({ name: observation.name,
+      nativeCallTimeUs: events.find(event => event.name === observation.name).args?.data?.callTime })),
     scope: 'Prescribed coordinate/export identity only; no supplied-media origin or A/V fit' };
 }
 
+export function requireNativeClockTrace(report, capability) {
+  const converter = capability?.converter, coordinate = report?.clock;
+  if (!converter?.qualified || !coordinate || !Array.isArray(report.errors) || report.errors.length
+    || !Number.isSafeInteger(coordinate.traceOriginUs) || report.traceReceipt?.dataLossOccurred !== false)
+    throw new Error('Native clock trace was not qualified');
+  const originMs = coordinate.traceOriginUs / 1000;
+  if (!Array.isArray(converter.originIntervalMs) || converter.originIntervalMs.length !== 2
+    || !converter.originIntervalMs.every(Number.isFinite) || converter.originIntervalMs[0] > converter.originIntervalMs[1] || originMs < converter.originIntervalMs[0]
+    || originMs > converter.originIntervalMs[1]) throw new Error('Native converter and trace origins disagree');
+  const observations = report.javascript?.observations;
+  if (observations?.length !== 7 || coordinate.callTimes?.length !== 7) throw new Error('Native clock trace needs seven held-out call brackets');
+  // performance.now() subtracts two independently coarsened native scalars
+  // (Performance::MonotonicTimeToDOMHighResTimeStamp). Charge both resolutions;
+  // this is a coordinate-proof bound, never extra recorded A/V tolerance.
+  const allowance = 2 * capability.privacyResolutionMs + converter.numericConversionAllowanceMs;
+  if (!Number.isFinite(allowance) || allowance < 0 || allowance > 1) throw new Error('Native clock privacy budget is invalid');
+  for (const observation of observations) {
+    const call = coordinate.callTimes.filter(row => row.name === observation.name);
+    if (call.length !== 1 || !Number.isSafeInteger(call[0].nativeCallTimeUs)
+      || !Number.isFinite(observation.calledBeforePageMs) || !Number.isFinite(observation.calledAfterPageMs)
+      || observation.calledAfterPageMs < observation.calledBeforePageMs)
+      throw new Error('Native clock call bracket is missing or malformed');
+    const relative = call[0].nativeCallTimeUs / 1000 - originMs;
+    if (relative < observation.calledBeforePageMs - allowance || relative > observation.calledAfterPageMs + allowance)
+      throw new Error('Native trace callTime is outside its independent page bracket');
+  }
+  return { qualified: true, scope: 'Native scalar coordinate conversion only; no media phase correction', originMs };
+}
+
 export async function beginColdTrace(browser, page, directory, limits = {}) {
+  if (limits.audioDiagnostics !== undefined && typeof limits.audioDiagnostics !== 'boolean') throw new Error('Audio trace option must be boolean');
   const finalizationMs = limits.finalizationMs ?? 15000, metadataMs = limits.metadataMs ?? 2000;
   if (!Number.isSafeInteger(finalizationMs) || finalizationMs < 1 || finalizationMs > 15000
     || !Number.isSafeInteger(metadataMs) || metadataMs < 1 || metadataMs > Math.min(2000, finalizationMs))
@@ -98,16 +130,20 @@ export async function beginColdTrace(browser, page, directory, limits = {}) {
     // The owned browser has no other tracing client. Attempt retirement even if
     // the start reply is lost after the browser accepted it.
     started = true;
+    report.categories = ['media', 'blink.user_timing'];
+    if (limits.audioDiagnostics) report.categories.push('mediastream', 'disabled-by-default-audio', 'webaudio',
+      'disabled-by-default-webaudio.audionode', 'disabled-by-default-mediastream');
     await deadline(session.send('Tracing.start', { transferMode: 'ReturnAsStream', streamFormat: 'json',
       traceConfig: { recordMode: 'recordContinuously', traceBufferSizeInKb: 32768,
-        includedCategories: ['media', 'blink.user_timing'], enableArgumentFilter: false } }), 5000, 'Cold trace start');
+        includedCategories: report.categories, enableArgumentFilter: false } }), 5000, 'Cold trace start');
     await deadline(page.evaluate(token => {
       const calls = [], observations = [], originals = new Map(), ids = new WeakMap();
       let nextId = 0;
       const prescribed = (batch, coordinates) => coordinates.forEach((coordinateMs, index) => {
         const name = `${token}/clock-${batch}-${index}`;
+        const calledBeforePageMs = performance.now();
         performance.mark(name, { startTime: coordinateMs });
-        observations.push({ name, coordinateMs, calledAtPageMs: performance.now() });
+        observations.push({ name, coordinateMs, calledBeforePageMs, calledAfterPageMs: performance.now() });
       });
       globalThis.__rushesColdTrace = { token, calls, observations, timeOrigin: performance.timeOrigin,
         finish() {

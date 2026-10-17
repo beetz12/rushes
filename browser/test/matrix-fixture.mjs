@@ -34,7 +34,7 @@ export async function directContainerControl(durationMs) {
 
 // Independent M1 instrumentation. Native Chrome fake media is supplied by the
 // runner; this page never requests a real screen or uses a timer as its video source.
-export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true } = {}) {
+export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true, clockSeed } = {}) {
   const { createCaptureSession } = await import('/src/capture/index.ts');
   const { createDraftStore } = await import('/src/capture/storage.ts');
   const nativeRecorder = globalThis.MediaRecorder;
@@ -71,7 +71,7 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
   const observingReference = sourceMode === 'native-reference' && referenceWitness;
   let suppliedReference;
   if (observingReference) {
-    metrics.clockCapability = await nativeReferenceClock();
+    metrics.clockCapability = await nativeReferenceClock(clockSeed);
     if (metrics.clockCapability.error || !metrics.clockCapability.converter?.qualified) {
       globalThis.MediaRecorder = nativeRecorder; globalThis.Worker = nativeWorker;
       throw new Error(`Native supplied-reference clock is unqualified: ${metrics.clockCapability.error ?? 'No qualified converter'}`);
