@@ -1,0 +1,90 @@
+import * as nodeTest from 'node:test';
+import assert from 'node:assert/strict';
+import { checkPrescribedTraceMarks } from './cold-trace.mjs';
+import { beginColdTrace } from './cold-trace.mjs';
+import * as files from 'node:fs/promises';
+import * as paths from 'node:path';
+import * as operatingSystem from 'node:os';
+import { EventEmitter } from 'node:events';
+
+const observation = () => [1.25, 1002.75, 3003.5, 1.25, 1002.75, 3003.5, 5004.125]
+  .map((coordinateMs, index) => ({ name: `prescribed-${index}`, coordinateMs }));
+const exported = input => input.map(row => ({ name: row.name, ts: 90000000 + row.coordinateMs * 1000,
+  pid: 101, tid: 202, args: { data: { startTime: row.coordinateMs, callTime: 123 } } }));
+nodeTest.test('prescribed trace coordinates retain a fixed origin despite different call times and event order', () => {
+  const input = observation(), rows = exported(input).reverse();
+  rows.forEach((row, index) => { row.args.data.callTime += index * 987654; });
+  assert.equal(checkPrescribedTraceMarks(rows, input).traceOriginUs, 90000000);
+});
+nodeTest.test('missing, duplicated, wrong-unit, shifted or cross-owner trace coordinates fail closed', () => {
+  const input = observation(), rows = exported(input);
+  assert.throws(() => checkPrescribedTraceMarks(rows.slice(1), input), /Missing/);
+  assert.throws(() => checkPrescribedTraceMarks([...rows, rows[0]], input), /duplicate/);
+  for (const mutate of [row => { row.ts *= 1000; }, row => { row.ts += 37000; }, row => { row.pid++; },
+    row => { row.args.data.startTime += 1; }]) {
+    const changed = structuredClone(rows); mutate(changed.at(-1));
+    assert.throws(() => checkPrescribedTraceMarks(changed, input), /Invalid|changed origin/);
+  }
+});
+
+async function retirementFixture(testContext, failSetup, stallRetirement = false, rejectEnd = false) {
+  const temporary = await files.mkdtemp(paths.join(operatingSystem.tmpdir(), 'rushes-cold-trace-'));
+  testContext.after(() => files.rm(temporary, { recursive: true }));
+  const directory = paths.join(temporary, 'evidence'), calls = [];
+  class Session extends EventEmitter {
+    async send(method) {
+      calls.push(method);
+      if (method === 'Tracing.end') {
+        queueMicrotask(() => this.emit('Tracing.tracingComplete', { stream: 'owned-stream', dataLossOccurred: false }));
+        if (rejectEnd) throw new Error('end acknowledgement lost');
+      }
+      if (method === 'IO.read') return { data: JSON.stringify({ traceEvents: [] }), eof: true };
+      return {};
+    }
+    async detach() { calls.push('detach'); }
+  }
+  const session = new Session(); let evaluations = 0;
+  const page = { evaluate: async () => {
+    evaluations++;
+    if (evaluations === 1 && !failSetup) return;
+    if (stallRetirement) return new Promise(() => {});
+    throw new Error(evaluations === 1 ? 'partial setup rejected' : 'metadata retirement rejected');
+  } };
+  return { directory, calls, browser: { version: () => 'diagnostic-unit-fixture', newBrowserCDPSession: async () => session }, page };
+}
+
+nodeTest.test('metadata retirement failure still ends the trace, retains raw bytes and closes its stream', async context => {
+  const f = await retirementFixture(context, false);
+  const trace = await beginColdTrace(f.browser, f.page, f.directory);
+  await assert.rejects(trace.finish({ generated: true }), /metadata retirement rejected/);
+  assert.deepEqual(f.calls, ['Tracing.start', 'Tracing.end', 'IO.read', 'IO.close', 'detach']);
+  assert.deepEqual(JSON.parse(await files.readFile(paths.join(f.directory, 'trace.json'), 'utf8')), { traceEvents: [] });
+  const report = JSON.parse(await files.readFile(paths.join(f.directory, 'report.json'), 'utf8'));
+  assert.equal(report.traceReceipt.dataLossOccurred, false); assert.ok(report.errors.some(error => error.includes('metadata retirement rejected')));
+});
+
+nodeTest.test('partial setup failure preserves both errors and independently retires the native trace', async context => {
+  const f = await retirementFixture(context, true);
+  await assert.rejects(beginColdTrace(f.browser, f.page, f.directory), /setup failed/);
+  assert.deepEqual(f.calls, ['Tracing.start', 'Tracing.end', 'IO.read', 'IO.close', 'detach']);
+  const report = JSON.parse(await files.readFile(paths.join(f.directory, 'report.json'), 'utf8'));
+  assert.ok(report.errors.some(error => error.includes('partial setup rejected')));
+  assert.ok(report.errors.some(error => error.includes('metadata retirement rejected')));
+});
+
+nodeTest.test('unanswered metadata has a smaller budget and cannot prevent native trace retirement', { timeout: 2000 }, async context => {
+  const f = await retirementFixture(context, false, true);
+  const trace = await beginColdTrace(f.browser, f.page, f.directory, { finalizationMs: 500, metadataMs: 30 });
+  await assert.rejects(trace.finish({ generated: true }), /observation retirement timed out/);
+  assert.deepEqual(f.calls, ['Tracing.start', 'Tracing.end', 'IO.read', 'IO.close', 'detach']);
+});
+
+nodeTest.test('a delivered trace stream is retained and closed when its end acknowledgement rejects', async context => {
+  const f = await retirementFixture(context, false, false, true);
+  const trace = await beginColdTrace(f.browser, f.page, f.directory);
+  await assert.rejects(trace.finish({ generated: true }), /end acknowledgement lost/);
+  assert.deepEqual(f.calls, ['Tracing.start', 'Tracing.end', 'IO.read', 'IO.close', 'detach']);
+  const report = JSON.parse(await files.readFile(paths.join(f.directory, 'report.json'), 'utf8'));
+  assert.equal(report.traceReceipt.stream, 'owned-stream');
+  assert.ok(report.errors.some(error => error.includes('end acknowledgement lost')));
+});

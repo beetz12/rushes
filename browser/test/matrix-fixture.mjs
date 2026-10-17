@@ -1,0 +1,357 @@
+import { nativeReferenceClock } from './native-reference-clock.mjs';
+import { nativeReferenceWitness } from './native-reference-witness.mjs';
+export async function directContainerControl(durationMs) {
+  if (durationMs !== 8000) throw new Error('Direct source control is bounded to8s');
+  const element = document.createElement('video'); element.muted = true; element.playsInline = true;
+  element.src = '/matrix-media'; document.body.append(element);
+  let stream, recorder;
+  try {
+    if (typeof element.captureStream !== 'function') throw new Error('Media-element captureStream is unavailable');
+    await element.play(); stream = element.captureStream();
+    if (stream.getVideoTracks().length !== 1 || stream.getAudioTracks().length !== 1) throw new Error('Direct source lacks both tracks');
+    recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8,opus', videoBitsPerSecond: 4000000, audioBitsPerSecond: 128000 });
+    const chunks = []; let bytes = 0;
+    const ended = new Promise((resolve, reject) => {
+      recorder.onstop = resolve; recorder.onerror = () => reject(new Error('Direct source encoder failed'));
+    });
+    recorder.ondataavailable = event => { if (event.data.size) { chunks.push(event.data); bytes += event.data.size; } };
+    const begun = performance.now(); recorder.start(1000);
+    await new Promise(resolve => setTimeout(resolve, durationMs));
+    const actualDurationMs = performance.now() - begun; recorder.stop();
+    let stopTimer;
+    try { await Promise.race([ended, new Promise((_, reject) => { stopTimer = setTimeout(() => reject(new Error('Direct source Stop timed out')), 15000); })]); }
+    finally { clearTimeout(stopTimer); }
+    if (bytes > 32 * 1024 ** 2) throw new Error('Direct source control exceeded bounded8s memory');
+    window.directControlBlob = new Blob(chunks, { type: recorder.mimeType });
+    return { actualDurationMs, bytes, settings: stream.getTracks().map(track => ({ kind: track.kind, settings: track.getSettings() })),
+      playback: { currentTime: element.currentTime, decoded: element.getVideoPlaybackQuality().totalVideoFrames,
+        dropped: element.getVideoPlaybackQuality().droppedVideoFrames } };
+  } finally {
+    if (recorder?.state === 'recording') recorder.stop();
+    stream?.getTracks().forEach(track => track.stop()); element.pause(); element.removeAttribute('src'); element.load(); element.remove();
+  }
+}
+
+// Independent M1 instrumentation. Native Chrome fake media is supplied by the
+// runner; this page never requests a real screen or uses a timer as its video source.
+export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true } = {}) {
+  const { createCaptureSession } = await import('/src/capture/index.ts');
+  const { createDraftStore } = await import('/src/capture/storage.ts');
+  const nativeRecorder = globalThis.MediaRecorder;
+  const nativeWorker = globalThis.Worker;
+  const metrics = { recorderKinds: [], chunks: [], pendingBytes: 0, peakPendingBytes: 0,
+    peakConcurrentAppends: 0, activeAppends: 0, appends: [], visibility: [], states: [],
+    warnings: [], checkpoints: [], frames: {}, workerEvents: [], observerErrors: [], extraProcessorReaders: diagnostic ? 0 : sourceMode === 'container' ? 4 : sourceMode === 'native-reference' && referenceWitness ? 6 : 5 };
+  globalThis.matrixObserverErrors = metrics.observerErrors;
+  // Setup can fail before a take exists. Retain the generated clock witness too.
+  globalThis.matrixPreparationMetrics = metrics;
+  if (diagnostic) globalThis.Worker = class extends nativeWorker {
+    constructor(...args) {
+      super(...args);
+      this.addEventListener('message', event => metrics.workerEvents.push({ ...(event.data.kind === 'packet' ? { kind: 'audio-packet', sequence: event.data.sequence, timestamp: event.data.timestamp, frames: event.data.data.length / 2 } : event.data), wallMs: performance.now() }));
+      this.addEventListener('error', event => metrics.observerErrors.push({ name: 'production-worker-event', message: event.message, wallMs: performance.now() }));
+    }
+  };
+  const kinds = ['screen', 'camera', 'microphone', 'tab-audio', 'composed'];
+  globalThis.MediaRecorder = class extends nativeRecorder {
+    constructor(...args) {
+      super(...args);
+      const kind = kinds[metrics.recorderKinds.length]; metrics.recorderKinds.push(kind);
+      this.addEventListener('dataavailable', event => {
+        if (!event.data.size) return;
+        metrics.pendingBytes += event.data.size;
+        metrics.peakPendingBytes = Math.max(metrics.peakPendingBytes, metrics.pendingBytes);
+        metrics.chunks.push({ kind, bytes: event.data.size, wallMs: performance.now() });
+      });
+    }
+  };
+  let source, sourceElement, toneContext, tone, audio;
+  metrics.calibrationInputEdges = []; metrics.calibrationAudioEdges = []; metrics.calibrationAudioArrivals = [];
+  metrics.sourceMode = sourceMode;
+  const observingReference = sourceMode === 'native-reference' && referenceWitness;
+  let suppliedReference;
+  if (observingReference) {
+    metrics.clockCapability = await nativeReferenceClock();
+    if (metrics.clockCapability.error || !metrics.clockCapability.converter?.qualified) {
+      globalThis.MediaRecorder = nativeRecorder; globalThis.Worker = nativeWorker;
+      throw new Error(`Native supplied-reference clock is unqualified: ${metrics.clockCapability.error ?? 'No qualified converter'}`);
+    }
+  }
+  if (sourceMode === 'container') {
+    sourceElement = document.createElement('video'); sourceElement.muted = true; sourceElement.playsInline = true;
+    sourceElement.src = '/matrix-media'; document.body.append(sourceElement);
+    if (typeof sourceElement.captureStream !== 'function') throw new Error('Media-element captureStream is unavailable; absolute source test is unmeasured');
+    await sourceElement.play(); source = sourceElement.captureStream();
+    if (source.getVideoTracks().length !== 1 || source.getAudioTracks().length !== 1)
+      throw new Error('Synchronized fixture must provide live video and audio tracks');
+    audio = { stream: new MediaStream(source.getAudioTracks()) };
+  } else if (['native-feedback', 'native-reference'].includes(sourceMode)) {
+    const acquireNativeVideo = async () => {
+      metrics.nativeVideoRequestedPageMs = performance.now();
+      source = await navigator.mediaDevices.getUserMedia({
+        video: { width: { exact: 1280 }, height: { exact: 720 }, frameRate: { exact: 30 } }, audio: false,
+      });
+      metrics.nativeVideoAcquiredPageMs = performance.now();
+    };
+    if (!observingReference) await acquireNativeVideo();
+    // Begin observing actual PCM before creating the native video source. Merely
+    // opening its disk sink does not prove that any head samples were received.
+    try {
+      toneContext = new AudioContext({ sampleRate: 48000, sinkId: { type: 'none' } });
+      if (toneContext.sinkId?.type !== 'none') throw new Error('Silent fixture audio output is unavailable');
+      metrics.generatedAudioOutput = { type: toneContext.sinkId.type, sampleRate: toneContext.sampleRate };
+      await toneContext.audioWorklet.addModule(new URL('./matrix-tone.worklet.mjs', import.meta.url));
+      tone = new AudioWorkletNode(toneContext, 'matrix-tone', { processorOptions: { diagnostic } });
+      audio = toneContext.createMediaStreamDestination();
+      tone.connect(audio); await toneContext.resume();
+      if (observingReference) {
+        suppliedReference = await nativeReferenceWitness(audio.stream.getAudioTracks()[0], metrics.observerErrors, metrics.clockCapability);
+        metrics.suppliedReferenceStartup = await suppliedReference.ready();
+      }
+      if (observingReference) await acquireNativeVideo();
+    } catch (error) {
+      const sink = toneContext?.sinkId;
+      const startup = { contextState: toneContext?.state, contextTime: toneContext?.currentTime,
+        sampleRate: toneContext?.sampleRate, sink: typeof sink === 'string' ? sink : { type: sink?.type },
+        tracks: audio?.stream.getAudioTracks().map(track => ({ state: track.readyState, enabled: track.enabled, muted: track.muted })),
+        witness: suppliedReference?.startupState?.(), observerErrors: metrics.observerErrors };
+      metrics.suppliedReferenceStartupFailure = startup;
+      const failures = [error];
+      try { await suppliedReference?.stop(); } catch (cleanup) { failures.push(cleanup); }
+      try { source?.getTracks().forEach(track => track.stop()); } catch (cleanup) { failures.push(cleanup); }
+      try { audio?.stream.getTracks().forEach(track => track.stop()); } catch (cleanup) { failures.push(cleanup); }
+      try { await toneContext?.close(); } catch (cleanup) { failures.push(cleanup); }
+      globalThis.MediaRecorder = nativeRecorder; globalThis.Worker = nativeWorker;
+      throw new AggregateError(failures, `Native source preparation failed: ${error}; startup=${JSON.stringify(startup)}`);
+    }
+    metrics.calibrationInputEdges = []; metrics.calibrationAudioEdges = []; metrics.calibrationAudioArrivals = [];
+  } else throw new Error('Unknown test source mode');
+  let sourceObserverTrack, sourceWorker, retireSourceObserver;
+  if (!diagnostic && ['native-feedback', 'native-reference'].includes(sourceMode)) {
+    sourceObserverTrack = source.getVideoTracks()[0].clone();
+    const processor = new MediaStreamTrackProcessor({ track: sourceObserverTrack, maxBufferSize: 1 });
+    sourceWorker = new Worker(new URL('./matrix-source.worker.mjs', import.meta.url), { type: 'module' });
+    let stoppedResolve, stoppedReject;
+    const stopped = new Promise((resolve, reject) => { stoppedResolve = resolve; stoppedReject = reject; });
+    // Install rejection observation immediately; a later finish still receives the failure.
+    void stopped.catch(() => undefined);
+    retireSourceObserver = async stopAtTimestampUs => {
+      let deadline;
+      try {
+        sourceWorker.postMessage({ kind: 'stop', stopAtTimestampUs });
+        await Promise.race([stopped, new Promise((_, reject) => {
+          deadline = setTimeout(() => reject(new Error('Source observer retirement timed out')), 1000);
+        })]);
+      } finally { clearTimeout(deadline); sourceObserverTrack.stop(); sourceWorker.terminate(); }
+    };
+    const ready = new Promise((resolve, reject) => {
+      sourceWorker.onerror = error => { metrics.observerErrors.push({ name: 'source-anchor', message: error.message, wallMs: performance.now() }); reject(new Error(error.message)); };
+      sourceWorker.onmessage = event => {
+        if (event.data.kind === 'ready') resolve();
+        if (event.data.kind === 'stopped') { metrics.sourceObserverRetirement = event.data; stoppedResolve(); }
+        if (event.data.kind === 'input-anchor') metrics.calibrationInputEdges.push(event.data);
+        if (event.data.kind === 'audio-anchor') metrics.calibrationAudioEdges.push(event.data);
+        if (event.data.kind === 'audio-arrival') metrics.calibrationAudioArrivals.push(event.data);
+        if (event.data.kind === 'observer-error') { metrics.observerErrors.push(event.data); stoppedReject(new Error(event.data.message)); reject(new Error(event.data.message)); }
+      };
+    });
+    sourceWorker.postMessage({ input: processor.readable, audioPort: tone.port }, [processor.readable, tone.port]); await ready;
+  }
+  const screen = new MediaStream([source.getVideoTracks()[0].clone(), audio.stream.getAudioTracks()[0].clone()]);
+  const camera = new MediaStream([source.getVideoTracks()[0].clone()]);
+  const microphone = new MediaStream([audio.stream.getAudioTracks()[0].clone()]);
+  const id = crypto.randomUUID();
+  const root = await navigator.storage.getDirectory();
+  const backupDirectory = backup ? await root.getDirectoryHandle('m1-closed-backup', { create: true }) : undefined;
+  const rawStore = await createDraftStore(backupDirectory);
+  const store = { ...rawStore, append: async (...args) => {
+    const begun = performance.now(); metrics.activeAppends++;
+    metrics.peakConcurrentAppends = Math.max(metrics.peakConcurrentAppends, metrics.activeAppends);
+    try {
+      const descriptor = await rawStore.append(...args);
+      metrics.appends.push({ kind: args[1], sequence: args[2], bytes: args[3].size,
+        milliseconds: performance.now() - begun, checkpointMs: args[4] });
+      return descriptor;
+    } finally { metrics.activeAppends--; metrics.pendingBytes -= args[3].size; }
+  } };
+  const monitors = [];
+  const watch = (name, track) => {
+    const clone = track.clone(), reader = new MediaStreamTrackProcessor({ track: clone, maxBufferSize: 1 }).readable.getReader();
+    const info = { count: 0, firstTimestamp: null, lastTimestamp: null, maxTimestampGapUs: 0,
+      maxWallGapMs: 0, buckets: {}, samples: [], settings: track.getSettings() };
+    metrics.frames[name] = info;
+    let lastWall = null, stop = false, settled = false, stopAtTimestampUs, crossingTimestampUs;
+    const task = (async () => {
+      try {
+        while (!stop) {
+          const item = await reader.read(); if (item.done) break;
+          const frame = item.value;
+          try {
+            if (stopAtTimestampUs !== undefined && frame.timestamp > stopAtTimestampUs) { crossingTimestampUs = frame.timestamp; break; }
+            const now = performance.now(), timestamp = frame.timestamp;
+            info.count++; info.firstTimestamp ??= timestamp;
+            if (info.lastTimestamp !== null) info.maxTimestampGapUs = Math.max(info.maxTimestampGapUs, timestamp - info.lastTimestamp);
+            if (lastWall !== null) info.maxWallGapMs = Math.max(info.maxWallGapMs, now - lastWall);
+            info.lastTimestamp = timestamp; lastWall = now; info.lastWallMs = now;
+            const bucket = Math.floor(now / 1000); info.buckets[bucket] = (info.buckets[bucket] || 0) + 1;
+            if (info.count % 30 === 1) info.samples.push({ count: info.count, timestamp, wallMs: now });
+          } finally { frame.close(); }
+        }
+      } catch (error) { metrics.observerErrors.push({ name, message: String(error), wallMs: performance.now() }); }
+      finally {
+        try { await reader.cancel(); }
+        catch (error) { metrics.observerErrors.push({ name, message: String(error), wallMs: performance.now() }); }
+        settled = true; reader.releaseLock();
+      }
+    })();
+    monitors.push(async cutoff => {
+      let deadline;
+      try {
+        if (name === 'output-composed') {
+          // The product retires its generator at Stop; a clone need not receive
+          // EOF or another output. Its live-take samples end at this receipt.
+          info.boundary = { termination: 'recording-stop-cancel' };
+        } else if (cutoff !== undefined) {
+          if (info.lastTimestamp > cutoff) throw new Error(`${name} observation already exceeded its Stop boundary`);
+          stopAtTimestampUs = cutoff;
+          const begun = performance.now();
+          await Promise.race([task, new Promise((_, reject) => {
+            deadline = setTimeout(() => reject(new Error(`${name} Stop boundary was not drained within250ms`)), 250);
+          })]);
+          const crossing = Number.isSafeInteger(crossingTimestampUs) && crossingTimestampUs > cutoff && crossingTimestampUs - cutoff <= 250000;
+          if (!crossing || performance.now() - begun > 250)
+            throw new Error(`${name} Stop boundary lacks a crossing within250ms`);
+          info.boundary = { cutoffUs: cutoff, crossingTimestampUs: crossingTimestampUs ?? null,
+            termination: 'later-native-frame' };
+        }
+      } finally {
+        clearTimeout(deadline); stop = true;
+        try { if (!settled) await reader.cancel(); }
+        finally { clone.stop(); await task; }
+      }
+    });
+  };
+  if (!diagnostic) {
+    watch('native-input', source.getVideoTracks()[0]);
+    watch('input-screen', screen.getVideoTracks()[0]); watch('input-camera', camera.getVideoTracks()[0]);
+  }
+  let observationRetirement;
+  const retireObservations = () => {
+    if (observationRetirement) return observationRetirement;
+    const requestedPageMs = performance.now();
+    metrics.observationBoundary = { requestedPageMs };
+    // onState runs before the synchronous recorder.stop loop. Begin after that loop.
+    observationRetirement = Promise.resolve().then(async () => {
+      metrics.observationBoundary.startedPageMs = performance.now();
+      const high = observingReference ? metrics.clockCapability.converter.originIntervalMs[1] : undefined;
+      // Include uncertainty-overlapping frames; never infer an origin for container tracks.
+      const cutoff = high === undefined ? undefined : Math.ceil((metrics.observationBoundary.startedPageMs + high) * 1000);
+      metrics.observationBoundary.nativeCutoffUs = cutoff ?? null;
+      const retiredVideo = await Promise.allSettled([
+        retireSourceObserver?.(cutoff), ...monitors.map(stop => stop(cutoff)),
+      ]);
+      for (const item of retiredVideo) if (item.status === 'rejected')
+        metrics.observerErrors.push({ name: 'video-reference-retirement', message: String(item.reason), wallMs: performance.now() });
+      if (suppliedReference) {
+        const [low, upper] = metrics.clockCapability.converter.originIntervalMs;
+        const opticalEnd = metrics.sourceObserverRetirement?.optical?.lastTimestamp;
+        const coverThroughPageMs = Math.min(opticalEnd, metrics.frames['native-input'].lastTimestamp) / 1000 - (low + upper) / 2;
+        metrics.suppliedReference = { ...await suppliedReference.stop({ coverThroughPageMs }), takeId: id };
+      }
+      metrics.observationBoundary.finishedPageMs = performance.now();
+    }).catch(error => { metrics.observerErrors.push({ name: 'observation-retirement', message: String(error), wallMs: performance.now() }); });
+    return observationRetirement;
+  };
+  const session = await createCaptureSession({ id, title: 'Independent synthetic M1', mode: 'screen-camera',
+    screen, camera, microphone, store, persistent: false, backupFolder: backup,
+    bubble: { x: 1030, y: 490, size: 180 }, onState: state => {
+      metrics.states.push({ state, wallMs: performance.now() });
+      if (state === 'stopping') void retireObservations();
+    },
+    onWarning: message => metrics.warnings.push(message),
+    onCheckpoint: manifest => { take.manifest = manifest; metrics.checkpoints.push({ wallMs: performance.now(),
+      lastCheckpointMs: manifest.lastCheckpointMs, chunks: manifest.tracks.reduce((sum, track) => sum + track.chunks.length, 0) }); },
+  });
+  const player = document.createElement('video'); player.muted = true; player.playsInline = true;
+  player.srcObject = session.preview; document.body.append(player); await player.play();
+  if (!diagnostic) watch('output-composed', session.preview.getVideoTracks()[0]);
+  const visibility = () => metrics.visibility.push({ wallMs: performance.now(), state: document.visibilityState, hasFocus: document.hasFocus() });
+  document.addEventListener('visibilitychange', visibility); visibility();
+  const nativeTrackStats = () => Object.fromEntries([['screen', screen], ['camera', camera]]
+    .map(([role, stream]) => [role, inspectNativeTrackStats(stream.getVideoTracks()[0])]));
+  const take = { id, session, store, rawStore, metrics, manifest: undefined, startedAt: 0,
+    nativeTrackStats,
+    pausedAt: 0, pausedMs: 0, sources: [screen, camera, microphone],
+    elapsed() { return this.startedAt ? (this.pausedAt || performance.now()) - this.startedAt - this.pausedMs : 0; },
+    async start() { await session.start(); this.manifest = await rawStore.load(id); this.startedAt = this.manifest.epochMs; },
+    async pause() { this.pausedAt = performance.now(); await session.pause(); },
+    async resume() { this.pausedMs += performance.now() - this.pausedAt; this.pausedAt = 0; await session.resume(); },
+    snapshot() { return structuredClone({ id, wallMs: performance.now(), elapsedMs: this.elapsed(), manifest: this.manifest, metrics,
+      visibilityState: document.visibilityState, focused: document.hasFocus(), heap: performance.memory ? {
+        used: performance.memory.usedJSHeapSize, total: performance.memory.totalJSHeapSize, limit: performance.memory.jsHeapSizeLimit } : null }); },
+    async finish() { let manifest;
+      try { manifest = await session.stop(); }
+      finally {
+        await retireObservations();
+        source.getTracks().forEach(track => track.stop());
+        player.pause(); player.srcObject = null; player.remove();
+        sourceObserverTrack?.stop(); sourceWorker?.terminate(); audio.stream.getTracks().forEach(track => track.stop());
+        try { await toneContext?.close(); }
+        finally {
+          if (sourceElement) { sourceElement.pause(); sourceElement.removeAttribute('src'); sourceElement.load(); sourceElement.remove(); }
+          document.removeEventListener('visibilitychange', visibility); globalThis.MediaRecorder = nativeRecorder; globalThis.Worker = nativeWorker;
+        }
+      }
+      this.manifest = manifest; return this.snapshot(); },
+    async downloadSourceReference() {
+      if (!suppliedReference) throw new Error('No supplied-reference observation for this take');
+      const url = URL.createObjectURL(await suppliedReference.file());
+      const link = document.createElement('a'); link.href = url; link.download = 'source-reference.f32le'; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+    },
+    async download(kind) { const url = URL.createObjectURL(await store.trackBlob(id, kind));
+      const link = document.createElement('a'); link.href = url; link.download = `${kind}.webm`; link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30000); },
+  };
+  return take;
+}
+
+export async function recoverMatrix(id) {
+  const { createDraftStore } = await import('/src/capture/storage.ts');
+  const store = await createDraftStore(), manifest = await store.load(id), chunks = [];
+  for (const descriptor of manifest.tracks.flatMap(track => track.chunks)) {
+    const blob = await store.readChunk(id, descriptor);
+    const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()))]
+      .map(byte => byte.toString(16).padStart(2, '0')).join('');
+    chunks.push({ ...descriptor, actualBytes: blob.size, actualDigest: digest });
+  }
+  const root = await navigator.storage.getDirectory();
+  const backup = await (await root.getDirectoryHandle('m1-closed-backup')).getDirectoryHandle(id);
+  const backupChunks = [];
+  for (const descriptor of manifest.tracks.flatMap(track => track.chunks)) {
+    const name = `${descriptor.track}-${String(descriptor.sequence).padStart(5, '0')}.bin`;
+    try {
+      const file = await (await backup.getFileHandle(name)).getFile();
+      const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', await file.arrayBuffer()))]
+        .map(byte => byte.toString(16).padStart(2, '0')).join('');
+      backupChunks.push({ track: descriptor.track, sequence: descriptor.sequence, bytes: file.size, digest });
+    } catch (error) { backupChunks.push({ track: descriptor.track, sequence: descriptor.sequence, error: String(error) }); }
+  }
+  return { manifest, chunks, backupChunks, activeLocks: (await navigator.locks.query()).held,
+    mediaDevicesWereRequested: (window.recoveryDeviceRequests || 0) > 0,
+    recoveryDeviceRequestCount: window.recoveryDeviceRequests || 0 };
+}
+
+export function inspectNativeTrackStats(track) {
+  try {
+    const stats = track.stats;
+    if (!stats) return { availability: 'absent', reason: 'Video track.stats is unavailable', readyState: track.readyState, muted: track.muted };
+    const values = Object.fromEntries(['deliveredFrames', 'discardedFrames', 'totalFrames'].map(name => {
+      const value = stats[name]; return [name, typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null];
+    }));
+    const complete = Object.values(values).every(value => value !== null);
+    return { availability: complete ? 'available' : 'partial', ...values,
+      reportedDroppedFrames: complete ? values.totalFrames - values.deliveredFrames - values.discardedFrames : null,
+      readyState: track.readyState, muted: track.muted };
+  } catch (error) { return { availability: 'error', message: String(error), readyState: track.readyState }; }
+}

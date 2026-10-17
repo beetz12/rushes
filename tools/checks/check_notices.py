@@ -5,8 +5,8 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CODE_ROOTS = ("Sources", "Tests", "shell/src", "cloud/src", "viewer/src", "worker/src")
-PACKAGES = ("shell", "cloud", "viewer", "worker")
+CODE_ROOTS = ("Sources", "Tests", "shell/src", "cloud/src", "viewer/src", "worker/src", "browser/src", "browser/test")
+PACKAGES = ("shell", "cloud", "viewer", "worker", "browser")
 ALLOWED = {"MIT", "BSD-2-Clause", "BSD-3-Clause", "Apache-2.0", "ISC", "Zlib", "CC0-1.0", "0BSD"}
 DEPENDENCY_START = "<!-- pinned-npm-notices:start -->"
 DEPENDENCY_END = "<!-- pinned-npm-notices:end -->"
@@ -83,7 +83,7 @@ def verify():
         if not line.startswith("| "):
             continue
         value = line.split("|")[1].strip().strip("`")
-        if value.startswith(tuple(f"{p}/" for p in ("Sources", "Tests", "shell", "cloud", "worker", "viewer"))) and not (ROOT / value).is_file():
+        if value.startswith(tuple(f"{p}/" for p in ("Sources", "Tests", "shell", "cloud", "worker", "viewer", "browser"))) and not (ROOT / value).is_file():
             failures.append(f"notice names absent file: {value}")
         for path in re.findall(r"licenses/[A-Za-z0-9_.@/-]+", line):
             if not (ROOT / path).is_file():

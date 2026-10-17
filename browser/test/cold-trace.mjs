@@ -1,0 +1,142 @@
+// Optional generated cold-case metadata. Never changes the media source or its clocks.
+import * as files from 'node:fs/promises';
+import * as paths from 'node:path';
+import { randomUUID } from 'node:crypto';
+
+const deadline = async (operation, milliseconds, label) => {
+  let timer;
+  try { return await Promise.race([operation, new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), milliseconds);
+  })]); } finally { clearTimeout(timer); }
+};
+
+export function checkPrescribedTraceMarks(events, observations) {
+  if (observations.length !== 7) throw new Error('Expected seven prescribed clock marks');
+  let origin, owner;
+  for (const observation of observations) {
+    const rows = events.filter(event => event.name === observation.name);
+    if (rows.length !== 1) throw new Error('Missing or duplicate prescribed clock mark');
+    const row = rows[0], startUs = observation.coordinateMs * 1000;
+    if (!Number.isSafeInteger(row.ts) || !Number.isSafeInteger(startUs)
+      || row.args?.data?.startTime !== observation.coordinateMs
+      || !Number.isSafeInteger(row.pid) || !Number.isSafeInteger(row.tid))
+      throw new Error('Invalid prescribed clock mark metadata');
+    const selectedOrigin = row.ts - startUs;
+    if (origin === undefined) { origin = selectedOrigin; owner = { pid: row.pid, tid: row.tid }; }
+    if (origin !== selectedOrigin || row.pid !== owner.pid || row.tid !== owner.tid)
+      throw new Error('Prescribed trace coordinates changed origin, units or owner');
+  }
+  return { fixedUnits: 'microseconds', unitSlope: 1, traceOriginUs: origin, owner,
+    scope: 'Prescribed coordinate/export identity only; no supplied-media origin or A/V fit' };
+}
+
+export async function beginColdTrace(browser, page, directory, limits = {}) {
+  const finalizationMs = limits.finalizationMs ?? 15000, metadataMs = limits.metadataMs ?? 2000;
+  if (!Number.isSafeInteger(finalizationMs) || finalizationMs < 1 || finalizationMs > 15000
+    || !Number.isSafeInteger(metadataMs) || metadataMs < 1 || metadataMs > Math.min(2000, finalizationMs))
+    throw new Error('Diagnostic test limits may only shorten the production budgets');
+  await deadline(files.mkdir(directory, { mode: 0o700 }), 5000, 'Cold trace directory');
+  const session = await deadline(browser.newBrowserCDPSession(), 5000, 'Cold trace session'), token = `rushes-cold-${randomUUID()}`;
+  const report = { scope: 'Optional generated cold timing diagnostic; existing recording assertions remain authoritative',
+    token, chrome: browser.version(), errors: [], traceReceipt: null };
+  let started = false, finishing;
+  const finish = context => {
+    if (finishing) return finishing;
+    finishing = (async () => {
+      let stream, handle, onComplete;
+      const begun = performance.now(), expires = begun + finalizationMs;
+      const step = (operation, label, cap = finalizationMs) => deadline(operation,
+        Math.max(1, Math.min(cap, expires - performance.now())), label);
+      report.context = context;
+      try {
+        report.javascript = await step(page.evaluate(() => globalThis.__rushesColdTrace?.finish()), 'Cold call observation retirement', metadataMs);
+        if (!report.javascript) report.errors.push('Cold call observation was unavailable');
+      } catch (error) { report.errors.push(String(error.stack || error)); }
+      try {
+        if (started) {
+          const completed = new Promise(resolve => {
+            onComplete = receipt => { report.traceReceipt = receipt; stream = receipt.stream; resolve(receipt); };
+            session.once('Tracing.tracingComplete', onComplete);
+          });
+          try { await step(session.send('Tracing.end'), 'Cold trace end'); }
+          catch (error) { report.errors.push(`Trace end acknowledgement: ${error}`); }
+          report.traceReceipt = await step(completed, 'Cold trace receipt');
+          stream = report.traceReceipt.stream;
+          if (!stream) throw new Error('Cold trace did not provide an evidence stream');
+          const file = paths.join(directory, 'trace.json'); handle = await step(files.open(file, 'wx'), 'Cold trace file'); let bytes = 0, reads = 0;
+          for (;;) {
+            if (++reads > 2048 || performance.now() >= expires) throw new Error('Cold trace exceeded its read/time budget');
+            const packet = await step(session.send('IO.read', { handle: stream, size: 1048576 }), 'Cold trace read');
+            const data = packet.base64Encoded ? Buffer.from(packet.data, 'base64') : Buffer.from(packet.data);
+            bytes += data.length; if (bytes > 128 * 1024 ** 2) throw new Error('Cold trace exceeded128MiB');
+            await step(handle.writeFile(data), 'Cold trace write'); if (packet.eof) break;
+          }
+          await step(handle.close(), 'Cold trace file close'); handle = undefined; report.traceBytes = bytes;
+          if (report.traceReceipt.dataLossOccurred !== false) throw new Error('Cold trace loss was present or unmeasured');
+          const events = JSON.parse(await step(files.readFile(file, 'utf8'), 'Cold trace parse input')).traceEvents;
+          if (report.javascript) report.clock = checkPrescribedTraceMarks(events, report.javascript.observations);
+          report.recorderMarks = events.filter(event => event.name?.startsWith(`${token}/recorder-`));
+        }
+      } catch (error) { report.errors.push(String(error.stack || error)); }
+      finally {
+        try { if (handle) await step(handle.close(), 'Cold trace file retirement'); } catch (error) { report.errors.push(`File close: ${error}`); }
+        try { if (stream) await step(session.send('IO.close', { handle: stream }), 'Cold trace stream close'); }
+        catch (error) { report.errors.push(String(error)); }
+        if (onComplete) session.off('Tracing.tracingComplete', onComplete);
+        try { await step(session.detach(), 'Cold trace detach'); }
+        catch (error) { report.errors.push(String(error)); }
+        report.finalizationMs = performance.now() - begun;
+        if (report.finalizationMs > finalizationMs) report.errors.push('Cold trace aggregate retirement budget expired');
+        await deadline(files.writeFile(paths.join(directory, 'report.json'), JSON.stringify(report, null, 2), { flag: 'wx' }), 2000, 'Cold trace error receipt');
+      }
+      if (report.errors.length) throw new Error(`Cold trace diagnostic failed: ${report.errors.join('; ')}`);
+      return report;
+    })();
+    return finishing;
+  };
+  try {
+    // The owned browser has no other tracing client. Attempt retirement even if
+    // the start reply is lost after the browser accepted it.
+    started = true;
+    await deadline(session.send('Tracing.start', { transferMode: 'ReturnAsStream', streamFormat: 'json',
+      traceConfig: { recordMode: 'recordContinuously', traceBufferSizeInKb: 32768,
+        includedCategories: ['media', 'blink.user_timing'], enableArgumentFilter: false } }), 5000, 'Cold trace start');
+    await deadline(page.evaluate(token => {
+      const calls = [], observations = [], originals = new Map(), ids = new WeakMap();
+      let nextId = 0;
+      const prescribed = (batch, coordinates) => coordinates.forEach((coordinateMs, index) => {
+        const name = `${token}/clock-${batch}-${index}`;
+        performance.mark(name, { startTime: coordinateMs });
+        observations.push({ name, coordinateMs, calledAtPageMs: performance.now() });
+      });
+      globalThis.__rushesColdTrace = { token, calls, observations, timeOrigin: performance.timeOrigin,
+        finish() {
+          try { prescribed('later', [1.25, 1002.75, 3003.5]); prescribed('held-out', [5004.125]); }
+          finally { for (const [method, original] of originals) MediaRecorder.prototype[method] = original; }
+          return { token, calls, observations, timeOrigin: performance.timeOrigin };
+        } };
+      prescribed('first', [1.25, 1002.75, 3003.5]);
+      for (const method of ['start', 'pause', 'resume', 'stop']) {
+        const original = MediaRecorder.prototype[method]; originals.set(method, original);
+        MediaRecorder.prototype[method] = function(...args) {
+          if (!ids.has(this)) ids.set(this, nextId++);
+          const id = ids.get(this), index = calls.length;
+          const row = { id, index, method, before: performance.now(), beforeState: this.state };
+          calls.push(row); performance.mark(`${token}/recorder-${id}/${index}-${method}-before`, { startTime: row.before });
+          try { return Reflect.apply(original, this, args); }
+          catch (error) { row.error = String(error); throw error; }
+          finally {
+            row.after = performance.now(); row.afterState = this.state;
+            performance.mark(`${token}/recorder-${id}/${index}-${method}-after`, { startTime: row.after });
+          }
+        };
+      }
+    }, token), 5000, 'Cold call observation setup');
+  } catch (error) {
+    report.errors.push(`Setup: ${error.stack || error}`);
+    try { await finish({ result: 'Cold trace setup failed before recording' }); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], 'Cold trace setup failed; evidence retained'); }
+    throw error;
+  }
+  return { finish };
+}

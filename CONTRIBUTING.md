@@ -7,7 +7,7 @@ unusual and non-negotiable: the clean-room rules.
 ## Prerequisites
 
 - macOS 26.4 or later with the Swift 6.4 toolchain (Xcode 26 or the standalone toolchain)
-- Node.js per each JavaScript surface's pinned `.nvmrc` (`shell/`, `cloud/`, `viewer/`, `worker/`)
+- Node.js per each JavaScript surface's pinned `.nvmrc` (`shell/`, `cloud/`, `viewer/`, `worker/`, `browser/`)
 
 ## The one gate
 
@@ -18,7 +18,10 @@ bash scripts/check.sh
 CI runs exactly this script. It builds and tests the Swift package, installs,
 builds and tests every JavaScript surface on its pinned Node runtime, runs the
 clean-room check over all first-party source, and verifies the license notice
-inventory. If it is red locally, it will be red in CI; fix it before opening a
+inventory. The browser surface also requires FFmpeg/ffprobe and the pinned Chrome installer
+(`scripts/install-test-chrome.mjs`). Its shared selector runs every published test
+module; the excluded hosted provider seam remains mandatory in the private service.
+If the gate is red locally, fix it before opening a
 pull request. Hardware-dependent tests live behind `LOOM_LIVE_TESTS=1` and are
 never set in CI; do not set them in CI either.
 

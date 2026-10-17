@@ -50,6 +50,13 @@ jobs:
             test -x "$NVM_DIR/versions/node/v$bare/bin/node"
             "$NVM_DIR/versions/node/v$bare/bin/node" --version
           done
+      - name: Install generated-media decode tools
+        run: brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+      - name: Select the pinned browser for the umbrella gate
+        run: |
+          pin=$(tr -d '[:space:]' < browser/.nvmrc)
+          export PATH="$HOME/.nvm/versions/node/v${pin#v}/bin:$PATH"
+          node scripts/install-test-chrome.mjs --generation current --destination "$RUNNER_TEMP/rushes-umbrella-chrome"
       - name: Gate
         run: bash scripts/check.sh
 

@@ -35,7 +35,7 @@ sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
 PY
 
 clean_paths=(Sources Tests)
-for surface in shell cloud viewer worker; do
+for surface in shell cloud viewer worker browser; do
   if [ -f "$surface/package.json" ]; then
     if [ ! -f "$surface/.nvmrc" ]; then
       echo "Missing pinned Node runtime: $surface/.nvmrc" >&2
@@ -56,12 +56,19 @@ for surface in shell cloud viewer worker; do
       PATH="$node_dir:$PATH" npm --prefix "$surface" exec -- playwright install webkit
     fi
     PATH="$node_dir:$PATH" npm --prefix "$surface" run build
-    PATH="$node_dir:$PATH" npm --prefix "$surface" test
+    if [ "$surface" = "browser" ]; then
+      PATH="$node_dir:$PATH" node scripts/check-browser-recorder.mjs
+    else
+      PATH="$node_dir:$PATH" npm --prefix "$surface" test
+    fi
     if [ -d "$surface/src" ]; then
       clean_paths+=("$surface/src")
     fi
   fi
 done
+
+# New shared browser code, tests and CI helpers receive the same clean-room gate.
+clean_paths+=(browser scripts/install-test-chrome.mjs scripts/check-browser-recorder.mjs .github/workflows/browser-recorder.yml)
 
 echo "== clean-room check on our source =="
 python3 tools/checks/test_clean_inputs.py
@@ -69,6 +76,9 @@ clean_output=$(python3 -I tools/checks/check_clean.py "${clean_paths[@]}")
 echo "$clean_output"
 first=${clean_output%%$'\n'*}
 [ "$first" = "0" ] || { echo "check_clean reported $first"; exit 1; }
+
+echo "== published browser boundary controls =="
+python3 tools/checks/test_browser_boundary.py
 
 echo "== notices sync =="
 python3 tools/checks/test_notices.py

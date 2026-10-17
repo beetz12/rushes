@@ -1,0 +1,310 @@
+import { after, afterEach, before, test } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { createServer } from 'node:net';
+import { chromium } from 'playwright';
+import { fileURLToPath } from 'node:url';
+import { fixtureContexts, diagnosticWithin } from './fixture-contexts.mjs';
+let server, browser, origin;
+const ownedContexts=fixtureContexts();
+const pageErrors=new WeakMap();
+const consoleLogs=new WeakMap();
+const fixtureRecords=new WeakMap();
+const proof = process.env.RUSHES_UI_PROOF ?? await mkdtemp(`${tmpdir()}/rushes-ui-`);
+const config = {revision:'fixture',billingMode:'test',googleConfigured:true,billingConfigured:true,streamConfigured:true,captureEnabled:true,hostingEnabled:true,signupEnabled:true,priceUSD:15,limits:{maxTakeSeconds:600,width:1280,height:720,fps:30,monthlyUploadSeconds:6000,retainedSeconds:18000,deliverySeconds:60000,activeRawBytes:2147483648,rawRetentionDays:7,monthlyPriceUSD:15}};
+const user = {id:'fixture-user',tenantId:'fixture-tenant',name:'Sam Taylor',email:'sam@example.test'};
+const subscription = {status:'active',paidThrough:'2026-11-12T00:00:00Z',graceThrough:null,canUpload:true};
+const usage = {uploadSeconds:210,reservedSeconds:30,retainedSeconds:720,deliverySeconds:1500,rawBytes:1024,reservedRawBytes:0,periodStart:'2026-10-12T00:00:00Z',subscription};
+const recording = {id:'fixture-video',title:'Walkthrough for the team',createdAt:'2026-10-12T00:00:00Z',mode:'screen-camera',state:'ready',durationMs:45000,bytes:1000,error:null,shareId:null,shareURL:null};
+before(async()=>{
+  await mkdir(proof,{recursive:true});
+  const socket=createServer(); await new Promise(resolve=>socket.listen(0,'127.0.0.1',resolve)); const port=socket.address().port; await new Promise(resolve=>socket.close(resolve)); origin=`http://127.0.0.1:${port}`;
+  server=spawn(process.execPath,[fileURLToPath(new URL('../node_modules/vite/bin/vite.js',import.meta.url)),'--host','127.0.0.1','--port',String(port),'--strictPort'],{cwd:fileURLToPath(new URL('..',import.meta.url)),stdio:['ignore','pipe','pipe']});
+  let output='';server.stdout.on('data',data=>{output+=data;});server.stderr.on('data',data=>{output+=data;});
+  for(let attempt=0;attempt<100;attempt++){try{const result=await fetch(origin);if(result.ok)break;}catch{}if(server.exitCode!==null)throw new Error(output);await new Promise(resolve=>setTimeout(resolve,50));if(attempt===99)throw new Error(`Vite unavailable: ${output}`);}
+  browser=await chromium.launch({headless:true,...(process.env.RUSHES_CHROME ? {executablePath:process.env.RUSHES_CHROME} : {channel:'chromium'}),args:['--use-fake-device-for-media-stream']});console.log(`Isolated Chromium ${browser.version()} on ${process.platform}`);
+});
+after(async()=>{await browser?.close();server?.kill('SIGTERM');console.log(`UI screenshots: ${proof}`);});
+afterEach(async context=>{
+  const name=context.name.replace(/[^a-z0-9]+/gi,'-').slice(0,100);
+  let index=0;
+  const results=await ownedContexts.drain(async retained=>{
+    const number=index++,pages=[];
+    for(const [pageIndex,page] of retained.pages().entries()) {
+      const entry={url:page.url(),pageErrors:pageErrors.get(page)??[],console:(consoleLogs.get(page)??[]).slice(-50)};pages.push(entry);
+      try {entry.state=await diagnosticWithin(()=>page.evaluate(()=>({
+        main:document.querySelector('main')?.textContent,
+        alerts:[...document.querySelectorAll('[role="alert"],[role="status"]')].map(value=>value.textContent),
+        controls:[...document.querySelectorAll('button')].map(value=>({text:value.textContent,disabled:value.disabled})),
+        recordTime:document.querySelector('.record-time')?.textContent,visibility:document.visibilityState,mediaMock:window.mediaMock,
+        tracks:(window.testStreams??[]).flatMap(stream=>stream.getTracks().map(track=>({kind:track.kind,readyState:track.readyState,muted:track.muted}))),
+      })),5000);}catch(error){entry.stateError=String(error);}
+      try {await page.screenshot({path:`${proof}/unclosed-${name}-${number}-${pageIndex}.png`,timeout:5000});}
+      catch(error){entry.screenshotError=String(error);}
+    }
+    const record=fixtureRecords.get(retained);
+    await writeFile(`${proof}/unclosed-${name}-${number}.json`,JSON.stringify({test:context.name,pages,
+      fixture:record?{options:record.options,callCount:record.calls.length,
+        lastCalls:record.calls.slice(-10).map(call=>({method:call.method,path:call.path,bytes:call.bytes}))}:undefined},null,2));
+  });
+  for(const result of results)if(result.status==='rejected')console.error('Retained-context diagnostic failed:',result.reason);
+});
+async function pageFixture(options={}) {
+  const context=ownedContexts.own(await browser.newContext({viewport:{width:1440,height:960},acceptDownloads:true}));
+  context.on('page',page=>{const errors=[],logs=[];pageErrors.set(page,errors);consoleLogs.set(page,logs);
+    page.on('pageerror',error=>errors.push(String(error.stack??error.message??error).slice(0,1000)));
+    page.on('console',message=>{logs.push({type:message.type(),text:message.text().slice(0,300)});if(logs.length>50)logs.shift();});});
+  let currentRecording={...recording}; const calls=[];const created=new Map();const granted=new Map();const accepted=new Map();
+  fixtureRecords.set(context,{calls,options});
+  await context.route('**/api/**',async route=>{
+    const request=route.request();const url=new URL(request.url());const method=request.method();calls.push({path:url.pathname,query:url.search,method,body:request.headers()['content-type']?.includes('application/json')?request.postDataJSON():null,bytes:request.postDataBuffer()?.byteLength??0,headers:request.headers()});
+    let payload, status=200;
+    if(options.rawOffline && url.pathname.includes('/chunks')){await route.abort('internetdisconnected');return;}
+    if(options.deleteOffline && method==='DELETE' && url.pathname.includes('fixture-created')){await route.abort('internetdisconnected');return;}
+    if(url.pathname==='/api/recordings'&&method==='POST') {
+      if(options.reserveError){status=409;payload={error:{code:'UPLOAD_QUOTA',message:'Your upload reservation limit is reached.'}};}
+      else {const input=request.postDataJSON();let row=created.get(input.clientId);if(!row){row={...recording,id:`fixture-created-${created.size+1}`,title:input.title,mode:input.mode,state:'draft',manifest:null,chunks:[]};created.set(input.clientId,row);}payload=row;}
+    }
+    else if(method==='GET'&&url.pathname.includes('fixture-created')&&!url.pathname.includes('/chunks'))payload=[...created.values()].find(row=>url.pathname.endsWith('/'+row.id));
+    else if(url.pathname.endsWith('/chunks/grant')){const chunk=request.postDataJSON();const key=`${url.pathname.split('/')[3]}/${chunk.track}/${chunk.sequence}`;granted.set(key,chunk);payload={url:`${origin}/api/recordings/${key}`,token:'fixture-grant',expiresAt:new Date(Date.now()+60000).toISOString(),acknowledged:accepted.has(key)};}
+    else if(method==='PUT'&&url.pathname.includes('fixture-created')){const key=url.pathname.split('/').slice(3).join('/');const chunk=granted.get(key);const data=request.postDataBuffer();assert.ok(chunk);assert.equal(data.byteLength,chunk.bytes);assert.equal(Buffer.from(await crypto.subtle.digest('SHA-256',data)).toString('hex'),chunk.sha256);accepted.set(key,chunk);payload={acknowledged:true};}
+    else if(url.pathname.endsWith('/chunks'))payload={chunks:[...accepted.entries()].filter(([key])=>key.startsWith(url.pathname.split('/')[3]+'/')).map(([,chunk])=>chunk)};
+    else if(url.pathname.endsWith('/finalize')){status=503;payload={error:{code:'SYNTHETIC_PROCESSING_HOLD',message:'Final provider upload is held by this UI fixture.'}};}
+    else if(method==='DELETE'&&url.pathname.includes('fixture-created'))payload={state:'deleted'};
+    else if(url.pathname==='/api/config')payload={...config,...options.config};
+    else if(url.pathname==='/api/session'){if(options.holdSession){options.holdSession=false;await new Promise(resolve=>{options.releaseSession=resolve;});}payload={user:options.signed===false?null:options.user??user,csrfToken:options.signed===false?null:'fixture-csrf'};}
+    else if(url.pathname==='/api/recordings'&&method==='GET'){if(options.holdLibrary){options.holdLibrary=false;await new Promise(resolve=>{options.releaseLibrary=resolve;});}payload={recordings:options.recordings??(options.empty?[]:options.paginated&&url.searchParams.has('cursor')?[currentRecording,{...currentRecording,id:'older-video',title:'An older walkthrough'}]:[currentRecording]),nextCursor:options.paginated&&!url.searchParams.has('cursor')?'fixture-next':null,usage:{...usage,subscription:options.unpaid?{...subscription,status:'none',canUpload:false}:subscription}};}
+    else if(url.pathname.endsWith('/playback'))payload={url:`${origin}/test-player`,expiresAt:new Date(Date.now()+300000).toISOString()};
+    else if(url.pathname.endsWith('/export'))payload=options.exportReady?{status:'ready',url:`${origin}/test-export.mp4`,expiresAt:new Date(Date.now()+300000).toISOString()}:{status:'processing'};
+    else if(url.pathname.endsWith('/share')&&method==='POST'){currentRecording={...currentRecording,shareId:'test-share',shareURL:`${origin}/s/test-share`};payload={id:'test-share',url:currentRecording.shareURL,expiresAt:request.postDataJSON().expiresAt??null};}
+    else if(url.pathname.endsWith('/share')&&method==='DELETE'){currentRecording={...currentRecording,shareId:null,shareURL:null};payload={ok:true};}
+    else if(url.pathname.endsWith('/fixture-video')&&method==='PATCH'){currentRecording={...currentRecording,title:request.postDataJSON().title};payload={...currentRecording,manifest:null,chunks:[]};}
+    else if(url.pathname.endsWith('/fixture-video')&&method==='DELETE'){currentRecording={...currentRecording,state:'deleting'};payload={state:'deleting'};}
+    else if(url.pathname==='/api/logout')payload={ok:true};
+    else if(url.pathname.includes('/billing/'))payload={url:`${origin}/test-checkout`};
+    else if(url.pathname==='/api/shares/test-share')payload={id:'test-share',title:'Shared synthetic video',durationMs:2000,passwordRequired:true,expiresAt:null};
+    else if(url.pathname.endsWith('/unlock'))payload={ok:true};
+    else {status=404;payload={error:{code:'FIXTURE_ROUTE',message:'No fixture for this route.'}};}
+    await route.fulfill({status,contentType:'application/json',body:JSON.stringify(payload)});
+  });
+  if(options.denyScreen)await context.route(`${origin}/`,async route=>{const response=await route.fetch();await route.fulfill({response,headers:{...response.headers(),'Permissions-Policy':'display-capture=()'}});});
+  await context.route('**/test-player',route=>route.fulfill({contentType:'text/html',body:'<main>Synthetic playback fixture</main>'}));
+  await context.route('**/test-checkout',route=>route.fulfill({contentType:'text/html',body:'<main>Test Checkout fixture</main>'}));
+  await context.addInitScript(()=>{
+    window.permissionCalls=[];window.testStreams=[];
+    // about:blank is not a secure context (no mediaDevices); the mock installs when the app origin loads.
+    window.mediaMock='skipped-insecure';
+    if(!navigator.mediaDevices)return;
+    window.mediaMock='installed';
+    const original=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia=async constraints=>{window.permissionCalls.push({kind:'devices',constraints});const stream=await original(constraints);window.testStreams.push(stream);return stream;};
+    const display=navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getDisplayMedia=constraints=>{window.permissionCalls.push({kind:'screen',constraints,gesture:navigator.userActivation.isActive});return display(constraints);};
+  });
+  const page=await context.newPage();page.setDefaultTimeout(5000);page.on('pageerror',error=>console.log('PAGE ERROR',error.message));await page.goto(origin);await page.getByRole('heading',{name:'Show it. Say it. Send it.'}).waitFor();
+  return {context,page,calls,options};
+}
+async function skip(page){const dialog=page.getByRole('dialog',{name:'First recording guide'});if(await dialog.isVisible())await dialog.getByRole('button',{name:'Skip guide',exact:true}).click();}
+test('first-use guide skips permanently, replays from Help, and finishes without permission prompts',async()=>{
+  const f=await pageFixture({signed:false});await f.page.getByRole('dialog',{name:'First recording guide'}).waitFor();assert.equal(await f.page.evaluate(()=>window.permissionCalls.length),0);
+  await skip(f.page);await f.page.reload();await f.page.getByRole('heading',{name:'Show it. Say it. Send it.'}).waitFor();assert.equal(await f.page.getByRole('dialog').count(),0);
+  await f.page.getByRole('button',{name:'First recording guide'}).click();for(let step=0;step<5;step++)await f.page.getByRole('dialog').getByRole('button',{name:'Next',exact:true}).click();await f.page.getByRole('dialog').getByRole('button',{name:'Got it'}).click();
+  assert.equal(await f.page.evaluate(()=>localStorage.getItem('rushes.browser.guide.v1')),'completed');assert.equal(await f.page.evaluate(()=>window.permissionCalls.length),0);await f.context.close();
+});
+test('camera and microphone are explicit clicks; turning off releases real synthetic tracks',async()=>{
+  const f=await pageFixture({signed:false});await skip(f.page);assert.equal(await f.page.evaluate(()=>window.permissionCalls.length),0);
+  await f.context.grantPermissions(['camera','microphone'],{origin});
+  await f.page.getByRole('button',{name:'Enable camera',exact:true}).click();await f.page.getByRole('button',{name:'Turn camera off'}).waitFor();
+  await f.page.getByRole('button',{name:'Enable microphone',exact:true}).click();await f.page.getByRole('button',{name:'Turn microphone off'}).waitFor();
+  assert.equal(await f.page.evaluate(()=>window.permissionCalls.length),2);assert.equal(await f.page.getByRole('meter',{name:'Microphone level'}).count(),1);
+  await f.page.getByRole('button',{name:'Turn camera off'}).click();await f.page.getByRole('button',{name:'Turn microphone off'}).click();assert.equal(await f.page.evaluate(()=>window.testStreams.every(stream=>stream.getTracks().every(track=>track.readyState==='ended'))),true);
+  await f.page.getByRole('button',{name:'Enable camera',exact:true}).click();await f.page.getByRole('button',{name:'Turn camera off'}).waitFor();await f.page.getByRole('button',{name:'Local drafts',exact:true}).click();assert.equal(await f.page.evaluate(()=>window.testStreams.every(stream=>stream.getTracks().every(track=>track.readyState==='ended'))),true);await f.context.close();
+});
+test('late device switch cannot undo camera or microphone off, and unmount releases late grants',async()=>{
+  const f=await pageFixture({signed:false});await skip(f.page);await f.context.grantPermissions(['camera','microphone'],{origin});
+  for(const kind of ['camera','microphone']){await f.page.getByRole('button',{name:`Enable ${kind}`,exact:true}).click();await f.page.getByRole('button',{name:`Turn ${kind} off`}).waitFor();await f.page.evaluate(()=>{const original=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);window.deferReady=false;navigator.mediaDevices.getUserMedia=async options=>{const stream=await original(options);window.lateStream=stream;window.deferReady=true;await new Promise(resolve=>{window.resolveLate=resolve;});return stream;};});const selector=kind==='camera'?'Camera device':'Microphone device';await f.page.getByLabel(selector).evaluate(element=>element.dispatchEvent(new Event('change',{bubbles:true})));await f.page.waitForFunction(()=>window.deferReady);await f.page.getByRole('button',{name:`Turn ${kind} off`}).click();await f.page.evaluate(()=>window.resolveLate());await f.page.getByRole('button',{name:`Enable ${kind}`,exact:true}).waitFor();assert.equal(await f.page.evaluate(()=>window.lateStream.getTracks().every(track=>track.readyState==='ended')),true);await f.page.reload();await f.page.getByRole('heading',{name:'Show it. Say it. Send it.'}).waitFor();}
+  await f.page.evaluate(async()=>{const ReactModule=await import('/node_modules/.vite/deps/react.js');const React=ReactModule.default??ReactModule;const Client=await import('/node_modules/.vite/deps/react-dom_client.js');const createRoot=Client.createRoot??Client.default.createRoot;const {Studio}=await import('/src/components/Studio.tsx');const element=document.createElement('div');element.id='device-story';Object.assign(element.style,{position:'fixed',inset:'10px 10px 10px 240px',zIndex:'100',background:'white',overflow:'auto'});document.body.append(element);window.story=createRoot(element);window.story.render(React.createElement(Studio,{store:null,persistent:false,backupFolder:false,storageError:'',chooseBackup:async()=>{},requestPersistence:async()=>{},onComplete:()=>{},onBusy:()=>{},captureAllowed:true,cloud:{available:false,reason:'',reserve:async()=>'',checkpoint:()=>{},discard:()=>{}}}));const original=navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);navigator.mediaDevices.getUserMedia=async options=>{const stream=await original(options);window.storyStream=stream;window.storyReady=true;await new Promise(resolve=>{window.finishStory=resolve;});return stream;};});await f.page.locator('#device-story').getByRole('button',{name:'Enable camera',exact:true}).click();await f.page.waitForFunction(()=>window.storyReady);await f.page.evaluate(()=>{window.story.unmount();window.finishStory();});await f.page.waitForFunction(()=>window.storyStream.getTracks().every(track=>track.readyState==='ended'));await f.context.close();
+});
+test('held session and library responses cannot repopulate private UI after sign-out',async()=>{
+  for(const held of ['holdSession','holdLibrary']){const f=await pageFixture();await skip(f.page);await f.page.getByRole('button',{name:'Cloud account',exact:true}).click();await f.page.getByRole('button',{name:'Refresh account',exact:true}).waitFor();f.options[held]=true;await f.page.getByRole('button',{name:'Refresh account',exact:true}).click();for(let step=0;step<100&&!f.options[held==='holdSession'?'releaseSession':'releaseLibrary'];step++)await f.page.waitForTimeout(20);const release=f.options[held==='holdSession'?'releaseSession':'releaseLibrary'];assert.equal(typeof release,'function');await f.page.getByRole('button',{name:'Sign out',exact:true}).click();await f.page.getByRole('link',{name:'Sign in with Google'}).waitFor();release();await f.page.waitForTimeout(150);assert.equal(await f.page.getByRole('button',{name:'Sign out',exact:true}).count(),0);assert.equal(await f.page.getByRole('heading',{name:'Sam Taylor',exact:true}).count(),0);await f.page.getByRole('button',{name:'Cloud library',exact:true}).click();assert.equal(await f.page.getByRole('heading',{name:'Walkthrough for the team'}).count(),0);await f.context.close();}
+});
+test('camera bubble moves by drag and keyboard within the composed frame',async()=>{
+  const f=await pageFixture({signed:false});await skip(f.page);await f.context.grantPermissions(['camera'],{origin});await f.page.getByRole('button',{name:'Enable camera',exact:true}).click();
+  const bubble=f.page.getByRole('button',{name:'Move camera bubble; use arrow keys or drag'});await bubble.waitFor();await bubble.focus();const initial=await bubble.evaluate(element=>element.style.left);await bubble.press('ArrowLeft');const next=await bubble.evaluate(element=>element.style.left);assert.ok(parseFloat(next)<parseFloat(initial));
+  const box=await bubble.boundingBox();await f.page.mouse.move(box.x+box.width/2,box.y+box.height/2);await f.page.mouse.down();await f.page.mouse.move(box.x+box.width/2-75,box.y+box.height/2-50);await f.page.mouse.up();assert.ok(parseFloat(await bubble.evaluate(element=>element.style.left))<parseFloat(next));await f.context.close();
+});
+test('permission denial returns to setup with an actionable error and no permission loop',async()=>{
+  const f=await pageFixture({signed:false});await skip(f.page);await f.page.getByRole('button',{name:'Enable camera',exact:true}).click();await f.page.getByRole('alert').filter({hasText:'Camera access'}).waitFor();assert.equal(await f.page.evaluate(()=>window.permissionCalls.length),1);assert.equal(await f.page.getByRole('button',{name:'Enable camera',exact:true}).isEnabled(),true);await f.context.close();
+});
+test('unconfigured account exposes truthful disabled actions and local downloads stay accessible',async()=>{
+  const f=await pageFixture({signed:false,config:{googleConfigured:false,billingConfigured:false,hostingEnabled:false,streamConfigured:false}});await skip(f.page);await f.page.getByRole('button',{name:'Cloud account',exact:true}).click();assert.equal(await f.page.getByRole('link',{name:'Sign in with Google'}).getAttribute('aria-disabled'),'true');assert.equal(await f.page.getByRole('button',{name:'Subscribe with test Checkout'}).isDisabled(),true);assert.match(await f.page.textContent('main'),/not configured/);await f.page.getByRole('button',{name:'Local drafts',exact:true}).click();assert.equal(await f.page.getByRole('heading',{name:'Local drafts',exact:true}).count(),1);await f.context.close();
+});
+test('library title/share/revoke/export use server APIs and scoped CSRF, delete reports pending cleanup',async()=>{
+  const f=await pageFixture();await skip(f.page);await f.page.getByRole('button',{name:'Cloud library',exact:true}).click();await f.page.getByRole('button').filter({has:f.page.getByRole('heading',{name:'Walkthrough for the team'})}).click();await f.page.getByRole('button',{name:'Play video',exact:true}).click();await f.page.locator('iframe[title="Private cloud video"]').waitFor();
+  await f.page.getByLabel('Title',{exact:true}).fill('Updated walkthrough');await f.page.getByRole('button',{name:'Save title',exact:true}).click();await f.page.getByRole('heading',{name:'Updated walkthrough'}).waitFor();
+  await f.page.getByLabel('Password (optional)').fill('synthetic-policy');await f.page.getByLabel('Link expiry').selectOption('1');await f.page.getByRole('button',{name:'Create / update share link'}).click();await f.page.getByRole('textbox',{name:'Share link',exact:true}).waitFor();
+  const share=f.calls.find(call=>call.path.endsWith('/share')&&call.method==='POST');assert.equal(share.body.password,'synthetic-policy');assert.ok(Date.parse(share.body.expiresAt)>Date.now());assert.deepEqual(Object.keys(share.body).sort(),['expiresAt','password']);assert.equal(share.headers['x-csrf-token'],'fixture-csrf');
+  await f.page.getByRole('button',{name:'Revoke share link',exact:true}).click();await f.page.getByRole('textbox',{name:'Share link',exact:true}).waitFor({state:'hidden'});
+  await f.page.getByRole('button',{name:'Export composed video',exact:true}).click();await f.page.getByRole('button',{name:'Check composed export'}).waitFor();assert.match(await f.page.textContent('main'),/30-day cancellation grace/);
+  f.page.once('dialog',dialog=>dialog.accept());await f.page.getByRole('button',{name:'Delete cloud recording'}).click();await f.page.getByRole('heading',{name:'Access revoked. Cleanup is pending.'}).waitFor();assert.equal(await f.page.locator('iframe').count(),0);assert.equal(f.calls.find(call=>call.path.endsWith('/playback')).headers['x-csrf-token'],'fixture-csrf');await f.context.close();
+});
+test('private library loads the next opaque page once and removes duplicate IDs',async()=>{
+  const f=await pageFixture({paginated:true});await skip(f.page);await f.page.getByRole('button',{name:'Cloud library',exact:true}).click();await f.page.getByRole('button',{name:'Load more videos',exact:true}).click();await f.page.getByRole('heading',{name:'An older walkthrough',exact:true}).waitFor();assert.equal(await f.page.locator('.recording-card').count(),2);assert.equal(await f.page.getByRole('button',{name:'Load more videos',exact:true}).count(),0);assert.ok(f.calls.some(call=>call.query==='?cursor=fixture-next'));await f.context.close();
+});
+
+for (const action of ['playback','export','share','rename','delete']) {
+  test(`cloud detail ignores retired ${action} after opening another recording`,{timeout:20000},async testContext=>{
+    const f=await pageFixture({paginated:true});await skip(f.page);
+    await f.page.getByRole('button',{name:'Cloud library',exact:true}).click();
+    await f.page.getByRole('button',{name:'Load more videos',exact:true}).click();
+    await f.page.getByRole('heading',{name:'An older walkthrough',exact:true}).waitFor();
+    const entered=Promise.withResolvers(),reply=Promise.withResolvers();testContext.after(()=>reply.resolve());
+    const suffix={playback:'/playback',export:'/export',share:'/share',rename:'',delete:''}[action];
+    const method={playback:'GET',rename:'PATCH',delete:'DELETE'}[action]??'POST';
+    const payload={playback:{url:`${origin}/test-player?recording=A`,expiresAt:new Date(Date.now()+300000).toISOString()},export:{status:'ready',url:`${origin}/A-export.mp4`,expiresAt:new Date(Date.now()+300000).toISOString()},share:{id:'retired-share',url:`${origin}/s/retired-share`,expiresAt:null},rename:{...recording,title:'Retired rename',manifest:null,chunks:[]},delete:{state:'deleting'}}[action];
+    await f.context.route(`${origin}/api/recordings/fixture-video${suffix}`,async route=>{
+      if(route.request().method()!==method){await route.fallback();return;}
+      entered.resolve();await reply.promise;await route.fulfill({contentType:'application/json',body:JSON.stringify(payload)});
+    });
+    await f.page.getByRole('button').filter({has:f.page.getByRole('heading',{name:recording.title,exact:true})}).click();
+    if(action==='delete')f.page.once('dialog',dialog=>dialog.accept());
+    const button={playback:'Play video',export:'Export composed video',share:'Create / update share link',rename:'Save title',delete:'Delete cloud recording'}[action];
+    await f.page.getByRole('button',{name:button,exact:true}).click();await diagnosticWithin(()=>entered.promise,5000);
+    await f.page.getByRole('button',{name:'← Cloud library',exact:true}).click();
+    await f.page.getByRole('button').filter({has:f.page.getByRole('heading',{name:'An older walkthrough',exact:true})}).click();
+    const finished=f.page.waitForResponse(response=>response.url()===`${origin}/api/recordings/fixture-video${suffix}`&&response.request().method()===method);
+    reply.resolve();await(await finished).finished();
+    await f.page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    assert.equal(await f.page.getByRole('heading',{name:'An older walkthrough',exact:true}).count(),1);
+    assert.equal(await f.page.locator('iframe').count(),0);
+    assert.equal(await f.page.getByRole('link',{name:'Download composed MP4'}).count(),0);
+    assert.equal(await f.page.getByLabel('Share link',{exact:true}).count(),0);
+    assert.equal(await f.page.getByLabel('Title',{exact:true}).inputValue(),'An older walkthrough');
+    await f.context.close();
+  });
+}
+
+test('cloud detail retires old errors and busy completion even when reopening the same video',{timeout:20000},async testContext=>{
+  const f=await pageFixture();await skip(f.page);await f.page.getByRole('button',{name:'Cloud library',exact:true}).click();
+  const entered=[Promise.withResolvers(),Promise.withResolvers()],replies=[Promise.withResolvers(),Promise.withResolvers()];let requests=0;
+  testContext.after(()=>replies.forEach(reply=>reply.resolve()));
+  await f.context.route(`${origin}/api/recordings/fixture-video/playback`,async route=>{
+    const index=requests++;entered[index].resolve();await replies[index].promise;
+    await route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:{code:'GENERATED_FAILURE',message:index===0?'Retired playback failure':'Current playback failure'}})});
+  });
+  const open=()=>f.page.getByRole('button').filter({has:f.page.getByRole('heading',{name:recording.title,exact:true})}).click();
+  await open();await f.page.getByRole('button',{name:'Play video',exact:true}).click();await diagnosticWithin(()=>entered[0].promise,5000);
+  await f.page.getByRole('button',{name:'← Cloud library',exact:true}).click();await open();
+  assert.equal(await f.page.getByRole('button',{name:'Play video',exact:true}).isEnabled(),true);
+  await f.page.getByRole('button',{name:'Play video',exact:true}).click();await diagnosticWithin(()=>entered[1].promise,5000);
+  const first=f.page.waitForResponse(response=>response.url().endsWith('/fixture-video/playback'));
+  replies[0].resolve();await(await first).finished();await f.page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  assert.equal(await f.page.getByRole('alert').count(),0);
+  assert.equal(await f.page.getByRole('button',{name:'Play video',exact:true}).isDisabled(),true);
+  replies[1].resolve();await f.page.getByRole('alert').filter({hasText:'Current playback failure'}).waitFor();
+  assert.equal(await f.page.getByRole('button',{name:'Play video',exact:true}).isEnabled(),true);
+  assert.equal(await f.page.getByRole('alert').filter({hasText:'Retired playback failure'}).count(),0);await f.context.close();
+});
+
+test('cloud detail and cached library reset before a changed owner library returns',{timeout:20000},async testContext=>{
+  const f=await pageFixture();testContext.after(()=>f.options.releaseLibrary?.());await skip(f.page);await f.page.getByRole('button',{name:'Cloud library',exact:true}).click();
+  await f.page.getByRole('button').filter({has:f.page.getByRole('heading',{name:recording.title,exact:true})}).click();
+  f.options.user={...user,id:'other-user',tenantId:'other-tenant',name:'Other generated owner'};
+  f.options.recordings=[{...recording,id:'other-owner-video',title:'Other owner recording'}];f.options.holdLibrary=true;
+  await f.page.getByRole('button',{name:'Save title',exact:true}).click();
+  await f.page.locator('.sidebar-foot strong').filter({hasText:'Other generated owner'}).waitFor();
+  await f.page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  assert.equal(await f.page.getByRole('heading',{name:recording.title,exact:true}).count(),0);
+  assert.equal(await f.page.locator('main h1').textContent(),'Cloud library');
+  assert.equal(await f.page.locator('.recording-card').count(),0);
+  assert.equal(typeof f.options.releaseLibrary,'function');f.options.releaseLibrary();
+  await f.page.getByRole('heading',{name:'Other owner recording',exact:true}).waitFor();await f.context.close();
+});
+
+test('cloud detail keeps clipboard from superseding a pending share mutation',{timeout:20000},async testContext=>{
+  const f=await pageFixture({recordings:[{...recording,shareId:'existing-share',shareURL:`${origin}/s/existing-share`}]});await skip(f.page);
+  const entered=Promise.withResolvers(),reply=Promise.withResolvers();testContext.after(()=>reply.resolve());
+  await f.context.route(`${origin}/api/recordings/fixture-video/share`,async route=>{entered.resolve();await reply.promise;await route.fulfill({contentType:'application/json',body:JSON.stringify({ok:true})});});
+  await f.page.getByRole('button',{name:'Cloud library',exact:true}).click();
+  await f.page.getByRole('button').filter({has:f.page.getByRole('heading',{name:recording.title,exact:true})}).click();
+  assert.equal(await f.page.getByRole('button',{name:'Copy link',exact:true}).isEnabled(),true);
+  await f.page.getByRole('button',{name:'Revoke share link',exact:true}).click();await diagnosticWithin(()=>entered.promise,5000);
+  assert.equal(await f.page.getByRole('button',{name:'Copy link',exact:true}).isDisabled(),true);
+  reply.resolve();await f.page.getByLabel('Share link',{exact:true}).waitFor({state:'hidden'});await f.context.close();
+});
+test('billing copy distinguishes test, live and unconfigured without granting entitlement',async()=>{
+  for(const mode of ['test','live','unconfigured']){const f=await pageFixture({unpaid:true,config:{billingMode:mode}});await skip(f.page);await f.page.getByRole('button',{name:'Cloud account',exact:true}).click();const button=f.page.getByRole('button',{name:mode==='test'?'Subscribe with test Checkout':'Subscribe with Checkout',exact:true});await button.waitFor();assert.equal(await button.isDisabled(),mode==='unconfigured');assert.equal((await f.page.textContent('main')).includes('TEST MODE'),mode==='test');if(mode!=='test')assert.equal((await f.page.textContent('main')).includes('test subscription'),false);assert.equal(f.calls.some(call=>call.path==='/api/billing/checkout'),false);await f.context.close();}
+});
+test('payment redirect does not grant upload entitlement; checkout carries no client price',async()=>{
+  const f=await pageFixture({unpaid:true});await skip(f.page);await f.page.goto(`${origin}/?checkout=success`);await f.page.getByRole('button',{name:'Cloud account',exact:true}).click();await f.page.getByRole('button',{name:'Subscribe with test Checkout'}).waitFor();assert.match(await f.page.textContent('main'),/none/);await f.page.getByRole('button',{name:'Subscribe with test Checkout'}).click();await f.page.waitForURL('**/test-checkout');const call=f.calls.find(item=>item.path==='/api/billing/checkout');assert.deepEqual(call.body,{});assert.equal(call.headers['x-csrf-token'],'fixture-csrf');await f.context.close();
+});
+test('password share opens through explicit policy action and renders signed iframe only',async()=>{
+  const f=await pageFixture({signed:false});await f.page.goto(`${origin}/s/test-share`);await f.page.getByRole('heading',{name:'This video has a password.'}).waitFor();assert.equal(await f.page.locator('iframe').count(),0);await f.page.getByLabel('Video password').fill('synthetic-policy');await f.page.getByRole('button',{name:'Watch video'}).click();await f.page.locator('iframe').waitFor();assert.ok(f.calls.some(item=>item.path.endsWith('/unlock')));assert.ok(f.calls.some(item=>item.path==='/api/shares/test-share/playback'));await f.context.close();
+});
+test('actual camera take pauses, resumes, stops, previews and downloads separate WebM originals',async()=>{
+  const f=await pageFixture({signed:false});await skip(f.page);await f.context.grantPermissions(['camera','microphone'],{origin});await f.page.getByRole('button',{name:'Camera',exact:true}).click();await f.page.getByLabel('Recording title').fill('Synthetic camera take');await f.page.getByRole('button',{name:'Enable camera',exact:true}).click();await f.page.getByRole('button',{name:'Enable microphone',exact:true}).click();await f.page.getByLabel('Countdown',{exact:true}).selectOption('0');await f.page.getByRole('button',{name:'Start recording',exact:true}).click();await f.page.getByRole('button',{name:'Pause',exact:true}).waitFor();await f.page.waitForTimeout(1200);await f.page.getByRole('button',{name:'Pause',exact:true}).click();await f.page.getByRole('button',{name:'Resume',exact:true}).click();await f.page.waitForTimeout(1200);await f.page.getByRole('button',{name:'Stop & review',exact:true}).click();await f.page.getByRole('heading',{name:'Synthetic camera take',exact:true}).waitFor();await f.page.waitForFunction(()=>document.querySelector('video[aria-label="Composed video"]')?.readyState>=2);
+  assert.equal(await f.page.evaluate(()=>window.testStreams.every(stream=>stream.getTracks().every(track=>track.readyState==='ended'))),true);assert.equal(await f.page.locator('.track-list>div').count(),3);assert.match(await f.page.textContent('main'),/complete/);
+  for(const track of ['Camera original','Microphone original','Composed video']){const downloading=f.page.waitForEvent('download');await f.page.locator('.track-list>div').filter({hasText:track}).getByRole('button',{name:'Download WebM'}).click();const file=await downloading;assert.ok(file.suggestedFilename().endsWith('.webm'));assert.equal(file.suggestedFilename().includes('.mp4'),false);await file.saveAs(`${proof}/${file.suggestedFilename()}`);}
+  const metadata=f.page.waitForEvent('download');await f.page.getByRole('button',{name:'Download timing manifest'}).click();assert.ok((await metadata).suggestedFilename().endsWith('.json'));await f.context.close();
+});
+test('explicit cloud backup uploads acknowledged chunks before Stop and keeps recording through offline retry',async()=>{
+  const f=await pageFixture();await skip(f.page);await f.context.grantPermissions(['camera'],{origin});await f.page.getByRole('button',{name:'Camera',exact:true}).click();await f.page.getByRole('button',{name:'Enable camera',exact:true}).click();await f.page.getByLabel('Countdown',{exact:true}).selectOption('0');
+  const choice=f.page.getByRole('checkbox',{name:'Back up to private cloud while recording'});assert.equal(await choice.isChecked(),false);assert.equal(f.calls.some(item=>item.method==='POST'&&item.path==='/api/recordings'),false);await choice.check();assert.equal(f.calls.some(item=>item.method==='POST'&&item.path==='/api/recordings'),false);
+  f.options.rawOffline=true;await f.page.getByRole('button',{name:'Start recording',exact:true}).click();await f.page.getByRole('button',{name:'Stop & review',exact:true}).waitFor();await f.page.getByRole('status').filter({hasText:'Private cloud backup paused'}).waitFor({timeout:10000});assert.equal(await f.page.getByRole('button',{name:'Stop & review',exact:true}).isEnabled(),true);
+  f.options.rawOffline=false;await f.page.evaluate(()=>dispatchEvent(new Event('online')));for(let i=0;i<100&&!f.calls.some(call=>call.method==='PUT');i++)await f.page.waitForTimeout(50);assert.ok(f.calls.some(call=>call.method==='PUT'));assert.equal(await f.page.getByRole('button',{name:'Stop & review',exact:true}).isEnabled(),true);assert.equal(f.calls.filter(call=>call.method==='POST'&&call.path==='/api/recordings').length,1);
+  await f.page.getByRole('button',{name:'Stop & review',exact:true}).click();await f.page.getByRole('heading',{name:'Untitled recording',exact:true}).waitFor();await f.page.getByRole('status').filter({hasText:'SYNTHETIC_PROCESSING_HOLD'}).waitFor();assert.match(await f.page.textContent('main'),/local originals stay saved/);assert.equal(f.calls.filter(call=>call.method==='POST'&&call.path==='/api/recordings').length,1);await f.context.close();
+});
+test('cloud reservation denial happens before encoding and screen denial persists cleanup for retry',async()=>{
+  const f=await pageFixture({reserveError:true});await skip(f.page);await f.context.grantPermissions(['camera'],{origin});await f.page.getByRole('button',{name:'Camera',exact:true}).click();await f.page.getByRole('button',{name:'Enable camera',exact:true}).click();await f.page.getByRole('checkbox',{name:'Back up to private cloud while recording'}).check();await f.page.getByRole('button',{name:'Start recording',exact:true}).click();await f.page.getByRole('alert').filter({hasText:'Cloud reservation'}).waitFor();assert.equal(await f.page.getByRole('button',{name:'Stop & review',exact:true}).count(),0);assert.equal(await f.page.evaluate(()=>window.testStreams.every(stream=>stream.getTracks().every(track=>track.readyState==='ended'))),true);await f.context.close();
+  const cancelled=await pageFixture({denyScreen:true,deleteOffline:true});await skip(cancelled.page);await cancelled.page.getByRole('button',{name:'Screen',exact:true}).click();await cancelled.page.getByRole('checkbox',{name:'Back up to private cloud while recording'}).check();await cancelled.page.getByRole('button',{name:'Choose screen & start',exact:true}).click();await cancelled.page.getByRole('button',{name:'Retry reservation cleanup'}).waitFor();assert.equal(await cancelled.page.evaluate(()=>JSON.parse(localStorage.getItem('rushes.browser.reservation-cleanup.v1')).length),1);assert.equal(await cancelled.page.getByRole('checkbox',{name:'Back up to private cloud while recording'}).isEnabled(),true);await cancelled.page.reload();await cancelled.page.getByRole('button',{name:'Retry reservation cleanup'}).waitFor();assert.equal(await cancelled.page.evaluate(()=>JSON.parse(localStorage.getItem('rushes.browser.reservation-cleanup.v1')).length),1);cancelled.options.deleteOffline=false;await cancelled.page.getByRole('button',{name:'Retry reservation cleanup'}).click();await cancelled.page.getByRole('button',{name:'Retry reservation cleanup'}).waitFor({state:'hidden'});assert.equal(await cancelled.page.evaluate(()=>JSON.parse(localStorage.getItem('rushes.browser.reservation-cleanup.v1')).length),0);assert.equal(cancelled.calls.filter(call=>call.method==='POST'&&call.path==='/api/recordings').length,1);await cancelled.context.close();
+});
+test('countdown cancellation closes camera and leaves no unfinished take',async()=>{
+  const f=await pageFixture({signed:false});await skip(f.page);await f.context.grantPermissions(['camera'],{origin});await f.page.getByRole('button',{name:'Camera',exact:true}).click();await f.page.getByRole('button',{name:'Enable camera',exact:true}).click();await f.page.getByRole('button',{name:'Start recording',exact:true}).click();await f.page.getByRole('button',{name:'Cancel countdown',exact:true}).click();await f.page.getByRole('button',{name:'Enable camera',exact:true}).waitFor();assert.equal(await f.page.evaluate(()=>window.testStreams.every(stream=>stream.getTracks().every(track=>track.readyState==='ended'))),true);await f.page.getByRole('button',{name:'Local drafts',exact:true}).click();assert.equal(await f.page.locator('.recording-card').count(),0);assert.equal(await f.page.getByRole('alert').count(),0);await f.context.close();
+});
+test('screen permission call retains its user gesture and browser policy denial returns to setup',async()=>{
+  const f=await pageFixture({signed:false,denyScreen:true});await skip(f.page);await f.page.getByRole('button',{name:'Screen',exact:true}).click();assert.equal(await f.page.evaluate(()=>window.permissionCalls.length),0);await f.page.getByRole('button',{name:'Choose screen & start',exact:true}).click();await f.page.getByRole('alert').waitFor();const permissions=await f.page.evaluate(()=>window.permissionCalls);assert.equal(permissions.length,1);assert.equal(permissions[0].kind,'screen');assert.equal(permissions[0].gesture,true);assert.equal(await f.page.getByRole('button',{name:'Choose screen & start',exact:true}).isEnabled(),true);assert.equal(await f.page.getByRole('button',{name:'Stop & review',exact:true}).count(),0);await f.context.close();
+});
+test('camera source loss ends the take safely and keeps saved originals in review',async()=>{
+  const f=await pageFixture({signed:false});await skip(f.page);await f.context.grantPermissions(['camera'],{origin});await f.page.getByRole('button',{name:'Camera',exact:true}).click();await f.page.getByLabel('Recording title').fill('Source lost synthetic');await f.page.getByRole('button',{name:'Enable camera',exact:true}).click();await f.page.getByLabel('Countdown',{exact:true}).selectOption('0');await f.page.getByRole('button',{name:'Start recording',exact:true}).click();await f.page.getByRole('button',{name:'Stop & review',exact:true}).waitFor();await f.page.waitForTimeout(1200);await f.page.evaluate(()=>window.testStreams[0].getVideoTracks()[0].dispatchEvent(new Event('ended')));await f.page.getByRole('heading',{name:'Source lost synthetic',exact:true}).waitFor();assert.match(await f.page.textContent('main'),/interrupted/);assert.equal(await f.page.locator('.track-list>div').filter({hasText:'Camera original'}).getByRole('button',{name:'Download WebM'}).isEnabled(),true);assert.equal(await f.page.evaluate(()=>window.testStreams.every(stream=>stream.getTracks().every(track=>track.readyState==='ended'))),true);await f.context.close();
+});
+test('reload recovers acknowledged OPFS bytes without restarting camera and preserves downloads',async()=>{
+  const f=await pageFixture({signed:false});await skip(f.page);await f.context.grantPermissions(['camera'],{origin});
+  await f.page.getByRole('button',{name:'Camera',exact:true}).click();await f.page.getByLabel('Recording title').fill('Interrupted synthetic');
+  await f.page.getByRole('button',{name:'Enable camera',exact:true}).click();await f.page.getByLabel('Countdown',{exact:true}).selectOption('0');
+  await f.page.getByRole('button',{name:'Start recording',exact:true}).click();await f.page.getByRole('button',{name:'Stop & review',exact:true}).waitFor();
+  await f.page.waitForFunction(()=>document.querySelector('.record-time')?.textContent.includes('Saved through'));
+  // A checkpoint from another recorder does not establish recoverable camera bytes.
+  await f.page.waitForFunction(async()=>{
+    const {createDraftStore}=await import('/src/capture/storage.ts');
+    const drafts=await(await createDraftStore()).list();
+    const camera=drafts.find(draft=>draft.title==='Interrupted synthetic')?.tracks.find(track=>track.kind==='camera');
+    return camera?.bytes>0 && camera.chunks.length>0;
+  });
+  const acknowledged=await f.page.evaluate(async()=>{
+    const {createDraftStore}=await import('/src/capture/storage.ts');const store=await createDraftStore();
+    const draft=(await store.list()).find(value=>value.title==='Interrupted synthetic');
+    const blob=await store.trackBlob(draft.id,'camera');const data=await blob.arrayBuffer();
+    return {bytes:blob.size,sha256:[...new Uint8Array(await crypto.subtle.digest('SHA-256',data))].map(value=>value.toString(16).padStart(2,'0')).join('')};
+  });
+  assert.ok(acknowledged.bytes>0);f.page.once('dialog',dialog=>dialog.accept());await f.page.reload();
+  await f.page.getByRole('heading',{name:'Show it. Say it. Send it.'}).waitFor();assert.equal(await f.page.evaluate(()=>window.permissionCalls.length),0);
+  await f.page.getByRole('button',{name:'Local drafts',exact:true}).click();await f.page.getByRole('button').filter({has:f.page.getByRole('heading',{name:'Interrupted synthetic'})}).click();
+  assert.match(await f.page.textContent('main'),/interrupted/);assert.match(await f.page.textContent('main'),/Encoder data after the last checkpoint may be lost/);
+  const downloading=f.page.waitForEvent('download');await f.page.locator('.track-list>div').filter({hasText:'Camera original'}).getByRole('button',{name:'Download WebM'}).click();
+  let download;
+  try {download=await downloading;}
+  catch(error){throw new Error(`Recovered download failed; review: ${await f.page.textContent('main')}`,{cause:error});}
+  assert.ok(download.suggestedFilename().includes('recovered.webm'));const bytes=await readFile(await download.path());
+  assert.ok(bytes.length>=acknowledged.bytes);assert.equal(Buffer.from(await crypto.subtle.digest('SHA-256',bytes.subarray(0,acknowledged.bytes))).toString('hex'),acknowledged.sha256);
+  await f.context.close();
+});
+test('damaged metadata remains visible and indexed original bytes can still be downloaded',async()=>{
+  const f=await pageFixture({signed:false});await skip(f.page);await f.page.evaluate(async()=>{const root=await(await navigator.storage.getDirectory()).getDirectoryHandle('rushes-browser-v1',{create:true});const folder=await root.getDirectoryHandle('orphan-ui-proof',{create:true});const file=await folder.getFileHandle('camera-00000.bin',{create:true});const writer=await file.createWritable();await writer.write(new Uint8Array([31,32,33]));await writer.close();});await f.page.reload();await f.page.locator('.nav-count').waitFor();assert.equal(await f.page.locator('.nav-count').textContent(),'1');await f.page.getByRole('button',{name:'Local drafts',exact:true}).click();await f.page.getByRole('button').filter({has:f.page.getByRole('heading',{name:'Recording needs recovery'})}).click();assert.match(await f.page.textContent('main'),/interrupted/);const downloading=f.page.waitForEvent('download');await f.page.locator('.track-list>div').filter({hasText:'Camera original'}).getByRole('button',{name:'Download WebM'}).click();const download=await downloading;assert.deepEqual([...await readFile(await download.path())],[31,32,33]);assert.equal(await f.page.getByRole('button',{name:'Upload to private library'}).isDisabled(),true);await f.context.close();
+});
+test('studio/account layout fits 1440,1024,768,390 with responsive screenshots',async()=>{
+  const f=await pageFixture({signed:false});await skip(f.page);
+  for(const width of [1440,1024,768,390]){await f.page.setViewportSize({width,height:960});assert.equal(await f.page.locator('.app').count(),1);await f.page.screenshot({path:`${proof}/studio-${width}.png`,fullPage:false});await f.page.locator('.record-toolbar').scrollIntoViewIfNeeded();await f.page.screenshot({path:`${proof}/studio-${width}-preview.png`,fullPage:false});await f.page.evaluate(()=>scrollTo(0,0));assert.equal(await f.page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,`studio ${width}`);await f.page.getByRole('button',{name:'Cloud account',exact:true}).click();await f.page.screenshot({path:`${proof}/account-${width}.png`,fullPage:false});assert.equal(await f.page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true,`account ${width}`);await f.page.getByRole('button',{name:'Record a video',exact:true}).click();}
+  await f.context.close();
+});

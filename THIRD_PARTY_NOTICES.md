@@ -50,6 +50,16 @@ These build and runtime dependencies are included in acknowledgements.
 | npm: worker/@types/node@22.15.30 | MIT | licenses/npm-types-node-22.15.30.txt |
 | npm: worker/esbuild@0.27.0 | MIT | licenses/npm-esbuild-0.27.0.txt |
 | npm: worker/typescript@5.9.3 | Apache-2.0 | licenses/npm-typescript-5.9.3.txt |
+| npm: browser/@types/node@22.18.10 | MIT | licenses/npm-types-node-22.18.10.txt |
+| npm: browser/@types/react@19.2.2 | MIT | licenses/npm-types-react-19.2.2.txt |
+| npm: browser/@types/react-dom@19.2.2 | MIT | licenses/npm-types-react-dom-19.2.2.txt |
+| npm: browser/@vitejs/plugin-react@6.1.2 | MIT | licenses/npm-vitejs-plugin-react-6.1.2.txt |
+| npm: browser/esbuild@0.28.2 | MIT | licenses/npm-esbuild-0.28.2.txt |
+| npm: browser/playwright@1.61.1 | Apache-2.0 | licenses/npm-playwright-1.61.1.txt |
+| npm: browser/react@19.3.0 | MIT | licenses/npm-react-19.3.0.txt |
+| npm: browser/react-dom@19.3.0 | MIT | licenses/npm-react-dom-19.3.0.txt |
+| npm: browser/typescript@7.0.2 | Apache-2.0 | licenses/npm-typescript-7.0.2.txt |
+| npm: browser/vite@8.3.4 | MIT | licenses/npm-vite-8.3.4.txt |
 <!-- pinned-npm-notices:end -->
 
 ## Sharing toolchain dependencies
