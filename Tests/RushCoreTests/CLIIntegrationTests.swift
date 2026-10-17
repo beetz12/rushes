@@ -165,6 +165,138 @@ struct ControlCLIIntegrationTests {
         #expect(report["ok"] as? Bool == true)
     }
 
+    @Test("A disconnected generated engine never repeats a capture request")
+    func disconnectedFixtureDoesNotRepeatStart() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("rushes-disconnect-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let executable = directory.appendingPathComponent("owned-engine.py")
+        let program = #"""
+#!/usr/bin/env python3
+import json, os, socket, sys
+args = sys.argv[1:]
+endpoint = args[args.index('--socket-path') + 1]
+root = args[args.index('--recordings-root') + 1]
+os.makedirs(os.path.dirname(endpoint), exist_ok=True)
+os.makedirs(root, exist_ok=True)
+server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+server.bind(endpoint)
+server.listen(8)
+print('{"event":"ready"}', flush=True)
+while True:
+    client, _ = server.accept()
+    try:
+        raw = client.makefile('rb').readline()
+        if not raw:
+            continue
+        request = json.loads(raw)
+        if request['cmd'] == 'record.start':
+            with open(os.path.join(root, 'capture-attempts.log'), 'a') as journal:
+                journal.write('capture-request\n')
+            print('generated live-engine disconnect', file=sys.stderr, flush=True)
+        else:
+            reply = {'id': request['id'], 'ok': True, 'result': {}}
+            client.sendall(json.dumps(reply).encode() + b'\n')
+    finally:
+        client.close()
+"""#
+        try Data(program.utf8).write(to: executable)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        let fixture = EngineHarness(engineURL: executable, cliURL: try Self.product("rushes"))
+        defer { fixture.shutdownFixture() }
+        let response = try fixture.runCLI(["record", "start", "--display", "main"], timeout: 5)
+        #expect(response.status == 4)
+        let attempts = try String(contentsOf: fixture.recordingsRoot.appendingPathComponent("capture-attempts.log"), encoding: .utf8)
+        #expect(attempts.split(separator: "\n").count == 1, "A failed capture response must not reissue capture.")
+    }
+
+    @Test("Consecutive duration stops keep the same engine alive without retries")
+    func consecutiveStopsKeepEngineAlive() throws {
+        let initial = try Self.runCLI(["status"])
+        try #require(initial.status == 0, "stderr: \(initial.stderr)")
+        let pid = try #require(try Self.stdoutJSON(initial.stdout)["pid"] as? Int)
+        for _ in 0..<3 {
+            let capture = try Self.runCLI([
+                "record", "start", "--display", "main", "--mic", "default",
+                "--duration", "0.4", "--wait",
+            ])
+            try #require(capture.status == 0, "stderr: \(capture.stderr)")
+            let events = try capture.stdout.split(separator: "\n").map { try Self.stdoutJSON(String($0)) }
+            let id = try #require(events.first { $0["event"] as? String == "recording-started" }?["id"] as? String)
+            let verify = try Self.runCLI(["verify", id])
+            try #require(verify.status == 0, "stderr: \(verify.stderr)")
+            #expect(try Self.stdoutJSON(verify.stdout)["ok"] as? Bool == true)
+            let status = try Self.runCLI(["status"])
+            try #require(status.status == 0, "stderr: \(status.stderr)")
+            #expect(try Self.stdoutJSON(status.stdout)["pid"] as? Int == pid)
+        }
+    }
+
+    @Test("Owned child diagnostics distinguish a normal exit from a live process and bound both streams")
+    func ownedChildFailureEvidence() throws {
+        let exited = Process(), captured = CLIEngineOutputLedger(bootID: 81)
+        exited.executableURL = URL(fileURLWithPath: "/bin/sh")
+        exited.arguments = ["-c", "printf '%20000s' x; printf 'generated-child-exit\\n' >&2; exit 23"]
+        let handles = captured.install(on: exited)
+        defer { handles.stdout.readabilityHandler = nil; handles.stderr.readabilityHandler = nil }
+        try exited.run(); exited.waitUntilExit()
+        let stopped = captured.snapshot(process: exited)
+        #expect(stopped.pid == exited.processIdentifier)
+        #expect(!stopped.running && stopped.exitStatus == 23)
+        #expect(stopped.terminationReason == Process.TerminationReason.exit.rawValue)
+        #expect(stopped.stdoutBytes == 20000 && stopped.stdoutTail.utf8.count == 8192)
+        #expect(stopped.stdoutTail.hasSuffix("x"))
+        #expect(stopped.stderrHead == "generated-child-exit\n" && stopped.stderrTail == stopped.stderrHead)
+        #expect(stopped.outputComplete)
+
+        let live = Process(), watching = CLIEngineOutputLedger(bootID: 82)
+        live.executableURL = URL(fileURLWithPath: "/bin/sleep"); live.arguments = ["5"]
+        let liveHandles = watching.install(on: live)
+        try live.run()
+        defer {
+            if live.isRunning { watching.terminateIfRunning(live); live.waitUntilExit() }
+            liveHandles.stdout.readabilityHandler = nil; liveHandles.stderr.readabilityHandler = nil
+        }
+        let connected = watching.snapshot(process: live)
+        #expect(connected.running && connected.exitStatus == nil && connected.terminationReason == nil)
+        #expect(!connected.outputComplete)
+        watching.markRetirement(); live.terminate(); live.waitUntilExit()
+        let signaled = watching.snapshot(process: live)
+        #expect(!signaled.running && signaled.terminationReason == Process.TerminationReason.uncaughtSignal.rawValue)
+        #expect(signaled.exitStatus == SIGTERM && signaled.requestedRetirement && signaled.outputComplete)
+    }
+
+    @Test("Retirement joins a delayed owned reader before detaching its EOF observation")
+    func retirementDrainsDelayedReader() throws {
+        let child = Process(), capture = CLIEngineOutputLedger(bootID: 83)
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        child.executableURL = URL(fileURLWithPath: "/bin/sh")
+        child.arguments = ["-c", "printf 'generated-held-final-output'; exit 23"]
+        let handles = capture.install(on: child, beforeStdoutAppend: { entered.signal(); release.wait() })
+        defer { release.signal(); handles.stdout.readabilityHandler = nil; handles.stderr.readabilityHandler = nil }
+        try child.run()
+        try #require(entered.wait(timeout: .now() + 2) == .success)
+        child.waitUntilExit()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { release.signal() }
+        let evidence = capture.retireReaders(process: child, stdout: handles.stdout, stderr: handles.stderr)
+        #expect(evidence.outputComplete)
+        #expect(evidence.stdoutTail == "generated-held-final-output")
+        #expect(evidence.exitStatus == 23 && !evidence.requestedRetirement)
+    }
+
+    @Test("A naturally exited owned child is not attributed to a later retirement signal")
+    func naturalExitKeepsOriginalCause() throws {
+        let child = Process(), capture = CLIEngineOutputLedger(bootID: 84)
+        child.executableURL = URL(fileURLWithPath: "/bin/sh"); child.arguments = ["-c", "exit 23"]
+        let handles = capture.install(on: child)
+        defer { handles.stdout.readabilityHandler = nil; handles.stderr.readabilityHandler = nil }
+        try child.run(); child.waitUntilExit()
+        capture.terminateIfRunning(child)
+        let evidence = capture.snapshot(process: child)
+        #expect(!evidence.requestedRetirement)
+        #expect(evidence.exitStatus == 23 && evidence.terminationReason == Process.TerminationReason.exit.rawValue)
+    }
+
     @Test("record stop with nothing active exits 1 with not-recording on stderr")
     func stopWithoutRecording() throws {
         let result = try Self.runCLI(["record", "stop"])
@@ -262,12 +394,14 @@ struct ControlCLIIntegrationTests {
 /// never deallocated, so without this every test run leaks one engine
 /// process, and stale engines slow ScreenCaptureKit's window-server
 /// queries for later runs.
-nonisolated(unsafe) var engineHarnessProcesses: [Process] = []
+struct CLIEngineOwnedProcess {
+    let process: Process
+    let output: CLIEngineOutputLedger
+}
+nonisolated(unsafe) var engineHarnessProcesses: [CLIEngineOwnedProcess] = []
 
 func engineHarnessAtExit() {
-    for process in engineHarnessProcesses where process.isRunning {
-        process.terminate()
-    }
+    for owned in engineHarnessProcesses { owned.output.terminateIfRunning(owned.process) }
 }
 
 /// Boots the real engine binary once, waits for its NDJSON ready line, and
@@ -294,8 +428,7 @@ final class EngineHarness: @unchecked Sendable {
     /// True only after `Process.run()` succeeded. `waitUntilExit` on a
     /// process that never launched throws.
     private var engineDidLaunch = false
-    private let outputLock = NSLock()
-    private var outputText = ""
+    private var output = CLIEngineOutputLedger(bootID: 0)
     private var bootID = 0
     private var stdoutHandle: FileHandle?
     private var stderrHandle: FileHandle?
@@ -321,14 +454,6 @@ final class EngineHarness: @unchecked Sendable {
     private func ensureRunning() {
         if process?.isRunning == true { return }
         logEngineReplacement("process had exited")
-        startVerifiedEngine()
-    }
-
-    /// Exit 4 on the harness socket means the engine hung up or never
-    /// answered. Reap it completely, then boot a replacement that has
-    /// already answered `ping`, and retry the CLI call once.
-    private func replaceEngine() {
-        logEngineReplacement("connection closed")
         startVerifiedEngine()
     }
 
@@ -369,9 +494,7 @@ final class EngineHarness: @unchecked Sendable {
         process = nil
         engineDidLaunch = false
         if let running, didLaunch {
-            if running.isRunning {
-                running.terminate()
-            }
+            output.terminateIfRunning(running)
             if !reap(running) {
                 process = running
                 engineDidLaunch = true
@@ -379,8 +502,11 @@ final class EngineHarness: @unchecked Sendable {
                 return
             }
         }
-        stdoutHandle?.readabilityHandler = nil
-        stderrHandle?.readabilityHandler = nil
+        if let running, let stdoutHandle, let stderrHandle {
+            _ = output.retireReaders(process: running, stdout: stdoutHandle, stderr: stderrHandle)
+        } else {
+            stdoutHandle?.readabilityHandler = nil; stderrHandle?.readabilityHandler = nil
+        }
         stdoutHandle = nil
         stderrHandle = nil
         let quiet = CLIEngineHandover.waitUntilQuiet(
@@ -420,7 +546,7 @@ final class EngineHarness: @unchecked Sendable {
             reapers[pid] = nil
             return true
         }
-        if pid > 0 { kill(pid, SIGKILL) }
+        if pid > 0, running.isRunning { output.markRetirement(); kill(pid, SIGKILL) }
         let done = finished.wait(timeout: .now() + 2) == .success
         if done { reapers[pid] = nil }
         return done
@@ -443,11 +569,9 @@ final class EngineHarness: @unchecked Sendable {
     private func launchEngine() -> EngineLaunch {
         stdoutHandle?.readabilityHandler = nil
         stderrHandle?.readabilityHandler = nil
-        outputLock.lock()
         bootID += 1
-        let bootID = bootID
-        outputText = ""
-        outputLock.unlock()
+        let capture = CLIEngineOutputLedger(bootID: bootID)
+        output = capture
 
         if CLIEngineHandover.socketIsLive(socketPath) {
             return .died("previous engine still accepting at \(socketPath.path)")
@@ -461,27 +585,15 @@ final class EngineHarness: @unchecked Sendable {
             "--index-path", indexPath.path,
             "--capture-stub",
         ]
-        let out = Pipe()
-        let err = Pipe()
-        process.standardOutput = out
-        process.standardError = err
-        let capture: @Sendable (FileHandle) -> Void = { [weak self] handle in
-            let chunk = String(data: handle.availableData, encoding: .utf8) ?? ""
-            guard !chunk.isEmpty, let self else { return }
-            self.outputLock.lock()
-            if self.bootID == bootID { self.outputText += chunk }
-            self.outputLock.unlock()
-        }
-        out.fileHandleForReading.readabilityHandler = capture
-        err.fileHandleForReading.readabilityHandler = capture
-        stdoutHandle = out.fileHandleForReading
-        stderrHandle = err.fileHandleForReading
+        let handles = capture.install(on: process)
+        stdoutHandle = handles.stdout
+        stderrHandle = handles.stderr
         do {
             try process.run()
         } catch {
             fatalError("could not spawn the engine: \(error)")
         }
-        engineHarnessProcesses.append(process)
+        engineHarnessProcesses.append(CLIEngineOwnedProcess(process: process, output: capture))
         self.process = process
         self.engineDidLaunch = true
         // Wait for the ready line (up to 120 s; a cold start on a loaded CI
@@ -529,33 +641,24 @@ final class EngineHarness: @unchecked Sendable {
     }
 
     private func readyOutput() -> String {
-        outputLock.lock()
-        defer { outputLock.unlock() }
-        return outputText
+        output.text()
     }
 
     deinit {
-        if let process, process.isRunning {
-            process.terminate()
-        }
+        if let process { output.terminateIfRunning(process) }
     }
+
+    func shutdownFixture() { retireCurrentEngine() }
 
     func runCLI(
         _ arguments: [String], timeout: TimeInterval
     ) throws -> (status: Int32, stdout: String, stderr: String) {
         ensureRunning()
         let result = try runCLIOnce(arguments, timeout: timeout)
-        // A connect can be refused while the engine is busy, or the process
-        // can stay up after it has closed the socket. Replace it and retry
-        // once so the test is about the CLI, not a stuck stub engine.
-        // Exit 4 aimed at some other `--socket` (the absent-engine case)
-        // is the CLI's own result; replacing the harness engine there
-        // kills a live server between tests.
-        let harnessRejected = result.status == 4
-            && CLIEngineHandover.targetsEngine(arguments, engineSocket: socketPath.path)
-        if harnessRejected {
-            replaceEngine()
-            return try runCLIOnce(arguments, timeout: timeout)
+        if result.status == 4,
+           CLIEngineHandover.targetsEngine(arguments, engineSocket: socketPath.path) {
+            output.reportFirstFailure(process: process, arguments: arguments, cliStatus: result.status,
+                cliError: result.stderr)
         }
         return result
     }
@@ -601,6 +704,108 @@ final class EngineHarness: @unchecked Sendable {
         let stdout = String(data: captured.stdout, encoding: .utf8) ?? ""
         let stderr = String(data: captured.stderr, encoding: .utf8) ?? ""
         return (process.terminationStatus, stdout, stderr)
+    }
+}
+
+// Captures one owned boot. Old callbacks retain their own ledger after replacement.
+struct CLIEngineEvidence: Codable {
+    var bootID: Int
+    var pid: Int32?
+    var running: Bool
+    var exitStatus: Int32?
+    var terminationReason: Int?
+    var requestedRetirement: Bool
+    var stdoutBytes: Int
+    var stderrBytes: Int
+    var stdoutTail: String
+    var stderrTail: String
+    var stderrHead: String
+    var outputComplete: Bool
+}
+
+final class CLIEngineOutputLedger: @unchecked Sendable {
+    private let changed = NSCondition()
+    private let bootID: Int
+    private var stdout = Data(), stderr = Data(), stderrHead = Data()
+    private var stdoutBytes = 0, stderrBytes = 0
+    private var stdoutEnded = false, stderrEnded = false
+    private var failureReported = false, requestedRetirement = false
+    private var exitStatus: Int32?, terminationReason: Int?, exitedPID: Int32?
+    init(bootID: Int) { self.bootID = bootID }
+
+    func install(on process: Process, beforeStdoutAppend: @escaping @Sendable () -> Void = {}) -> (stdout: FileHandle, stderr: FileHandle) {
+        let out = Pipe(), err = Pipe()
+        process.standardOutput = out; process.standardError = err
+        out.fileHandleForReading.readabilityHandler = { [self] handle in
+            let data = handle.availableData
+            if !data.isEmpty { beforeStdoutAppend() }
+            append(data, standardOutput: true)
+        }
+        err.fileHandleForReading.readabilityHandler = { [self] in append($0.availableData, standardOutput: false) }
+        process.terminationHandler = { [self] child in
+            changed.lock()
+            exitStatus = child.terminationStatus; terminationReason = child.terminationReason.rawValue
+            exitedPID = child.processIdentifier; let report = failureReported
+            changed.broadcast(); changed.unlock()
+            if report { Self.emit("CLI_ENGINE_EXIT", snapshot(process: child)) }
+        }
+        return (out.fileHandleForReading, err.fileHandleForReading)
+    }
+    private func append(_ data: Data, standardOutput: Bool) {
+        changed.lock(); defer { changed.unlock() }
+        if standardOutput {
+            if data.isEmpty { stdoutEnded = true }
+            stdoutBytes += data.count; stdout = Data((stdout + data).suffix(8192))
+        } else {
+            if data.isEmpty { stderrEnded = true }
+            stderrHead.append(data.prefix(max(0, 8192 - stderrHead.count)))
+            stderrBytes += data.count; stderr = Data((stderr + data).suffix(8192))
+        }
+        changed.broadcast()
+    }
+    func terminateIfRunning(_ process: Process) {
+        if process.isRunning { markRetirement(); process.terminate() }
+    }
+    func retireReaders(process: Process, stdout: FileHandle, stderr: FileHandle) -> CLIEngineEvidence {
+        let evidence = snapshot(process: process)
+        if !evidence.outputComplete { Self.emit("CLI_ENGINE_OUTPUT_INCOMPLETE", evidence) }
+        stdout.readabilityHandler = nil; stderr.readabilityHandler = nil
+        return evidence
+    }
+    func markRetirement() { changed.lock(); requestedRetirement = true; changed.unlock() }
+    func text() -> String {
+        changed.lock(); defer { changed.unlock() }
+        return String(decoding: stdout + stderr, as: UTF8.self)
+    }
+    func snapshot(process: Process?) -> CLIEngineEvidence {
+        let running = process?.isRunning ?? false
+        changed.lock(); defer { changed.unlock() }
+        if !running {
+            let deadline = Date().addingTimeInterval(0.5)
+            while !(stdoutEnded && stderrEnded), changed.wait(until: deadline) {}
+        }
+        let observedExit = exitStatus ?? (running ? nil : process?.terminationStatus)
+        return CLIEngineEvidence(bootID: bootID, pid: exitedPID ?? process?.processIdentifier,
+            running: observedExit == nil && running, exitStatus: observedExit,
+            terminationReason: terminationReason ?? (running ? nil : process?.terminationReason.rawValue),
+            requestedRetirement: requestedRetirement, stdoutBytes: stdoutBytes, stderrBytes: stderrBytes,
+            stdoutTail: String(decoding: stdout, as: UTF8.self), stderrTail: String(decoding: stderr, as: UTF8.self),
+            stderrHead: String(decoding: stderrHead, as: UTF8.self), outputComplete: stdoutEnded && stderrEnded)
+    }
+    func reportFirstFailure(process: Process?, arguments: [String], cliStatus: Int32, cliError: String) {
+        changed.lock(); let first = !failureReported; failureReported = true; changed.unlock()
+        guard first else { return }
+        let evidence = snapshot(process: process)
+        Self.emit("CLI_ENGINE_FIRST_FAILURE", evidence)
+        let request = ["arguments": arguments.joined(separator: " "), "status": String(cliStatus), "error": String(cliError.suffix(8192))]
+        if let encoded = try? JSONSerialization.data(withJSONObject: request, options: [.sortedKeys]) {
+            FileHandle.standardError.write(Data("CLI_FIRST_REQUEST ".utf8) + encoded + Data([10]))
+        }
+    }
+    private static func emit(_ label: String, _ evidence: CLIEngineEvidence) {
+        if let encoded = try? JSONEncoder().encode(evidence) {
+            FileHandle.standardError.write(Data((label + " ").utf8) + encoded + Data([10]))
+        }
     }
 }
 
