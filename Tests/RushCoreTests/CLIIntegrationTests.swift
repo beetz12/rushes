@@ -284,6 +284,27 @@ while True:
         #expect(evidence.exitStatus == 23 && !evidence.requestedRetirement)
     }
 
+    @Test("Every owned terminal exit is published even without a failed CLI request")
+    func terminalExitWithoutRequestFailure() throws {
+        let child = Process(), received = CLIOutputCapture()
+        let published = DispatchSemaphore(value: 0)
+        let capture = CLIEngineOutputLedger(bootID: 85, onTerminal: { evidence in
+            received.stdout = (try? JSONEncoder().encode(evidence)) ?? Data()
+            published.signal()
+        })
+        child.executableURL = URL(fileURLWithPath: "/bin/sh")
+        child.arguments = ["-c", "exit 23"]
+        let handles = capture.install(on: child)
+        defer { handles.stdout.readabilityHandler = nil; handles.stderr.readabilityHandler = nil }
+        try child.run(); capture.markLaunchCompleted(); child.waitUntilExit()
+        try #require(published.wait(timeout: .now() + 2) == .success,
+                     "An exit between CLI requests must survive before a replacement boot.")
+        let evidence = try JSONDecoder().decode(CLIEngineEvidence.self, from: received.stdout)
+        #expect(evidence.bootID == 85 && evidence.pid == child.processIdentifier)
+        #expect(evidence.exitStatus == 23 && evidence.terminationReason == Process.TerminationReason.exit.rawValue)
+        #expect(!evidence.requestedRetirement && !evidence.running)
+    }
+
     @Test("A naturally exited owned child is not attributed to a later retirement signal")
     func naturalExitKeepsOriginalCause() throws {
         let child = Process(), capture = CLIEngineOutputLedger(bootID: 84)
@@ -717,7 +738,7 @@ final class EngineHarness: @unchecked Sendable {
 }
 
 // Captures one owned boot. Old callbacks retain their own ledger after replacement.
-struct CLIEngineEvidence: Codable {
+struct CLIEngineEvidence: Codable, Sendable {
     var bootID: Int
     var pid: Int32?
     var running: Bool
@@ -739,6 +760,7 @@ struct CLIEngineEvidence: Codable {
 final class CLIEngineOutputLedger: @unchecked Sendable {
     private let changed = NSCondition()
     private let bootID: Int
+    private let onTerminal: (@Sendable (CLIEngineEvidence) -> Void)?
     private var stdout = Data(), stderr = Data(), stderrHead = Data()
     private var stdoutBytes = 0, stderrBytes = 0
     private var stdoutEnded = false, stderrEnded = false
@@ -746,7 +768,9 @@ final class CLIEngineOutputLedger: @unchecked Sendable {
     private var launchAfterUnixMs: Double?, launchBeforeUnixMs: Double?, observedExitUnixMs: Double?
     private var failureReported = false, requestedRetirement = false
     private var exitStatus: Int32?, terminationReason: Int?, exitedPID: Int32?
-    init(bootID: Int) { self.bootID = bootID }
+    init(bootID: Int, onTerminal: (@Sendable (CLIEngineEvidence) -> Void)? = nil) {
+        self.bootID = bootID; self.onTerminal = onTerminal
+    }
 
     func install(on process: Process, beforeStdoutAppend: @escaping @Sendable () -> Void = {}) -> (stdout: FileHandle, stderr: FileHandle) {
         changed.lock()
@@ -765,9 +789,13 @@ final class CLIEngineOutputLedger: @unchecked Sendable {
             changed.lock()
             observedExitUnixMs = Date().timeIntervalSince1970 * 1000
             exitStatus = child.terminationStatus; terminationReason = child.terminationReason.rawValue
-            exitedPID = child.processIdentifier; let report = failureReported
+            exitedPID = child.processIdentifier
             changed.broadcast(); changed.unlock()
-            if report { Self.emit("CLI_ENGINE_EXIT", snapshot(process: child)) }
+            // A process may die between successful CLI calls. Preserve every
+            // owned terminal fact before replacement, without blocking this
+            // callback on pipe readers. Completeness remains explicit.
+            let evidence = snapshot(process: child, waitForOutput: false)
+            if let onTerminal { onTerminal(evidence) } else { Self.emit("CLI_ENGINE_EXIT", evidence) }
         }
         return (out.fileHandleForReading, err.fileHandleForReading)
     }
@@ -800,10 +828,10 @@ final class CLIEngineOutputLedger: @unchecked Sendable {
         changed.lock(); defer { changed.unlock() }
         return String(decoding: stdout + stderr, as: UTF8.self)
     }
-    func snapshot(process: Process?) -> CLIEngineEvidence {
+    func snapshot(process: Process?, waitForOutput: Bool = true) -> CLIEngineEvidence {
         let running = process?.isRunning ?? false
         changed.lock(); defer { changed.unlock() }
-        if !running {
+        if !running && waitForOutput {
             let deadline = Date().addingTimeInterval(0.5)
             while !(stdoutEnded && stderrEnded), changed.wait(until: deadline) {}
         }
