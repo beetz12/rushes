@@ -1,0 +1,30 @@
+name: private-path-guard
+
+# The paid-cloud backend (browser-worker/) lives only in the private
+# beetz12/rushes-cloud repo. Fail any push or PR that brings it here.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Refuse private paths in the tree and history
+        run: |
+          if [ -e browser-worker ]; then
+            echo "::error::browser-worker/ is private (beetz12/rushes-cloud) and must not be in this public repo."
+            exit 1
+          fi
+          hit=$(git log --format=%h -1 HEAD -- browser-worker)
+          if [ -n "$hit" ]; then
+            echo "::error::history touches browser-worker/ (commit $hit)."
+            exit 1
+          fi
+          echo "No private paths found."
