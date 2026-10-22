@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { createServer } from 'vite';
 import { chromium } from 'playwright';
 import { matrixMedia } from './matrix-media.mjs';
+import { configureMatrixBrowser } from './matrix-browser-options.mjs';
 import { synchronizedMedia } from './synchronized-media.mjs';
 import { qualifyNativeCalibration } from './native-reference-analysis.mjs';
 import { requireQualifiedOrdinalStimulus } from './matrix-calibration.mjs';
@@ -54,10 +55,10 @@ const evidence = { schema: 'rushes.independent-m1/1', startedAt: new Date().toIS
   node: process.version, platform: process.platform, long, reference, sourceMode, sourceControl, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
   normalBackgroundFlags: true, source: 'native Chrome fake MJPEG with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
-  physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; headless virtual pages only',
+  physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; tab activation alone is not physical minimization',
   diagnostic, allocationDiagnostic, samples: [], actions: [], checks: [], failures: [], browserStderr: [], lifecycle: [], hostTimeline: [], nativeAllocationSamples: [], fixturePages: [], appRequests: [] };
 evidence.fileHashes = {};
-for (const filename of ['test/matrix.mjs', 'test/matrix-fixture.mjs', 'test/matrix-media.mjs', 'test/matrix-source.worker.mjs', 'test/matrix-native-observation.mjs', 'test/matrix-host-state.mjs', 'test/matrix-calibration.mjs', 'test/matrix-tone.worklet.mjs', 'test/media-coordinates.mjs', 'test/decoded-media.mjs', 'test/synchronized-media.mjs',
+for (const filename of ['test/matrix.mjs', 'test/matrix-browser-options.mjs', 'test/matrix-fixture.mjs', 'test/matrix-media.mjs', 'test/matrix-source.worker.mjs', 'test/matrix-native-observation.mjs', 'test/matrix-host-state.mjs', 'test/matrix-calibration.mjs', 'test/matrix-tone.worklet.mjs', 'test/media-coordinates.mjs', 'test/decoded-media.mjs', 'test/synchronized-media.mjs',
   'test/matrix-source-qualification.mjs', 'test/native-reference-clock.mjs', 'test/native-reference-witness.mjs', 'test/native-reference-analysis.mjs', 'src/capture/index.ts', 'src/capture/audio.ts', 'src/capture/audio-frame.ts', 'src/capture/audio.worker.ts', 'src/capture/pcm-mixer.ts', 'src/capture/composition.worker.ts', 'src/capture/storage.ts'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 for (const filename of ['test/native-clock-seed.mjs', 'test/cold-trace.mjs'])
@@ -167,6 +168,8 @@ async function launch(media) {
   if (media.container) {
     options.delete('use-file-for-fake-video-capture'); options.delete('use-file-for-fake-audio-capture');
   }
+  evidence.browserConfiguration = configureMatrixBrowser(options, { platform:process.platform, sourceMode,
+    browserMode:process.env.RUSHES_M1_BROWSER_MODE ?? 'headless', videoBuffer:process.env.RUSHES_M1_VIDEO_BUFFER ?? 'default' });
   const args = [...options].map(([name, value]) => value === true ? `--${name}` : `--${name}=${value}`);
   args.push('about:blank');
   if (process.platform === 'linux' && process.getuid?.() === 0) args.push('--no-sandbox');
@@ -322,7 +325,7 @@ async function runDiagnostic() {
     maxChunkBytes: Math.max(...evidence.recording.metrics.chunks.map(chunk => chunk.bytes)),
     peakPendingBytes: evidence.recording.metrics.peakPendingBytes,
     totalRecordedBytes: manifest.tracks.reduce((sum, track) => sum + track.bytes, 0) };
-  evidence.backgroundCoverage = 'Not tested: no virtual tab activation; headless foreground diagnostic only';
+  evidence.backgroundCoverage = 'Not tested: no tab activation or window minimization requested';
   if (allocationDiagnostic) {
     await nativeAllocationProbe();
     const trackAvailability = evidence.nativeAllocationSamples.map(sample => Object.values(sample.tracks).map(track => track.availability));
@@ -474,7 +477,7 @@ try {
     evidence.samples.filter(value => value.captureState === 'recording').every(value => value.outputStaleMs <= 250)));
   evidence.backgroundCoverage = evidence.recording.metrics.visibility.some(value => value.state === 'hidden')
     ? 'Observed hidden page; virtual tab activation only, physical minimization remains untested'
-    : 'UNMEASURED: Chrome headless virtual tab activation did not make recorder visibility hidden';
+    : 'UNMEASURED: tab activation did not make recorder visibility hidden';
   const files = await downloadTracks(manifest, join(proof, 'normal-stop'));
   evidence.decoded = {};
   for (const kind of ['screen', 'camera', 'composed']) {
