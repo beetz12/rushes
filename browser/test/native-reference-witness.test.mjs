@@ -140,3 +140,17 @@ test('a failed first PCM read cannot admit video as ready', async () => {
     assert.deepEqual(state(), { stopped: true, closed: true });
   }, true, false);
 });
+
+test('post-Stop guard waits for actual queued samples instead of ending at the video boundary',async()=>{
+  let deliver;
+  await withObserverFailure(async({track,clock,state})=>{
+    const errors=[],witness=await nativeReferenceWitness(track,errors,clock);
+    const packet=timestamp=>({sampleRate:48000,numberOfChannels:1,numberOfFrames:480,timestamp,copyTo(target){target.fill(.25);},close(){}});
+    deliver(packet(100000));await witness.ready();let ended=false;
+    const stopping=witness.stop({coverThroughPageMs:335}).then(result=>{ended=true;return result;});
+    await new Promise(resolve=>setImmediate(resolve));assert.equal(ended,false);
+    for(let stamp=110000;stamp<=330000;stamp+=10000)deliver(packet(stamp));
+    const result=await stopping;assert.equal(result.closed,true);assert.ok(result.lastSampleEndMs>=335);
+    assert.equal(result.actualFileBytes,result.frames.length*480*4);assert.deepEqual(errors,[]);assert.deepEqual(state(),{stopped:true,closed:true});
+  },controller=>{deliver=value=>controller.enqueue(value);},false);
+});

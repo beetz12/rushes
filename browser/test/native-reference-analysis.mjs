@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { audioCoordinates, requireDecodedAlignment } from './media-coordinates.mjs';
 import { referenceSync } from './decoded-media.mjs';
 import { requireOrdinalEmissionShape } from './matrix-calibration.mjs';
+import { SOURCE_PCM_GUARD_MS } from './native-reference-witness.mjs';
 
 // Actual PCM/optical content in supplied track reference coordinates. No output-fit offset.
 export function qualifyNativeReference(snapshot, bytes) {
@@ -54,11 +55,39 @@ export function qualifyNativeReference(snapshot, bytes) {
   const coordinates = audioCoordinates(frames, samples);
   assert.ok(coordinates.joins.every(join => Math.abs(join.gapMs) <= 250), 'Supplied audio has a gap over250ms');
   assert.ok(coordinates.firstSeconds <= first && coordinates.endSeconds >= last, 'PCM must cover actual observed video extent');
+  let audioGuardEndSeconds;
+  const guard = witness.observationGuard;
+  if (guard !== undefined) {
+    const retired = metrics.sourceObserverRetirement, finalInput = rows.at(-1), finalEmission = metrics.calibrationAudioEdges?.at(-1);
+    const bodyEnd = Math.min(input.lastTimestamp, optical.lastTimestamp);
+    assert.equal(guard.schema, 'rushes.source-pcm-guard/1');
+    assert.equal(guard.bodyEndTimestampUs, bodyEnd);
+    assert.equal(guard.targetPageMs, bodyEnd / 1000 - origin + SOURCE_PCM_GUARD_MS);
+    assert.equal(witness.coverThroughPageMs, guard.targetPageMs);
+    assert.ok(Number.isFinite(witness.coverageWaitMs) && witness.coverageWaitMs >= 0 && witness.coverageWaitMs <= 250);
+    assert.ok(Number.isFinite(witness.lastSampleEndMs));
+    assert.equal(Math.round(witness.lastSampleEndMs * 48), Math.round(coordinates.endSeconds * 48000));
+    assert.ok(coordinates.endSeconds * 1000 >= guard.targetPageMs, 'Actual PCM guard coverage is missing');
+    assert.equal(retired.finalInput?.ordinal, finalInput.ordinal);
+    assert.equal(retired.finalInput?.timestamp, finalInput.timestamp);
+    assert.ok(finalEmission && finalEmission.measurement === 'emission');
+    for (const key of ['ordinal', 'sourceTimestampUs', 'audioFrame', 'sampleRate', 'blockLength'])
+      assert.equal(retired.finalEmission?.[key], finalEmission[key]);
+    assert.equal(finalEmission.ordinal, finalInput.ordinal);
+    assert.equal(finalEmission.sourceTimestampUs, finalInput.timestamp);
+    assert.equal(finalEmission.sampleRate, 48000);
+    assert.ok(Number.isSafeInteger(finalEmission.audioFrame) && finalEmission.audioFrame >= 0
+      && Number.isSafeInteger(finalEmission.blockLength) && finalEmission.blockLength > 0);
+    assert.ok(Number.isSafeInteger(retired.boundary?.cutoffUs) && retired.boundary.cutoffUs >= optical.lastTimestamp
+      && Number.isSafeInteger(retired.boundary?.crossingTimestampUs) && retired.boundary.crossingTimestampUs > retired.boundary.cutoffUs
+      && retired.boundary.crossingTimestampUs - retired.boundary.cutoffUs <= 250000);
+    audioGuardEndSeconds = guard.targetPageMs / 1000;
+  }
   const decoded = referenceSync({ visual, visualEdges, bytes, coordinates,
     // Observation intentionally starts before video acquisition. Check the
     // actual initial optical state, retaining (and validating) all pre-video PCM.
     initialAudioPresentationSeconds: first + 0.08,
-    timeBasis: 'same-Window supplied-track reference timestamps', allTransitions: true,
+    timeBasis: 'same-Window supplied-track reference timestamps', allTransitions: true, audioGuardEndSeconds,
     conversionUncertaintyMs: converter.conservativeSameRealmConversionUncertaintyMs + 1000 / 48000 });
   requireDecodedAlignment(decoded.points);
   assert.deepEqual(decoded.transitionPoints.map(point => point.ordinal), visualEdges.map(edge => edge.ordinal));

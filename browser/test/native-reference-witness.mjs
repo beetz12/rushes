@@ -1,4 +1,6 @@
 // Generated test input observation only. No product import, permissions or export correction.
+// Existing200ms search after an edge plus the20ms half-window.
+export const SOURCE_PCM_GUARD_MS = 220;
 const within = async (operation, ms, label) => {
   let timer; try { return await Promise.race([operation, new Promise((_, reject) => {
     timer = setTimeout(() => reject(new Error(`${label} deadline`)), ms);

@@ -1,5 +1,5 @@
 import { nativeReferenceClock } from './native-reference-clock.mjs';
-import { nativeReferenceWitness } from './native-reference-witness.mjs';
+import { nativeReferenceWitness, SOURCE_PCM_GUARD_MS } from './native-reference-witness.mjs';
 export async function directContainerControl(durationMs) {
   if (durationMs !== 8000) throw new Error('Direct source control is bounded to8s');
   const element = document.createElement('video'); element.muted = true; element.playsInline = true;
@@ -255,8 +255,13 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
       if (suppliedReference) {
         const [low, upper] = metrics.clockCapability.converter.originIntervalMs;
         const opticalEnd = metrics.sourceObserverRetirement?.optical?.lastTimestamp;
-        const coverThroughPageMs = Math.min(opticalEnd, metrics.frames['native-input'].lastTimestamp) / 1000 - (low + upper) / 2;
-        metrics.suppliedReference = { ...await suppliedReference.stop({ coverThroughPageMs }), takeId: id };
+        const bodyEndTimestampUs = Math.min(opticalEnd, metrics.frames['native-input'].lastTimestamp);
+        const observationGuard = { schema: 'rushes.source-pcm-guard/1', bodyEndTimestampUs,
+          targetPageMs: bodyEndTimestampUs / 1000 - (low + upper) / 2 + SOURCE_PCM_GUARD_MS };
+        // The optical worker has retired and its tone input is held. Observe
+        // actual PCM for the final edge; never extend video or feed a new ordinal.
+        metrics.suppliedReference = { ...await suppliedReference.stop({ coverThroughPageMs: observationGuard.targetPageMs }),
+          takeId: id, observationGuard };
       }
       metrics.observationBoundary.finishedPageMs = performance.now();
     }).catch(error => { metrics.observerErrors.push({ name: 'observation-retirement', message: String(error), wallMs: performance.now() }); });

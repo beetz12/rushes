@@ -92,3 +92,76 @@ test('spectrum caches cannot survive changed PCM bytes at the same window positi
   changed.bytes.copy(good.bytes);
   assert.throws(()=>qualifyNativeCalibration(good.snapshot,good.bytes),/alignment|bracket|exceeds100ms/);
 });
+
+function guardedTail(options={}) {
+  const result=fixture({tailMs:0,...options}), m=result.snapshot.metrics;
+  const bodyEnd=Math.min(m.frames['native-input'].lastTimestamp,m.sourceObserverRetirement.optical.lastTimestamp);
+  const origin=m.clockCapability.converter.originIntervalMs.reduce((a,b)=>a+b)/2;
+  const targetPageMs=bodyEnd/1000-origin+220, input=m.calibrationInputEdges.at(-1), emission=m.calibrationAudioEdges.at(-1);
+  m.sourceObserverRetirement.finalInput={ordinal:input.ordinal,timestamp:input.timestamp};
+  m.sourceObserverRetirement.finalEmission={...emission};
+  m.sourceObserverRetirement.boundary={cutoffUs:bodyEnd+1000,crossingTimestampUs:bodyEnd+33334};
+  const witness=m.suppliedReference,last=witness.frames.at(-1);
+  witness.coverThroughPageMs=targetPageMs;witness.lastSampleEndMs=(Math.round(last.timestampUs*48000/1e6)+last.frames)*1000/48000;
+  witness.coverageWaitMs=0;
+  witness.observationGuard={schema:'rushes.source-pcm-guard/1',bodyEndTimestampUs:bodyEnd,targetPageMs};
+  return result;
+}
+
+test('an actual post-Stop PCM guard measures the last optical transition without extending video',()=>{
+  const {snapshot,bytes}=guardedTail(),bodyEnd=snapshot.metrics.sourceObserverRetirement.optical.lastTimestamp;
+  const original=referenceSync({...rawReference(snapshot,bytes),allTransitions:false}).points;
+  const result=qualifyNativeCalibration(snapshot,bytes);
+  assert.equal(result.source.qualified,true);
+  assert.equal(result.source.observedOpticalIntervalSeconds.last,(bodyEnd/1000-1000000)/1000);
+  assert.deepEqual(result.source.decoded.points,original);
+  assert.deepEqual(result.source.decoded.transitionPoints.map(p=>p.ordinal),snapshot.metrics.calibrationInputEdges.slice(1).map(p=>p.ordinal));
+});
+
+test('post-Stop measurement requires an explicit bound guard; old missing-tail rejection remains',()=>{
+  const {snapshot,bytes}=guardedTail();delete snapshot.metrics.suppliedReference.observationGuard;
+  assert.throws(()=>qualifyNativeCalibration(snapshot,bytes),/bracket|unmeasured/);
+});
+
+test('guard metadata cannot invent coverage or detach the final emission from its optical input',()=>{
+  for(const mutate of [
+    m=>{m.suppliedReference.observationGuard.schema='unknown';},
+    m=>{m.suppliedReference.observationGuard.bodyEndTimestampUs-=33333;},
+    m=>{m.suppliedReference.observationGuard.targetPageMs-=100;},
+    m=>{m.suppliedReference.coverThroughPageMs-=100;},
+    m=>{m.suppliedReference.lastSampleEndMs+=10;},
+    m=>{m.suppliedReference.coverageWaitMs=251;},
+    m=>{m.sourceObserverRetirement.finalInput.ordinal--;},
+    m=>{m.sourceObserverRetirement.finalEmission.sourceTimestampUs--;},
+    m=>{m.sourceObserverRetirement.boundary.crossingTimestampUs=m.sourceObserverRetirement.boundary.cutoffUs;},
+  ]) { const {snapshot,bytes}=guardedTail();mutate(snapshot.metrics);assert.throws(()=>qualifyNativeCalibration(snapshot,bytes)); }
+});
+
+test('claimed guard fails when actual PCM ends before its target',()=>{
+  const {snapshot,bytes}=guardedTail(),w=snapshot.metrics.suppliedReference;
+  w.frames=w.frames.slice(0,752); // Actual supplied timeline ends at7.62s, onlyabout20msaftertheedge.
+  const short=bytes.subarray(0,w.frames.length*480*4);w.bytes=w.actualFileBytes=short.length;
+  const last=w.frames.at(-1);w.lastSampleEndMs=(Math.round(last.timestampUs*48000/1e6)+last.frames)*1000/48000;
+  assert.throws(()=>qualifyNativeCalibration(snapshot,short));
+});
+
+test('a guarded late tail waveform and its uncertainty still exceed the protected100ms bound',()=>{
+  for(const delayMs of [90,150]) {const {snapshot,bytes}=guardedTail({delayedOrdinal:15,delayMs});assert.throws(()=>qualifyNativeCalibration(snapshot,bytes),/alignment|bracket|exceeds100ms/);}
+});
+
+test('guard checks use actual sample-rounded PCM coordinates and preserve cache equivalence',()=>{
+  const {snapshot,bytes}=guardedTail(),m=snapshot.metrics,shift=506;
+  for(const row of m.calibrationInputEdges)row.timestamp+=shift;
+  for(const row of m.calibrationAudioEdges)row.sourceTimestampUs+=shift;
+  for(const row of [m.sourceObserverRetirement.optical,m.frames['native-input']]){row.firstTimestamp+=shift;row.lastTimestamp+=shift;}
+  m.sourceObserverRetirement.finalInput.timestamp+=shift;
+  m.sourceObserverRetirement.finalEmission.sourceTimestampUs+=shift;
+  m.sourceObserverRetirement.boundary.cutoffUs+=shift;m.sourceObserverRetirement.boundary.crossingTimestampUs+=shift;
+  for(const row of m.suppliedReference.frames)row.timestampUs+=shift;
+  const w=m.suppliedReference,last=w.frames.at(-1),bodyEnd=Math.min(m.frames['native-input'].lastTimestamp,m.sourceObserverRetirement.optical.lastTimestamp);
+  w.lastSampleEndMs=(Math.round(last.timestampUs*48000/1e6)+last.frames)*1000/48000;
+  w.observationGuard.bodyEndTimestampUs=bodyEnd;w.observationGuard.targetPageMs=bodyEnd/1000-1000000+220;w.coverThroughPageMs=w.observationGuard.targetPageMs;snapshot.wallMs+=1;
+  assert.equal(qualifyNativeCalibration(snapshot,bytes).source.qualified,true);
+  const args={...rawReference(snapshot,bytes),audioGuardEndSeconds:w.observationGuard.targetPageMs/1000};
+  assert.deepEqual(referenceSync({...args,cacheAnalysis:true}),referenceSync({...args,cacheAnalysis:false}));
+});

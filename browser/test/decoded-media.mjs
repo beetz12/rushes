@@ -36,8 +36,11 @@ export async function decodedSync(videoFile, audioFile, { evidenceDirectory = di
 
 // Actual optical/PCM observations, independent of the source generator and recorder events.
 export function referenceSync({ visual, visualEdges, bytes, coordinates, rate = 48000, count = 1920, timeBasis,
-  conversionUncertaintyMs = 0, initialAudioPresentationSeconds, allTransitions = false, cacheAnalysis = true }) {
+  conversionUncertaintyMs = 0, initialAudioPresentationSeconds, allTransitions = false, cacheAnalysis = true, audioGuardEndSeconds }) {
   assert.ok(Number.isFinite(conversionUncertaintyMs) && conversionUncertaintyMs >= 0);
+  if (audioGuardEndSeconds !== undefined) assert.ok(Number.isFinite(audioGuardEndSeconds)
+    && audioGuardEndSeconds >= visual.at(-1).seconds && audioGuardEndSeconds <= coordinates.endSeconds,
+  'Audio guard must be inside actual retained PCM');
   let maxWindowDiscontinuityMs = 0, initialAnchorDistanceMs = 0;
   const hann = cacheAnalysis ? Float64Array.from({ length: count }, (_, index) => 0.5 - 0.5 * Math.cos(2 * Math.PI * index / (count - 1))) : null;
   const coefficients = new Map(), banks = new Map(), windowUncertainty = new Map();
@@ -105,17 +108,18 @@ export function referenceSync({ visual, visualEdges, bytes, coordinates, rate = 
       // Choose real, wholly observed PCM windows at short source endpoints.
       // No optical state or PCM is extrapolated beyond the measured interval.
       let first = Math.ceil(coordinates.nearestPresentation(visual[0].seconds).sample);
-      let last = Math.floor(coordinates.nearestPresentation(visual.at(-1).seconds).sample);
+      const audioEnd = audioGuardEndSeconds ?? visual.at(-1).seconds;
+      let last = Math.floor(coordinates.nearestPresentation(audioEnd).sample);
       while (coordinates.atSample(first) < visual[0].seconds) first++;
-      while (coordinates.atSample(last) > visual.at(-1).seconds) last--;
+      while (coordinates.atSample(last) > audioEnd) last--;
       const minimum = first + count / 2, maximum = last - count / 2 + 1;
       assert.ok(maximum >= minimum, 'Actual PCM window extent is unmeasured');
       if (preceding.sample < minimum) preceding = { sample: minimum, distanceMs: 0 };
       if (following.sample > maximum) following = { sample: maximum, distanceMs: 0 };
       for (const point of [preceding, following]) {
         const start = Math.round(point.sample - count / 2);
-        assert.ok(coordinates.atSample(start) >= visual[0].seconds && coordinates.atSample(start + count - 1) <= visual.at(-1).seconds,
-          'Actual PCM window is outside the measured optical extent');
+        assert.ok(coordinates.atSample(start) >= visual[0].seconds && coordinates.atSample(start + count - 1) <= audioEnd,
+          'Actual PCM window is outside its measured extent');
       }
       assert.ok(coordinates.atSample(preceding.sample) < expected && coordinates.atSample(following.sample) > expected,
         'Actual PCM brackets are unmeasured at the optical transition');
