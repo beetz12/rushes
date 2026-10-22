@@ -58,7 +58,11 @@ let cueButtons: HTMLButtonElement[] = [];
 let pollCount = 0;
 let currentManifest: Manifest | undefined;
 let viewSent = false;
-function seek(ms: number): void { video.currentTime = Math.max(0, Math.min(video.duration || Infinity, ms / 1000)); }
+function syncActiveCue(): void {
+    const ms = video.readyState >= HTMLMediaElement.HAVE_METADATA ? video.currentTime * 1000 : NaN;
+    cueButtons.forEach((button, index) => button.classList.toggle('active', ms >= cues[index]!.startMs && ms < cues[index]!.endMs));
+}
+function seek(ms: number): void { video.currentTime = Math.max(0, Math.min(video.duration || Infinity, ms / 1000)); syncActiveCue(); }
 function line(parent: HTMLElement, text: string, startMs: number): HTMLButtonElement { const button = document.createElement('button'); button.type = 'button'; button.textContent = `${time(startMs)}  ${text}`; button.addEventListener('click', () => seek(startMs)); parent.append(button); return button; }
 function safeCues(data: unknown): Cue[] { const list = Array.isArray(data) ? data : (data as {
     cues?: unknown;
@@ -87,6 +91,7 @@ async function render(m: Manifest): Promise<void> {
     if (video.src !== src) {
         const previous = video.currentTime;
         video.src = src;
+        syncActiveCue();
         if (initialized)
             video.addEventListener('loadedmetadata', () => seek(previous * 1000), { once: true });
     }
@@ -131,6 +136,7 @@ async function render(m: Manifest): Promise<void> {
             const panel = element('transcript');
             panel.replaceChildren();
             cueButtons = cues.map(c => line(panel, c.text, c.startMs));
+            syncActiveCue();
         }
     }
     else if (!m.transcript) {
@@ -204,7 +210,9 @@ async function feedback(): Promise<void> { try {
     }
 }
 catch { /* Keep playback usable while feedback is unavailable. */ } }
-video.addEventListener('timeupdate', () => { const ms = video.currentTime * 1000; cueButtons.forEach((b, i) => b.classList.toggle('active', ms >= cues[i]!.startMs && ms < cues[i]!.endMs)); });
+for (const event of ['timeupdate', 'seeked', 'loadedmetadata', 'emptied', 'ended'])
+    video.addEventListener(event, syncActiveCue);
+document.addEventListener('visibilitychange', syncActiveCue);
 video.addEventListener('play', async () => { if (worker && !viewSent) {
     try {
         await post('play', { session });

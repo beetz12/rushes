@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { normalizedPointer } from '../shared/geometry';
-const api = window.rushes;
+import { createNativeAPI } from './native-api';
+const api = window.rushes ? createNativeAPI(window.rushes) : window.rushes;
 type Run = (fn: () => Promise<unknown>) => Promise<unknown>;
 export function ProductionSettings({ run }: { run: Run }) {
   const [prompt, setPrompt] = useState({ enabled: false, script: '', locale: 'en-US' });

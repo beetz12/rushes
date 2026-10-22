@@ -661,6 +661,85 @@ struct ProjectTests {
         #expect(mic.present == true)  // the file exists; it is just not usable media
     }
 
+    @Test("Recovery declares unequal raw tails and a common playable timeline without changing originals")
+    func recoveryDeclaresFragmentTails() async throws {
+        let root=tempDir("recovered-fragment-tails"); defer { cleanup(root) }
+        let package=try RecordingPackage.create(root:root)
+        try await writeVideoFile(url:package.trackURL(for:.screen),durationNs:2_000_000_000,epochNs:epochNs)
+        try await writeVideoFile(url:package.trackURL(for:.camera),durationNs:500_000_000,epochNs:epochNs)
+        try await writeAudioFile(url:package.trackURL(for:.microphone),durationNs:1_800_000_000,epochNs:epochNs)
+        var manifest=sampleManifest(id:package.id,status:.recording)
+        manifest.tracks=[.init(kind:.screen),.init(kind:.camera),.init(kind:.microphone)]
+        manifest.tracks[1].durationNs=500_000_000
+        manifest.warnings=[.init(code:"camera-lost",atMs:500)]
+        try package.writeManifest(manifest)
+        let urls=manifest.tracks.map { package.trackURL(for:$0.kind) }
+        let originals=try urls.map { try Data(contentsOf:$0) }
+        _=try await PackageRecovery(root:root).recover(interruptedAtLaunch:true)
+        let recovered=try package.readManifest()
+        let common=try #require(recovered.clock?.durationNs)
+        #expect(abs(common-1_800_000_000)<50_000_000)
+        #expect(recovered.tracks.allSatisfy { ($0.durationNs ?? 0)>0 })
+        #expect(recovered.warnings.contains { $0.code == "recovered-track-timing" })
+        #expect((await PackageVerifier().verify(package)).ok)
+        #expect(try urls.map { try Data(contentsOf:$0) } == originals)
+        // Recovered timing metadata cannot excuse a complete recording's
+        // mismatched inputs or an invented common timeline/track duration.
+        var tampered=recovered;tampered.status = .complete
+        try package.writeManifest(tampered)
+        #expect(!(await PackageVerifier().verify(package)).ok)
+        tampered=recovered;tampered.clock?.durationNs=500_000_000
+        try package.writeManifest(tampered)
+        #expect(!(await PackageVerifier().verify(package)).ok)
+        tampered=recovered;tampered.tracks[0].durationNs=100_000_000
+        try package.writeManifest(tampered)
+        #expect(!(await PackageVerifier().verify(package)).ok)
+        tampered=recovered;tampered.tracks[2].durationNs=nil
+        try package.writeManifest(tampered)
+        #expect(!(await PackageVerifier().verify(package)).ok)
+        tampered=recovered;tampered.tracks[2].offsetNs=1_000_000;tampered.tracks[2].offsetMs=1
+        try package.writeManifest(tampered)
+        #expect(!(await PackageVerifier().verify(package)).ok)
+        // Each declaration is within40ms, but the common clock is80ms
+        // beyond actual audio. Two tolerance checks must not stack.
+        tampered=recovered;tampered.clock?.durationNs=common+80_000_000
+        for index in tampered.tracks.indices { tampered.tracks[index].durationNs = try #require(tampered.tracks[index].durationNs) + 40_000_000 }
+        try package.writeManifest(tampered)
+        #expect(!(await PackageVerifier().verify(package)).ok)
+        // A forged role exemption cannot treat video as a microphone.
+        tampered=recovered;tampered.tracks[2].file=package.trackURL(for:.screen).lastPathComponent
+        tampered.tracks[2].durationNs=recovered.tracks[0].durationNs
+        tampered.clock?.durationNs=recovered.tracks[0].durationNs
+        try package.writeManifest(tampered)
+        #expect(!(await PackageVerifier().verify(package)).ok)
+        try package.writeManifest(recovered)
+        let microphone=package.trackURL(for:.microphone)
+        try Data("corrupt retained media".utf8).write(to:microphone)
+        #expect(!(await PackageVerifier().verify(package)).ok)
+        try originals[2].write(to:microphone)
+        let held=microphone.appendingPathExtension("held")
+        try FileManager.default.moveItem(at:microphone,to:held)
+        #expect(!(await PackageVerifier().verify(package)).ok)
+        try FileManager.default.moveItem(at:held,to:microphone)
+        #expect(try urls.map { try Data(contentsOf:$0) } == originals)
+    }
+
+    @Test("Audio-only recovery has a measured common timeline")
+    func recoveryAudioOnlyTimeline() async throws {
+        let root=tempDir("recovered-audio-only");defer { cleanup(root) }
+        let package=try RecordingPackage.create(root:root)
+        try await writeAudioFile(url:package.trackURL(for:.microphone),durationNs:500_000_000,epochNs:epochNs)
+        var manifest=sampleManifest(id:package.id,status:.finishing)
+        manifest.tracks=[.init(kind:.microphone)];manifest.clock=nil
+        try package.writeManifest(manifest)
+        let original=try Data(contentsOf:package.trackURL(for:.microphone))
+        _=try await PackageRecovery(root:root).recover(interruptedAtLaunch:true)
+        let recovered=try package.readManifest()
+        #expect(abs((recovered.clock?.durationNs ?? 0)-500_000_000)<50_000_000)
+        #expect((await PackageVerifier().verify(package)).ok)
+        #expect(try Data(contentsOf:package.trackURL(for:.microphone)) == original)
+    }
+
     // MARK: - Verify
 
     @Test("Verify passes on a good package with real media")

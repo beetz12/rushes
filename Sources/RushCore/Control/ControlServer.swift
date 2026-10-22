@@ -91,6 +91,20 @@ public enum PeerCredentialCheck {
 /// Buffered full-line reads and single-line writes over a socket. One
 /// writer lock per connection: responses, events and the reader's error
 /// replies never interleave mid-line.
+struct TransportWriteDiagnostic: Codable, Sendable {
+    var connectionID: String
+    var category: String
+    var errorNumber: Int32
+    var lineBytes: Int
+    var sentBytes: Int
+    var disposition: String
+
+    static func log(_ value: Self) {
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        FileHandle.standardError.write(Data("rushes-transport-write ".utf8) + data + Data([10]))
+    }
+}
+
 final class SocketLineIO: @unchecked Sendable {
 
     let fd: Int32
@@ -104,14 +118,18 @@ final class SocketLineIO: @unchecked Sendable {
     private let previewQueue = DispatchQueue(label: "rush.socket.preview")
     private var pendingPreview: Data?
     private var previewWriting = false
+    private var previewDelivery = false
+    var receivesPreviews: Bool { previewLock.withLock { previewDelivery } }
+    private let diagnose: @Sendable (TransportWriteDiagnostic) -> Void
 
-    init(fd: Int32) {
+    init(fd: Int32, diagnose: @escaping @Sendable (TransportWriteDiagnostic) -> Void = TransportWriteDiagnostic.log) {
         self.fd = fd
+        self.diagnose = diagnose
     }
 
     /// Writes `data` fully, retrying on partial writes and EINTR.
-    /// Returns false when the peer has gone.
-    func writeFully(_ data: Data) -> Bool {
+    /// False means closed, or a wholly unsent best-effort preview was dropped.
+    func writeFully(_ data: Data, category: String = "reply") -> Bool {
         writeLock.lock()
         defer { writeLock.unlock() }
         guard !closed else { return false }
@@ -126,9 +144,15 @@ final class SocketLineIO: @unchecked Sendable {
                     continue
                 }
                 if sent < 0 && errno == EINTR { continue }
-                // A prefix may already be on the stream. Close under this same
-                // lock so another reply cannot append to an incomplete line.
-                closeWhileLocked()
+                let errorNumber = sent < 0 ? errno : 0
+                let dropped = category == "preview" && remaining == data.count
+                    && (errorNumber == EAGAIN || errorNumber == EWOULDBLOCK)
+                // A whole unsent preview can disappear without changing framing.
+                // Any prefix, or a failed reliable line, still ends this stream.
+                if !dropped { closeWhileLocked() }
+                diagnose(.init(connectionID: connectionID, category: category,
+                    errorNumber: errorNumber, lineBytes: data.count, sentBytes: data.count - remaining,
+                    disposition: dropped ? "dropped" : "closed"))
                 return false
             }
             return true
@@ -139,6 +163,7 @@ final class SocketLineIO: @unchecked Sendable {
     /// pending frames; at most one writer and one pending frame exist per peer.
     func offerPreview(_ line: Data) {
         let start = previewLock.withLock {
+            guard previewDelivery else { return false }
             pendingPreview = line
             if previewWriting { return false }
             previewWriting = true
@@ -151,12 +176,19 @@ final class SocketLineIO: @unchecked Sendable {
                 pendingPreview = nil
                 return line
             }) {
-                guard writeFully(line) else {
+                if !writeFully(line, category: "preview") && !isOpen {
                     previewLock.withLock { pendingPreview = nil; previewWriting = false }
                     close()
                     break
                 }
             }
+        }
+    }
+
+    func setPreviewDelivery(_ enabled: Bool) {
+        previewLock.withLock {
+            previewDelivery = enabled
+            if !enabled { pendingPreview = nil }
         }
     }
 
@@ -288,9 +320,9 @@ extension SocketLineIO {
 ///   exactly one one-line JSON response carrying the request's id.
 /// - Events are broadcast to every connected client as NDJSON lines.
 /// - The listen backlog is small (8): at most the shell, the CLI and a
-///   test client are expected, and requests are handled serially per
-///   connection (each request line spawns one handler task; the
-///   `EngineController` actor serializes what must be serial).
+///   test client are expected. Lines are read in order, then dispatched in
+///   independent tasks that can resume out of order. The controller's take
+///   ownership and preview selection revisions serialize native lifetimes.
 public final class ControlServer: @unchecked Sendable {
 
     public let socketPath: URL
@@ -399,8 +431,8 @@ public final class ControlServer: @unchecked Sendable {
         let currentClients = clients
         stateLock.unlock()
         for client in currentClients {
-            if event.event == ControlEventKind.cameraPreview.rawValue { client.offerPreview(line) }
-            else { _ = client.writeFully(line) }
+            if [ControlEventKind.cameraPreview.rawValue, ControlEventKind.microphoneLevel.rawValue].contains(event.event) { client.offerPreview(line) }
+            else if !client.receivesPreviews { _ = client.writeFully(line) }
         }
     }
 
@@ -478,6 +510,20 @@ public final class ControlServer: @unchecked Sendable {
                 if let data = try? ControlWire.line(failure) {
                     _ = client.writeFully(data)
                 }
+                continue
+            }
+            // This changes only delivery on THIS connection. It never warms a
+            // source or changes the control connection's capture ownership.
+            if request.cmd == "preview.subscribe" {
+                let response: ControlResponse
+                if let args = request.args?.object, args.count == 1, let enabled = args["enabled"]?.bool {
+                    client.setPreviewDelivery(enabled)
+                    response = .success(id: request.id, result: .object(["enabled": .bool(enabled)]))
+                } else {
+                    response = .failure(id: request.id, code: ControlErrorCode.invalidParams,
+                        message: "preview.subscribe needs only an enabled Boolean")
+                }
+                if let data = try? ControlWire.line(response) { _ = client.writeFully(data) }
                 continue
             }
             let context = ControlCommandContext(

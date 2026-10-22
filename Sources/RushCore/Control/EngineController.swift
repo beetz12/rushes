@@ -48,9 +48,19 @@ public struct StoppedRecording: Codable, Equatable, Sendable {
 
 // MARK: - Configuration
 
+#if DEBUG
+/// Deterministic debug-only scheduling at existing asynchronous boundaries.
+/// No release command, configuration option, payload or capture source uses it.
+internal enum ControllerCheckpoint: Sendable { case cancelStateRead, maintenanceSnapshotRead, discardStopped, startIndexed, streamFailureHandled }
+#endif
+
 /// Everything `EngineController` runs on; every seam is injectable so the
 /// suite runs headless against real sessions and writers with stub capture.
 public struct EngineControllerConfig: Sendable {
+
+#if DEBUG
+    internal var lifecycleCheckpoint: (@Sendable (ControllerCheckpoint, String, SessionSnapshot?) async -> Void)? = nil
+#endif
 
     public var recordingsRoot: URL
     public var indexDatabaseURL: URL
@@ -61,6 +71,8 @@ public struct EngineControllerConfig: Sendable {
     public var shellBundleID: String?
     public var makeWriter: TrackWriterOpener
     public var captureRigs: CaptureRigFactory
+    public var capturePreflightMode: CapturePreflightMode
+    internal var preflightDrivers: CapturePreflightDrivers?
     public var hostNowNs: @Sendable () -> Int64
     public var version: String
     /// Echoed inside the guide so a reader knows where this engine listens.
@@ -86,6 +98,7 @@ public struct EngineControllerConfig: Sendable {
             try TrackWriter(configuration: configuration, clock: clock)
         },
         captureRigs: CaptureRigFactory = ProductionCaptureRigFactory(),
+        capturePreflightMode: CapturePreflightMode = .system,
         hostNowNs: @escaping @Sendable () -> Int64 = {
             Int64(DispatchTime.now().uptimeNanoseconds)
         },
@@ -103,6 +116,7 @@ public struct EngineControllerConfig: Sendable {
         self.shellBundleID = shellBundleID
         self.makeWriter = makeWriter
         self.captureRigs = captureRigs
+        self.capturePreflightMode = capturePreflightMode
         self.hostNowNs = hostNowNs
         self.version = version
         self.socketPath = socketPath
@@ -141,6 +155,7 @@ public actor EngineController: ControlHandling {
     private let trash: RecordingTrashService
     private let effects: ProductionEffectsCoordinator
     private let serviceEvents: ControlEventRelay
+    private let capturePreflight: CapturePreflight
     private var defaultBlur = CameraBlurConfiguration()
     private var productionSettingsError: String?
     private var drawingWindowID: String?
@@ -154,8 +169,16 @@ public actor EngineController: ControlHandling {
     private var previewGeneration = UUID()
     private var previewEnabled = false
     private var silentMicReported = false
-    private var starting = false
+    private var startingOwner: UUID?
+    private var starting: Bool { startingOwner != nil }
+    private var transitionOwner: (recordingID: String, token: UUID)?
     private var finishing = false
+    private var finishingRecordingID: String?
+    private var discarding = false
+    private var countdownOwner: String?
+    private var attachingRecordingID: String?
+    private var attachingFailure: String?
+    private var nativeFinalizationPending: Bool { PendingWriterFiles.shared.contains(in: config.recordingsRoot) }
     private var startGeneration = UUID()
     private var lastStartParams: [String: JSONValue] = [:]
     private var durationTimer: Task<Void, Never>?
@@ -174,6 +197,11 @@ public actor EngineController: ControlHandling {
     public init(config: EngineControllerConfig) throws {
         let relay = ControlEventRelay()
         serviceEvents = relay
+        capturePreflight = CapturePreflight(catalog: config.catalog, permissions: config.permissionAdvisor,
+            drivers: config.preflightDrivers ?? (config.capturePreflightMode == .generated ? .generated : .system),
+            excluding: ScreenExclusionList(shellBundleID: config.shellBundleID,
+                engineBundleID: Bundle.main.bundleIdentifier).bundleIDs(selftest: false),
+            publish: { relay.publish($0) })
         effects = ProductionEffectsCoordinator(onVoice: { id, progress in
             var safe = (try? JSONValue(encoding: progress).object) ?? [:]
             safe.removeValue(forKey: "recognizedText")
@@ -235,6 +263,7 @@ public actor EngineController: ControlHandling {
     @discardableResult
     public func shutdown() async -> StoppedRecording? {
         previewPublication.invalidate()
+        do { try await capturePreflight.stopAll() } catch { startupWarnings.append("Preview cleanup pending: \(error)") }
         let result = active != nil ? try? await stopActive() : nil
         await config.captureRigs.stopPreview()
         await automation.shutdown()
@@ -266,12 +295,13 @@ public actor EngineController: ControlHandling {
     /// A lost GUI lease cancels idle prewarm; an active take keeps its camera
     /// writer until normal Stop, then closes it independently of GUI cleanup.
     public func clientDisconnected(_ connectionID: String) async {
+        await capturePreflight.disconnected(connectionID)
         guard previewOwner == connectionID else { return }
         previewOwner = nil
         previewGeneration = UUID()
         previewEnabled = false
         previewPublication.setEnabled(false)
-        if active == nil {
+        if active == nil, !starting, attachingRecordingID == nil {
             previewPublication.invalidate()
             await config.captureRigs.stopPreview()
         }
@@ -323,9 +353,40 @@ public actor EngineController: ControlHandling {
             return .success(id: request.id, result: await permissionsResult())
         case "permissions.settings":
             return .success(id: request.id, result: .object(["url": .string(SystemPermissions.settingsURL(try permissionKind(request)))]))
+        case "capture.preflight.start":
+            guard let owner = context.connectionID else { throw ControlFailure(code: "connection-required", message: "Input checks need a connected owner.") }
+            guard context.isConnected(), !starting, !finishing, !discarding, !nativeFinalizationPending, active == nil else {
+                throw ControlFailure(code: "wrong-state", message: "Input checks are available only while idle.")
+            }
+            return .success(id: request.id, result: try await capturePreflight.start(request.params,
+                owner: owner, connected: context.isConnected))
+        case "capture.preflight.stop":
+            guard let owner = context.connectionID else { throw ControlFailure(code: "connection-required", message: "Input checks need a connected owner.") }
+            let quiescent = try await capturePreflight.stop(owner: owner,
+                selection: CapturePreflight.token(request.param("selectionToken")),
+                revision: CapturePreflight.revision(request.param("selectionRevision")))
+            return .success(id: request.id, result: .object(["quiescent": .bool(quiescent)]))
+        case "capture.preflight.snapshot":
+            guard let owner = context.connectionID else { throw ControlFailure(code: "connection-required", message: "Input checks need a connected owner.") }
+            guard context.isConnected(), !starting, !finishing, !discarding, active == nil else {
+                throw ControlFailure(code: "wrong-state", message: "Screen checks are available only while idle.")
+            }
+            return .success(id: request.id, result: try await capturePreflight.snapshot(owner: owner,
+                token: CapturePreflight.token(request.param("previewToken"))))
         case "camera.preview.subscribe":
             guard let enabled = request.param("enabled")?.bool else {
                 throw ControlFailure(code: "invalid-params", message: "preview subscription needs enabled Boolean")
+            }
+            if let supplied = request.param("previewToken") {
+                guard let token = supplied.string, !token.isEmpty, token.utf8.count <= 200 else {
+                    throw ControlFailure(code: "invalid-params", message: "Invalid camera preview token.")
+                }
+                if token != previewPublication.currentToken {
+                    return .success(id: request.id, result: .object([
+                        "enabled": .bool(previewPublication.isEnabled), "ignored": .bool(true),
+                        "previewToken": .string(previewPublication.currentToken)
+                    ]))
+                }
             }
             previewPublication.setEnabled(enabled)
             return .success(id: request.id, result: .object([
@@ -334,7 +395,7 @@ public actor EngineController: ControlHandling {
             ]))
         case "camera.preview.start":
             guard context.isConnected() else { throw ControlFailure(code: "connection-closed", message: "preview owner disconnected before warm-up") }
-            guard !starting, !previewStarting, active == nil else { throw ControlFailure(code: "wrong-state", message: "preview selection cannot change during a take or warm-up") }
+            guard !starting, !previewStarting, !finishing, !discarding, !nativeFinalizationPending, active == nil else { throw ControlFailure(code: "wrong-state", message: "preview selection cannot change during recording startup or cleanup") }
             previewOwner = context.connectionID
             previewStarting = true
             let generation = UUID()
@@ -370,7 +431,7 @@ public actor EngineController: ControlHandling {
             payload["previewToken"] = .string(previewToken)
             return .success(id: request.id, result: .object(payload))
         case "camera.preview.stop":
-            guard active == nil else { throw ControlFailure(code: "wrong-state", message: "camera is recording") }
+            guard active == nil, !starting, attachingRecordingID == nil else { throw ControlFailure(code: "wrong-state", message: "camera is preparing or recording") }
             previewGeneration = UUID()
             previewOwner = nil
             previewEnabled = false
@@ -403,13 +464,25 @@ public actor EngineController: ControlHandling {
             try await recording.session.setBubble(BubbleMetadata(center: center, size: size, visible: request.param("visible")?.bool ?? true, sizeFraction: fraction))
             return .success(id: request.id)
         case "record.cancel":
-            startGeneration = UUID()
-            if let current = active, await current.session.state == .armed {
-                _ = try await discardActive()
-            } else if active != nil {
-                throw ControlFailure(code: "wrong-state", message: "cancel applies during countdown; use discard for an active take")
+            if let current = active {
+                let previewToken = previewPublication.currentToken
+                let state = await current.session.state
+#if DEBUG
+                if let checkpoint = config.lifecycleCheckpoint { await checkpoint(.cancelStateRead, current.recordingID, nil) }
+#endif
+                guard active?.recordingID == current.recordingID else {
+                    throw ControlFailure(code: "cancelled", message: "the countdown's recording has already ended")
+                }
+                guard state == .armed, countdownOwner == current.recordingID else {
+                    throw ControlFailure(code: "wrong-state", message: "cancel applies during countdown; use discard for an active take")
+                }
+                startGeneration = UUID()
+                _ = try await discardActive(expectedID: current.recordingID)
+                if let previewToken { previewPublication.invalidate(previewToken) }
+            } else {
+                startGeneration = UUID()
+                previewPublication.invalidate()
             }
-            previewPublication.invalidate()
             return .success(id: request.id, result: .object(["state": .string("idle")]))
         case "record.discard":
             startGeneration = UUID()
@@ -603,7 +676,7 @@ public actor EngineController: ControlHandling {
     private func automationTools() -> [MCPTool] {
         let reads: Set<String> = ["ping", "version", "guide", "status", "targets", "permissions.check",
             "permissions.settings", "list", "show", "verify", "edit.get", "transcript.get", "meta.get", "share.status", "share.policy.get", "share.feedback", "jobs.list", "teleprompter.get", "camera.blur.get", "record.geometry", "drawing.status"]
-        let excluded = LocalAutomationService.commands.union(["permissions.request", "camera.preview.start", "camera.preview.stop", "camera.preview.subscribe", "url.open"])
+        let excluded = LocalAutomationService.commands.union(["preview.subscribe", "permissions.request", "camera.preview.start", "camera.preview.stop", "camera.preview.subscribe", "capture.preflight.start", "capture.preflight.stop", "capture.preflight.snapshot", "url.open"])
         return ControlGuide.make(version: config.version, socketPath: config.socketPath).commands
             .filter { !excluded.contains($0.name) }.map { doc in
                 var properties: [String: JSONValue] = [:]
@@ -623,10 +696,11 @@ public actor EngineController: ControlHandling {
     private func statusResult() async throws -> JSONValue {
         guard let recording = active else {
             var object: [String: JSONValue] = [
-                "state": .string(starting ? "preparing" : (finishing ? "finishing" : "idle")),
+                "state": .string(starting ? "preparing" : ((finishing || discarding || nativeFinalizationPending) ? "finishing" : "idle")),
                 "permissions": await permissionsResult(),
                 "version": .string(config.version),
                 "pid": .int(Int64(getpid())),
+                "preflightQuiescent": .bool(await capturePreflight.quiescent),
                 "warnings": .array(startupWarnings.map(JSONValue.string)),
             ]
             if !config.socketPath.isEmpty {
@@ -984,17 +1058,17 @@ public actor EngineController: ControlHandling {
         if let productionSettingsError {
             throw ControlFailure(code: "invalid-production-settings", message: "Reset or save valid production settings before recording: \(productionSettingsError)")
         }
-        guard !starting, !previewStarting, !finishing else { throw ControlFailure(code: "already-active", message: "a take is preparing or finishing") }
+        guard !starting, !previewStarting, !finishing, !discarding, !nativeFinalizationPending else { throw ControlFailure(code: "already-active", message: "a take is preparing or finishing; wait for native cleanup before recording again") }
         if let current = active {
             throw ControlFailure(
                 code: ControlErrorCode.alreadyActive,
                 message: "a recording is already active (\(current.recordingID));"
                     + " stop it first")
         }
-        starting = true
         let generation = UUID()
+        startingOwner = generation
         startGeneration = generation
-        defer { starting = false }
+        defer { if startingOwner == generation { startingOwner = nil } }
         lastStartParams = request.params.filter { $0.key != "wait" }
         if let duration = request.param("duration") {
             guard let value = duration.double, value.isFinite, value > 0, value <= 86_400 else {
@@ -1002,6 +1076,8 @@ public actor EngineController: ControlHandling {
             }
         }
         let sessionRequest = try await resolveSessionRequest(params: request.params)
+        try await capturePreflight.stopAll()
+        guard startGeneration == generation else { throw ControlFailure(code: "cancelled", message: "Recording start cancelled.") }
 
         let session = RecordingSession(
             outputRoot: config.recordingsRoot,
@@ -1039,6 +1115,13 @@ public actor EngineController: ControlHandling {
         let previewToken = UUID().uuidString
         if captureRequest.cameraId != nil { previewPublication.activate(previewToken) }
         else { previewPublication.invalidate() }
+        attachingRecordingID = startedPackage.id
+        attachingFailure = nil
+        defer {
+            if attachingRecordingID == startedPackage.id {
+                attachingRecordingID = nil; attachingFailure = nil
+            }
+        }
         do {
             rig = try await config.captureRigs.attach(CaptureContext(
                 session: session,
@@ -1050,12 +1133,12 @@ public actor EngineController: ControlHandling {
                 microphoneObserver: effects.microphoneObserver(),
                 warning: { [weak self] code, message in
                     Task {
-                        await session.recordWarning(code: code, message: message)
-                        await self?.publishCaptureWarning(code: code, message: message)
+                        await self?.captureSourceWarning(recordingID: startedPackage.id,
+                            generation: generation, session: session, code: code, message: message)
                     }
                 },
                 streamFailure: { [weak self] reason in
-                    Task { await self?.captureStreamFailure(reason) }
+                    Task { await self?.captureStreamFailure(reason, recordingID: startedPackage.id) }
                 }))
         } catch {
             previewPublication.invalidate(previewToken)
@@ -1079,9 +1162,16 @@ public actor EngineController: ControlHandling {
         let recording = ActiveRecording(session: session, rig: rig, package: startedPackage,
                                         recordingID: startedPackage.id, startRequestID: request.id)
         active = recording
+        countdownOwner = recording.recordingID
+        let startupFailure = attachingFailure
+        attachingRecordingID = nil; attachingFailure = nil
         activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: "Recording a Rushes video")
         lastStopResult = nil
         silentMicReported = false
+        if let startupFailure {
+            _ = try? await stopActive(earlyFailure: startupFailure, expectedID: recording.recordingID)
+            throw ControlFailure(code: "capture-start-failed", message: "capture failed during startup: \(startupFailure)")
+        }
         emit(ControlEvent(kind: .stateChanged, id: request.id, recordingId: recording.recordingID, state: "armed"))
 
         // The caller owns the countdown's timing; the pipeline stays armed
@@ -1096,10 +1186,13 @@ public actor EngineController: ControlHandling {
                 if target > config.hostNowNs() { try? await Task.sleep(nanoseconds: UInt64(target - config.hostNowNs())) }
             }
         }
-        emit(ControlEvent(kind: .countdown, id: request.id, recordingId: recording.recordingID, result: .object(["remaining": .int(0)])))
         guard startGeneration == generation, active?.recordingID == recording.recordingID else {
             throw ControlFailure(code: "cancelled", message: "countdown cancelled")
         }
+        emit(ControlEvent(kind: .countdown, id: request.id, recordingId: recording.recordingID, result: .object(["remaining": .int(0)])))
+        // Claim gate opening synchronously. A Cancel that read armed before an
+        // actor hop cannot later discard a take whose gate is already opening.
+        countdownOwner = nil
         let epoch: Int64
         do {
             epoch = try await session.openGate(atHostNs: sessionRequest.countdownSeconds > 0 ? countdownEnd : nil)
@@ -1111,8 +1204,13 @@ public actor EngineController: ControlHandling {
             throw Self.failure(forSessionError: error)
         }
         await rig.gateOpened(epochHostNs: epoch)
+        guard startGeneration == generation, active?.recordingID == recording.recordingID else {
+            // Stop may have preceded a suspended gate hook installing its own
+            // input recorder or heartbeat. Reclaim that originating rig again.
+            await rig.stop()
+            throw ControlFailure(code: "cancelled", message: "recording ended during capture startup")
+        }
         scheduleMaintenance(recordingID: recording.recordingID)
-        starting = false
 
         emit(ControlEvent(
             kind: .recordingStarted,
@@ -1121,19 +1219,27 @@ public actor EngineController: ControlHandling {
             t: 0))
         await upsertIndexRow(for: startedPackage)
 
-        if let duration = request.param("duration")?.double, duration > 0 {
+#if DEBUG
+        if let checkpoint = config.lifecycleCheckpoint { await checkpoint(.startIndexed, recording.recordingID, nil) }
+#endif
+
+        if active?.recordingID == recording.recordingID, let duration = request.param("duration")?.double, duration > 0 {
             scheduleDurationStop(seconds: duration, recordingID: recording.recordingID, epochHostNs: epoch)
         }
 
         // Without wait, the response is the start result; with wait, events
         // stream first and the response is the stop outcome.
         guard request.param("wait")?.bool == true else {
+            guard active?.recordingID == recording.recordingID else {
+                throw ControlFailure(code: "cancelled", message: "recording ended before startup finished")
+            }
+            if startingOwner == generation { startingOwner = nil }
             let started = StartedRecording(
                 recordingID: recording.recordingID,
                 packagePath: startedPackage.folderURL.path)
             return .success(id: request.id, result: try JSONValue(encoding: started))
         }
-        let stopped = try await waitForCompletion(recordingID: recording.recordingID)
+        let stopped = try await waitForCompletion(recordingID: recording.recordingID, startupOwner: generation)
         return .success(id: request.id, result: try JSONValue(encoding: stopped))
     }
 
@@ -1157,8 +1263,15 @@ public actor EngineController: ControlHandling {
         return try await stopActive()
     }
 
-    private func stopActive() async throws -> StoppedRecording {
+    private func stopActive(earlyFailure: String? = nil, expectedID: String? = nil) async throws -> StoppedRecording {
         let recording = try requireActive()
+        guard expectedID == nil || recording.recordingID == expectedID else {
+            throw ControlFailure(code: "cancelled", message: "the originating recording has already ended")
+        }
+        // Invalidate work that suspended for this take before any teardown await.
+        startGeneration = UUID()
+        transitionOwner = nil
+        countdownOwner = nil
         durationTimer?.cancel()
         durationTimer = nil
         maintenanceTimer?.cancel()
@@ -1167,7 +1280,8 @@ public actor EngineController: ControlHandling {
         active = nil
         drawingWindowID = nil
         finishing = true
-        defer { finishing = false }
+        finishingRecordingID = recording.recordingID
+        defer { finishing = false; finishingRecordingID = nil }
 
         await recording.rig.stop()
         do { _ = try await effects.finishRecording() }
@@ -1179,54 +1293,40 @@ public actor EngineController: ControlHandling {
             await config.captureRigs.stopPreview()
         }
         do {
-            let outcome = try await recording.session.stop()
+            let outcome: SessionOutcome
+            if let earlyFailure {
+                outcome = try await recording.session.stopEarly(code: "stream-error", message: earlyFailure)
+            } else {
+                outcome = try await recording.session.stop()
+            }
             return await finish(recording, outcome: outcome)
         } catch {
             try? await extended.setCaptureActive(false)
             let failure = Self.failure(forSessionError: error)
-            resumeWaiters(with: StoppedRecording(
-                failedRecordingID: recording.recordingID,
-                packagePath: recording.package.folderURL.path))
+            let failed = StoppedRecording(failedRecordingID: recording.recordingID,
+                                          packagePath: recording.package.folderURL.path)
+            lastStopResult = failed
             await upsertIndexRow(for: recording.package)
+            emitStopped(failed, tag: recording.startRequestID)
+            resumeWaiters(with: failed)
             throw failure
         }
     }
 
     /// A stream failure stops the take early and keeps the footage
     /// (docs/PLAN.md, During recording), with an `ended-early` warning.
-    private func captureStreamFailure(_ reason: String) async {
-        guard let recording = active else { return }
-        durationTimer?.cancel()
-        durationTimer = nil
-        maintenanceTimer?.cancel()
-        maintenanceTimer = nil
-        if let activity { ProcessInfo.processInfo.endActivity(activity); self.activity = nil }
-        active = nil
-        await recording.rig.stop()
-        do { _ = try await effects.finishRecording() }
-        catch { await recording.session.recordWarning(code: "voice-finalize-failed", message: String(describing: error)) }
-        try? effects.configureBlur(defaultBlur)
-        await config.captureRigs.setCameraPreviewTransform(effects.previewTransform())
-        if !previewEnabled {
-            previewPublication.invalidate()
-            await config.captureRigs.stopPreview()
+    private func captureStreamFailure(_ reason: String, recordingID: String) async {
+        if active?.recordingID == recordingID {
+            _ = try? await stopActive(earlyFailure: reason, expectedID: recordingID)
+        } else if attachingRecordingID == recordingID, !finishing {
+            // Screen capture can already be running while camera/microphone
+            // attach awaits. Retain that live failure until the rig is returned
+            // so it is cleaned up and never announced as a healthy start.
+            attachingFailure = attachingFailure ?? reason
         }
-        let outcome = try? await recording.session.stopEarly(
-            code: "stream-error", message: reason)
-        let result: StoppedRecording
-        if let outcome {
-            result = StoppedRecording(outcome: outcome)
-        } else {
-            result = StoppedRecording(
-                failedRecordingID: recording.recordingID,
-                packagePath: recording.package.folderURL.path)
-        }
-        lastStopResult = result
-        if outcome != nil { try? await extended.enqueueAfterStop(id: recording.recordingID) }
-        try? await extended.setCaptureActive(false)
-        await upsertIndexRow(for: recording.package)
-        emitStopped(result, tag: recording.startRequestID)
-        resumeWaiters(with: result)
+#if DEBUG
+        if let checkpoint = config.lifecycleCheckpoint { await checkpoint(.streamFailureHandled, recordingID, nil) }
+#endif
     }
 
     private func finish(
@@ -1258,6 +1358,12 @@ public actor EngineController: ControlHandling {
 
     private func transition(_ event: SessionTransition) async throws {
         let recording = try requireActive()
+        guard transitionOwner == nil else {
+            throw ControlFailure(code: "recording-busy", message: "a pause or resume is still in progress")
+        }
+        let token = UUID()
+        transitionOwner = (recording.recordingID, token)
+        defer { if transitionOwner?.token == token { transitionOwner = nil } }
         let newState: String
         do {
             switch event {
@@ -1272,25 +1378,42 @@ public actor EngineController: ControlHandling {
             throw Self.failure(forSessionError: error)
         }
         if let clock = await recording.session.currentClock() { await recording.rig.adoptClock(clock) }
-        emit(ControlEvent(
-            kind: .stateChanged,
-            id: recording.startRequestID,
-            recordingId: recording.recordingID,
-            state: newState))
+        guard active?.recordingID == recording.recordingID, transitionOwner?.token == token else {
+            throw ControlFailure(code: "cancelled", message: "recording ended during pause or resume")
+        }
+        emit(ControlEvent(kind: .stateChanged, id: recording.startRequestID,
+                          recordingId: recording.recordingID, state: newState))
+    }
+
+    private func ownsCaptureCallback(recordingID: String, generation: UUID) -> Bool {
+        startGeneration == generation && !finishing
+            && (active?.recordingID == recordingID || (starting && active == nil))
+    }
+
+    private func captureSourceWarning(recordingID: String, generation: UUID,
+                                      session: RecordingSession, code: String, message: String?) async {
+        guard ownsCaptureCallback(recordingID: recordingID, generation: generation) else { return }
+        await session.recordWarning(code: code, message: message)
+        guard ownsCaptureCallback(recordingID: recordingID, generation: generation) else { return }
+        if code == "camera-lost", active?.recordingID == recordingID {
+            await session.endCameraAtLoss()
+            guard ownsCaptureCallback(recordingID: recordingID, generation: generation) else { return }
+        }
+        emit(ControlEvent(kind: .warning, recordingId: recordingID, code: code, message: message))
     }
 
     private func publishCaptureWarning(code: String, message: String?) async {
-        if code == "camera-lost", let recording = active { await recording.session.endCameraAtLoss() }
         emit(ControlEvent(kind: .warning, recordingId: active?.recordingID, code: code, message: message))
     }
 
     /// Capture-level warning: recorded into the manifest and surfaced as a
     /// `warning` event at the current media time.
-    private func captureWarning(code: String, message: String?) async {
-        guard let recording = active else { return }
+    private func captureWarning(recordingID: String, code: String, message: String?) async {
+        guard let recording = active, recording.recordingID == recordingID else { return }
         let snapshot = await recording.session.snapshot()
         let atMs = snapshot.elapsedMediaNs.map { Double($0) / 1_000_000 }
         await recording.session.recordWarning(code: code, message: message)
+        guard active?.recordingID == recordingID else { return }
         emit(ControlEvent(
             kind: .warning,
             id: recording.startRequestID,
@@ -1302,17 +1425,21 @@ public actor EngineController: ControlHandling {
 
     /// Resolves `--wait` callers: the stop outcome for `recordingID`, when
     /// it stops (or has already stopped).
-    private func waitForCompletion(recordingID: String) async throws -> StoppedRecording {
-        if let last = lastStopResult, last.id == recordingID {
+    private func waitForCompletion(recordingID: String, startupOwner: UUID) async throws -> StoppedRecording {
+        if let last = lastStopResult, last.id == recordingID, finishingRecordingID != recordingID {
+            if startingOwner == startupOwner { startingOwner = nil }
             return last
         }
-        guard active?.recordingID == recordingID else {
+        guard active?.recordingID == recordingID || finishingRecordingID == recordingID else {
             throw ControlFailure(
                 code: ControlErrorCode.notFound,
                 message: "recording \(recordingID) is not active")
         }
         return await withCheckedContinuation { continuation in
             completionWaiters.append(continuation)
+            // A replacement take can clear the single completed-result cache
+            // only after this take has consumed its result or joined Stop.
+            if startingOwner == startupOwner { startingOwner = nil }
         }
     }
 
@@ -1337,18 +1464,23 @@ public actor EngineController: ControlHandling {
         guard let recording = active, recording.recordingID == recordingID else { return }
         for kind in [TrackKind.screen, .microphone, .systemAudio] {
             await recording.session.trackWriter(for: kind)?.tick(nowHostNs: config.hostNowNs())
+            guard active?.recordingID == recordingID else { return }
         }
         if config.volumeProvider(config.recordingsRoot).availableBytes < 1024 * 1024 * 1024 {
-            await captureStreamFailure("less than 1 GB free; saved footage before disk fills")
+            await captureStreamFailure("less than 1 GB free; saved footage before disk fills", recordingID: recordingID)
             return
         }
         let snapshot = await recording.session.snapshot()
+#if DEBUG
+        if let checkpoint = config.lifecycleCheckpoint { await checkpoint(.maintenanceSnapshotRead, recordingID, snapshot) }
+#endif
+        guard active?.recordingID == recordingID else { return }
         if !silentMicReported, snapshot.tracks.contains(where: { $0.kind == .microphone && $0.microphoneSilent == true }) {
             silentMicReported = true
-            await captureWarning(code: "mic-silent", message: "microphone has been near digital silence for three seconds")
+            await captureWarning(recordingID: recordingID, code: "mic-silent", message: "microphone has been near digital silence for three seconds")
         }
         if let failed = snapshot.tracks.first(where: { $0.errorDescription != nil }) {
-            await captureStreamFailure("\(failed.kind.rawValue) writer: \(failed.errorDescription ?? "failed")")
+            await captureStreamFailure("\(failed.kind.rawValue) writer: \(failed.errorDescription ?? "failed")", recordingID: recordingID)
         }
     }
 
@@ -1365,9 +1497,18 @@ public actor EngineController: ControlHandling {
         _ = try? await stopActive()
     }
 
-    private func discardActive() async throws -> JSONValue {
+    private func discardActive(expectedID: String? = nil) async throws -> JSONValue {
         let recording = try requireActive()
-        let result = try await stopActive()
+        guard expectedID == nil || recording.recordingID == expectedID else {
+            throw ControlFailure(code: "cancelled", message: "the countdown's recording has already ended")
+        }
+        guard !discarding else { throw ControlFailure(code: "already-active", message: "a recording is being discarded") }
+        discarding = true
+        defer { discarding = false }
+        let result = try await stopActive(expectedID: recording.recordingID)
+#if DEBUG
+        if let checkpoint = config.lifecycleCheckpoint { await checkpoint(.discardStopped, recording.recordingID, nil) }
+#endif
         try await extended.cancelRecordingJobs(id: recording.recordingID)
         try FileManager.default.removeItem(at: recording.package.folderURL)
         _ = try await index.rebuild(root: config.recordingsRoot)
@@ -1585,7 +1726,11 @@ public actor EngineController: ControlHandling {
     }
 
     private func emitStopped(_ result: StoppedRecording, tag: String) {
-        let payload = try? JSONValue(encoding: result)
+        var payload = try? JSONValue(encoding: result)
+        if discarding, var fields = payload?.object {
+            fields["discardRequested"] = .bool(true)
+            payload = .object(fields)
+        }
         emit(ControlEvent(
             kind: .recordingStopped,
             id: tag,

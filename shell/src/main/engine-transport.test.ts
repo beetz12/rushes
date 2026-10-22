@@ -50,6 +50,128 @@ function requests(socket: Socket, received: (message: any) => void) {
   });
 }
 describe('terminal malformed engine input', () => {
+  it('retires an unacknowledged data subscription on Quit without retrying it', async () => {
+    let release: (() => void) | undefined;
+    const fixture = await peer((socket) =>
+      requests(socket, (message) => {
+        const reply = () =>
+          socket.write(
+            JSON.stringify({ id: message.id, ok: true, result: { enabled: true, state: 'idle' } }) +
+              '\n',
+          );
+        if (message.cmd === 'preview.subscribe') release = reply;
+        else reply();
+      }),
+    );
+    const supervisor = new EngineSupervisor(
+      '/never/launch',
+      fixture.path,
+      fixture.root,
+      fixturePaths.join(fixture.root, 'index'),
+      vi.fn() as any,
+    );
+    await supervisor.start();
+    await vi.waitFor(() => expect(release).toBeDefined());
+    await supervisor.quit();
+    release!();
+    await new Promise((done) => setTimeout(done, 650));
+    expect(fixture.connections()).toBe(2);
+    expect(fixture.sockets.size).toBe(0);
+  });
+
+  it('does not start previews when Quit joins an unfinished control boot', async () => {
+    const seen: string[] = [];
+    const fixture = await peer((socket) =>
+      requests(socket, (message) => {
+        seen.push(message.cmd);
+        socket.write(
+          JSON.stringify({ id: message.id, ok: true, result: { state: 'idle', enabled: true } }) +
+            '\n',
+        );
+      }),
+    );
+    const supervisor = new EngineSupervisor(
+      '/never/launch',
+      fixture.path,
+      fixture.root,
+      fixturePaths.join(fixture.root, 'index'),
+      vi.fn() as any,
+    );
+    await Promise.all([supervisor.start(), supervisor.quit()]);
+    await new Promise((done) => setTimeout(done, 50));
+    expect(seen).toEqual(['status']);
+    expect(fixture.connections()).toBe(1);
+  });
+
+  it('isolates partial preview loss from an active control connection and reconnects only data', async () => {
+    const commands: Array<{ cmd: string; connection: number }> = [];
+    let control: Socket | undefined;
+    let dataPeer: Socket | undefined;
+    const fixture = await peer((socket, connection) => {
+      if (connection === 1) control = socket;
+      requests(socket, (message) => {
+        commands.push({ cmd: message.cmd, connection });
+        socket.write(
+          JSON.stringify({
+            id: message.id,
+            ok: true,
+            result: message.cmd === 'preview.subscribe' ? { enabled: true } : { state: 'idle' },
+          }) + '\n',
+        );
+        if (message.cmd === 'preview.subscribe') dataPeer = socket;
+      });
+    });
+    const launch = vi.fn();
+    const supervisor = new EngineSupervisor(
+      '/never/launch',
+      fixture.path,
+      fixture.root,
+      fixturePaths.join(fixture.root, 'index'),
+      launch as any,
+    );
+    const disconnected = vi.fn(),
+      events = vi.fn();
+    supervisor.client.on('disconnected', disconnected);
+    supervisor.client.on('event', events);
+    try {
+      await supervisor.start();
+      await vi.waitFor(() => expect(dataPeer).toBeDefined(), { timeout: 1500 });
+      control!.write('{"event":"recording-started","recordingId":"retained-take"}\n');
+      await vi.waitFor(() => expect(supervisor.active).toBe(true));
+      dataPeer!.write(
+        '{"event":"camera-preview","result":{"previewToken":"same-source","jpeg":"generated"}}\n',
+      );
+      await vi.waitFor(() =>
+        expect(events).toHaveBeenCalledWith(expect.objectContaining({ event: 'camera-preview' })),
+      );
+      const brokenData = dataPeer;
+      brokenData!.end('{"event":"camera-preview","result":{"jpeg":"partial');
+      await expect(supervisor.client.request('ping')).resolves.toEqual({ state: 'idle' });
+      await vi.waitFor(() => expect(dataPeer).not.toBe(brokenData), { timeout: 2500 });
+      expect(supervisor.active).toBe(true);
+      expect(disconnected).not.toHaveBeenCalled();
+      expect(launch).not.toHaveBeenCalled();
+      expect(commands.filter((entry) => entry.cmd !== 'ping').map((entry) => entry.cmd)).toEqual([
+        'preview.subscribe',
+        'preview.subscribe',
+      ]);
+      dataPeer!.write('{"event":"state-changed","state":"idle"}\n');
+      dataPeer!.write(
+        '{"event":"camera-preview","result":{"previewToken":"same-source","jpeg":"resumed"}}\n',
+      );
+      await vi.waitFor(() =>
+        expect(events).toHaveBeenCalledWith(
+          expect.objectContaining({ result: { previewToken: 'same-source', jpeg: 'resumed' } }),
+        ),
+      );
+      expect(supervisor.active).toBe(true);
+      control!.write('{"event":"recording-stopped","recordingId":"retained-take"}\n');
+      await vi.waitFor(() => expect(supervisor.active).toBe(false));
+    } finally {
+      await supervisor.quit();
+    }
+  }, 6500);
+
   it('rejects pending requests, closes only the socket, and ignores apparently valid trailing status/events', async () => {
     const fixture = await peer((socket) =>
       requests(socket, (message) => {
@@ -127,6 +249,12 @@ describe('terminal malformed engine input', () => {
       if (connection === 1) first = socket;
       else socket.write('{"event":"warning","code":"generated-peer-ready"}\n');
       requests(socket, (message) => {
+        if (message.cmd === 'preview.subscribe') {
+          socket.write(
+            JSON.stringify({ id: message.id, ok: true, result: { enabled: true } }) + '\n',
+          );
+          return;
+        }
         commands.push(message.cmd);
         if (message.cmd === 'status' && connection > 1) {
           freshStatus = (state) =>

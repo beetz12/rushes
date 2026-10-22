@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { OnboardingAction, OnboardingRecord } from './onboarding';
+import type { PrimaryView } from './navigation';
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export const commands = [
   'ping',
@@ -23,6 +24,9 @@ export const commands = [
   'camera.preview.start',
   'camera.preview.stop',
   'camera.preview.subscribe',
+  'capture.preflight.start',
+  'capture.preflight.stop',
+  'capture.preflight.snapshot',
   'list',
   'show',
   'verify',
@@ -73,6 +77,8 @@ export const windowSchema = z
       'library',
       'settings',
       'recorder',
+      'review',
+      'editor',
       'close',
       'minimize',
       'maximize',
@@ -265,6 +271,72 @@ export type ShareStatus = {
   providerMatches?: boolean;
 };
 export type EngineEvent = { event: string; [key: string]: unknown };
+export const preflightAcknowledgmentSchema = z.object({
+  previewToken: z.uuid(),
+  selectionToken: z.uuid(),
+  selectionRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  microphone: z.string().max(300).nullable(),
+  source: z.string().max(300).nullable(),
+});
+export type PreflightAcknowledgment = z.infer<typeof preflightAcknowledgmentSchema>;
+const levelIdentity = {
+  previewToken: z.uuid(),
+  microphone: z.string().min(1).max(300),
+  measuredAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+};
+export const microphoneLevelSchema = z.discriminatedUnion('available', [
+  z.object({
+    ...levelIdentity,
+    available: z.literal(true),
+    rms: z.number().finite().nonnegative(),
+    peak: z.number().finite().nonnegative(),
+    clipping: z.boolean(),
+    frames: z.number().int().positive().max(1_000_000),
+  }),
+  z.object({ ...levelIdentity, available: z.literal(false) }),
+]);
+export type MicrophoneLevel = z.infer<typeof microphoneLevelSchema>;
+export const screenPreviewSchema = z.object({
+  previewToken: z.uuid(),
+  source: z.string().min(1).max(300),
+  jpeg: z
+    .string()
+    .min(4)
+    .max(349_528)
+    .regex(/^[A-Za-z0-9+/]+={0,2}$/)
+    .refine((value) => value.length % 4 === 0),
+  mime: z.literal('image/jpeg'),
+  width: z.number().int().positive().max(640),
+  height: z.number().int().positive().max(640),
+});
+export type ScreenPreview = z.infer<typeof screenPreviewSchema>;
+export function preflightArguments(
+  options: RecordingOptions,
+  selectionToken: string,
+  selectionRevision: number,
+) {
+  z.uuid().parse(selectionToken);
+  return {
+    selectionToken,
+    selectionRevision: z
+      .number()
+      .int()
+      .positive()
+      .max(Number.MAX_SAFE_INTEGER)
+      .parse(selectionRevision),
+    ...preflightInputs(options),
+  };
+}
+export function preflightInputs(options: RecordingOptions) {
+  const value: Record<string, unknown> = { mic: options.mic };
+  if (options.mode === 'camera-only') return value;
+  if (options.mode === 'window') value.window = options.source;
+  else if (options.mode !== 'area' || options.area) {
+    value.display = options.source;
+    if (options.mode === 'area') value.area = options.area;
+  }
+  return value;
+}
 export const previewAcknowledgmentSchema = z.object({ previewToken: z.string().min(1).max(200) });
 export type PreviewAcknowledgment = z.infer<typeof previewAcknowledgmentSchema>;
 export function previewAcknowledgment(raw: unknown): PreviewAcknowledgment {
@@ -279,6 +351,9 @@ export function previewAcknowledgment(raw: unknown): PreviewAcknowledgment {
   return value.data;
 }
 export interface RushesAPI {
+  openRecording(id: string): Promise<void>;
+  restorePrimaryView(view: PrimaryView): Promise<void>;
+  draftFlushed(token: string, error?: string): Promise<void>;
   onboarding(action: OnboardingAction): Promise<OnboardingRecord>;
   request(cmd: string, args?: Record<string, unknown>): Promise<any>;
   bootstrap(): Promise<{
@@ -286,6 +361,8 @@ export interface RushesAPI {
     enginePath: string;
     packaged: boolean;
     primaryView?: string;
+    reviewId?: string;
+    inputPreflight?: PreflightAcknowledgment;
   }>;
   saveOptions(options: RecordingOptions): Promise<void>;
   presets(

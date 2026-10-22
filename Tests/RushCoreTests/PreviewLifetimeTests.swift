@@ -160,6 +160,45 @@ struct PreviewLifetimeTests {
         _ = await fixture.controller.shutdown()
     }
 
+    @Test("Former idle-owner cleanup cannot close a camera owned by a pending CLI attach", arguments: [false, true])
+    func idleCleanupDuringRecordingAttach(disconnect: Bool) async throws {
+        let fixture = try TokenControllerFixture(); defer { fixture.removeFiles() }
+        await fixture.command("camera.preview.start", ["camera": .string("fixture-a")])
+        await fixture.factory.parkNextAttach()
+        let cli = ControlExchange(connectionID: "separate-cli-owner")
+        let pending = Task {
+            await fixture.controller.handle(.init(id: "cli-start", cmd: "record.start", args: .object([
+                "camera": .string("fixture-a"), "mic": .string("none"), "countdownSeconds": .int(0)
+            ])), context: cli.context)
+        }
+        try await fixture.waitForAttach()
+        let before = await fixture.factory.stopCount
+        if disconnect { await fixture.controller.clientDisconnected("preview-fixture") }
+        else {
+            await fixture.command("camera.preview.stop")
+            #expect(fixture.exchange.lastResponse?.error?.code == "wrong-state")
+        }
+        #expect(await fixture.factory.stopCount == before)
+        await fixture.factory.releaseAttach(); await pending.value
+        #expect(cli.lastResponse?.ok == true)
+        await fixture.command("record.stop"); _ = await fixture.controller.shutdown()
+    }
+
+    @Test("An obsolete unsubscribe cannot disable the replacement camera publisher")
+    func oldUnsubscribeCannotDisableNewCamera() async throws {
+        let fixture = try TokenControllerFixture(); defer { fixture.removeFiles() }
+        await fixture.command("camera.preview.start", ["camera": .string("fixture-a")])
+        let old = try #require(fixture.exchange.lastResponse?.result?["previewToken"]?.string)
+        await fixture.command("camera.preview.start", ["camera": .string("fixture-b")])
+        let token = try #require(fixture.exchange.lastResponse?.result?["previewToken"]?.string)
+        await fixture.command("camera.preview.subscribe", ["enabled": .bool(false), "previewToken": .string(old)])
+        let before = fixture.exchange.events.count
+        await fixture.factory.publishWarm(1, bytes: Data([1]))
+        #expect(fixture.exchange.events.count == before + 1)
+        #expect(fixture.exchange.events.last?.result?["previewToken"]?.string == token)
+        _ = await fixture.controller.shutdown()
+    }
+
     @Test("A recording without a camera has no preview token and rejects even an unexpected rig JPEG")
     func cameraAbsent() async throws {
         let fixture = try TokenControllerFixture()

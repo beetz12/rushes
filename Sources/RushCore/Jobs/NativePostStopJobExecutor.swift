@@ -21,7 +21,9 @@ public struct NativePostStopJobExecutor:PostStopJobExecuting {
     public func execute(_ job:PostStopJob,package:RecordingPackage) async throws -> PostStopJobExecution {
         try Task.checkCancellation()
         let manifest=try package.readManifest()
-        guard [.complete,.recovered].contains(manifest.status),job.kind == .verify || manifest.verified?.ok != false else { throw jobFailure("recording-unverified","Finalize and verify this recording before post-Stop work") }
+        guard !PendingWriterFiles.shared.contains(in:package.folderURL) else { throw jobFailure("finalization-pending","Native writing has not finished. Checking will retry; relaunch Rushes if it stays pending. Originals are kept.") }
+        let diagnostic = job.kind == .verify && manifest.status == .failed && manifest.tracks.contains(where: \.present)
+        guard diagnostic || ([.complete,.recovered].contains(manifest.status) && (job.kind == .verify || manifest.verified?.ok != false)) else { throw jobFailure("recording-unverified","Finalize and verify this recording before post-Stop work") }
         switch job.kind {
         case .verify:
             let report=await PackageVerifier().verify(package)

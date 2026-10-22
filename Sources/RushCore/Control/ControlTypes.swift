@@ -350,6 +350,7 @@ public enum ControlEventKind: String, Codable, Sendable {
     /// Never crosses the socket; the engine prints it on its own stdout.
     case ready = "ready"
     case cameraPreview = "camera-preview"
+    case microphoneLevel = "microphone-level"
     case countdown = "countdown"
     case teleprompterProgress = "teleprompter-progress"
     case jobChanged = "job-changed"

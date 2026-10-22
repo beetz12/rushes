@@ -99,6 +99,7 @@ do {
         captureRigs: flags.captureStub
             ? StubCaptureRigFactory()
             : ProductionCaptureRigFactory(),
+        capturePreflightMode: flags.captureStub ? .generated : .system,
         version: engineVersion,
         socketPath: flags.socketPath.path))
 } catch {

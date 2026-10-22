@@ -1,7 +1,8 @@
 import { build } from 'electron-builder';
 import { access } from 'node:fs/promises';
+import { packageSigning } from './package-signing.mjs';
+import { nativeHelperBeforeSigning } from './package-helper.mjs';
+const config = packageSigning(process.env);
 for (const f of ['../.build/release/rushcore-engine', '../.build/release/rushes']) await access(f);
-const config = process.env.RUSHES_SIGN_IDENTITY
-  ? { mac: { identity: process.env.RUSHES_SIGN_IDENTITY, type: 'development', notarize: false } }
-  : {};
+config.afterPack = nativeHelperBeforeSigning(config);
 await build({ mac: ['dir'], publish: 'never', config });

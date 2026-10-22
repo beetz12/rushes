@@ -495,10 +495,15 @@ public actor RecordingSession {
                     anyFootage = true
                     if status.usedFallbackCodec { track.codec = VideoCodec.h264.rawValue }
                     if status.finalizeState == .degraded {
+                        failedTrack = true
+                        track.present = status.framesWritten > 0
+                        if let file = package?.trackURL(for: kind) {
+                            track.present = track.present || FileManager.default.fileExists(atPath: file.path)
+                        }
                         appendWarning(RecordingManifest.ManifestWarning(
                             code: "finalize-degraded",
                             message: "\(track.file) missed the finalize deadline; "
-                                + "the fragmented file keeps every complete fragment"))
+                                + "retained media is unchecked and may still be finishing. Relaunch Rushes if checking cannot resume."))
                     }
                 case .failed, .cancelled, .idle, .finalizing:
                     // An encoder can fail after flushing playable fragments.

@@ -11,6 +11,13 @@ struct TrackWriterTests {
     // A host-time epoch far from zero, the way real capture timestamps look.
     private let epochNs: Int64 = 1_000_000_000_000
 
+    private final class ReceiptClock: @unchecked Sendable {
+        private let lock=NSLock()
+        private var value:Int64=0
+        func now() -> Int64 { lock.withLock { value } }
+        func advance(_ ns:Int64) { lock.withLock { value += ns } }
+    }
+
     // MARK: - Synthetic media
 
     private func tempDir() -> URL {
@@ -314,6 +321,78 @@ struct TrackWriterTests {
         #expect(factory.stub.videoAppends == [100_000_000, 200_000_000])
         #expect(writer.status().framesWritten == 2)
         #expect(writer.status().framesDropped == 0)
+    }
+
+    @Test("Screen heartbeat does not overtake continuously arriving genuine frames")
+    func screenHeartbeatDoesNotOvertakeLiveInput() throws {
+        let dir=tempDir(); defer { try? FileManager.default.removeItem(at:dir) }
+        let url=dir.appendingPathComponent("screen.mov"),factory=StubFactory(outputURL:dir.appendingPathComponent("screen.mov"))
+        let receipt=ReceiptClock()
+        let writer=try TrackWriter(configuration:.screen(outputURL:url,width:320,height:240),
+                                   clock:.init(epochNs:epochNs),factory:factory,monotonicNowNs:{ receipt.now() })
+        writer.appendVideo(makeVideoBuffer(hostNs:epochNs+100_000_000))
+        receipt.advance(150_000_000)
+        writer.tick(nowHostNs:epochNs+250_000_000)
+        receipt.advance(50_000_000)
+        writer.appendVideo(makeVideoBuffer(hostNs:epochNs+200_000_000))
+        #expect(factory.stub.videoAppends == [100_000_000,200_000_000])
+        #expect(writer.status().framesDropped == 0)
+    }
+
+    @Test("Small missing PCM buffers do not accumulate into a shortened AAC timeline", arguments: [false, true])
+    func audioSmallGapsKeepTimeline(omitBuffers: Bool) async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("mic.mov")
+        let writer = try TrackWriter(configuration: .microphone(outputURL: url), clock: .init(epochNs: epochNs))
+        let totalBuffers = 100
+        let omitted: Set<Int> = omitBuffers ? [8, 16, 24, 32, 40] : []
+        for index in 0..<totalBuffers where !omitted.contains(index) {
+            let host = epochNs + Int64((Double(index * 1024) / 48_000 * 1e9).rounded())
+            writer.appendAudio(makeAudioBuffer(hostNs: host))
+        }
+        let end = Int64((Double(totalBuffers * 1024) / 48_000 * 1e9).rounded())
+        let status = await writer.finalize(endMediaTimeNs: end, deadline: .seconds(5))
+        #expect(status.finalizeState == .finalized)
+        #expect(status.framesDropped == 0)
+        let summary = try await inspect(url: url)
+        #expect(summary.audioTracks == 1)
+        #expect(abs(summary.durationSeconds - Double(end) / 1e9) <= 0.05,
+                "AAC duration must retain every missing buffer's place on the common clock")
+        if omitBuffers { #expect(status.silenceFramesWritten >= Int64(omitted.count)) }
+    }
+
+    @Test("Five partial-buffer pause boundaries retain a real AAC common end")
+    func audioPauseBoundaryContinuity() async throws {
+        let dir = tempDir(); defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appendingPathComponent("mic.mov"), step: Int64 = 21_333_333
+        var clock = SessionClock(epochNs: epochNs)
+        for index in 0..<5 {
+            let start = epochNs + Int64(10 + 80 * index) * step + 10_000_000
+            try clock.beginPause(nowNs: start)
+            try clock.endPause(nowNs: start + 47 * step + 5_000_000)
+        }
+        let writer = try TrackWriter(configuration: .microphone(outputURL: url), clock: clock)
+        for index in 0..<410 { writer.appendAudio(makeAudioBuffer(hostNs: epochNs + Int64(index) * step)) }
+        let end = clock.mediaTimeNs(atHostNs: epochNs + 410 * step)
+        let status = await writer.finalize(endMediaTimeNs: end, deadline: .seconds(5))
+        #expect(status.finalizeState == .finalized)
+        #expect(status.framesDropped == 5)
+        let asset = AVURLAsset(url: url)
+        let track = try #require(try await asset.loadTracks(withMediaType: .audio).first)
+        let reader = try AVAssetReader(asset: asset)
+        let output = AVAssetReaderTrackOutput(track: track, outputSettings: [AVFormatIDKey: kAudioFormatLinearPCM])
+        reader.add(output); #expect(reader.startReading())
+        var decodedEnd = 0.0, sampleCount = 0
+        while let sample = output.copyNextSampleBuffer() {
+            let format = try #require(CMSampleBufferGetFormatDescription(sample))
+            let asbd = try #require(CMAudioFormatDescriptionGetStreamBasicDescription(format))
+            decodedEnd = CMSampleBufferGetPresentationTimeStamp(sample).seconds + Double(CMSampleBufferGetNumSamples(sample)) / asbd.pointee.mSampleRate
+            sampleCount += 1
+        }
+        #expect(reader.status == .completed)
+        #expect(sampleCount > 0)
+        #expect(abs(decodedEnd - Double(end) / 1e9) <= 0.05,
+                "All five interior gaps must survive as PCM, not only as claimed timestamps")
     }
 
     @Test("Audio writes leading silence from media time zero")
