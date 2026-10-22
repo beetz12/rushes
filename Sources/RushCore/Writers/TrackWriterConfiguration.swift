@@ -76,9 +76,9 @@ public struct TrackWriterConfiguration: Sendable {
     /// instead of growing memory.
     public let maxPendingVideoFrames: Int
 
-    /// Audio gap threshold in nanoseconds on the media clock. Gaps between the
-    /// end of the last written audio and the next sample longer than this are
-    /// filled with silence.
+    /// Idle audio heartbeat look-behind on the media clock. Incoming PCM
+    /// discontinuities are always filled at sample precision; this only keeps
+    /// synthetic idle silence behind callbacks that may still arrive.
     public let audioGapThresholdNs: Int64
 
     public init(

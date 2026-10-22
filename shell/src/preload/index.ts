@@ -1,14 +1,13 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { EngineEvent, RushesAPI } from '../shared/contracts';
 async function invoke(channel: string, value?: unknown) {
-  const response = await ipcRenderer.invoke(channel, value);
-  if (response?.__rushesError)
-    throw Object.assign(new Error(response.__rushesError.message), {
-      code: response.__rushesError.code,
-    });
-  return response;
+  // Keep coded failures as data until the renderer has crossed contextBridge.
+  return ipcRenderer.invoke(channel, value);
 }
 const api: RushesAPI = {
+  openRecording: (id) => invoke('rushes:open-recording', id),
+  restorePrimaryView: (view) => invoke('rushes:restore-primary-view', view),
+  draftFlushed: (token, error) => invoke('rushes:draft-flushed', { token, error }),
   onboarding: (action) => invoke('rushes:onboarding', action),
   request: (cmd, args = {}) => invoke('rushes:request', { cmd, args }),
   presets: (action, name, options) => invoke('rushes:presets', { action, name, options }),

@@ -19,6 +19,7 @@ import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { isPrimaryView, windowKey, type PrimaryView } from '../shared/navigation';
+import { unwrapNativeResponse } from '../shared/native-result';
 import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -36,11 +37,19 @@ import { atomicJSON, atomicBytes } from './atomic';
 import { OnboardingStore } from './onboarding-store';
 import { CameraOverlayLifecycle, recoveredBubbleHidden } from './camera-overlay';
 import { IdleCameraPreview } from './idle-camera-preview';
+import { IdleCapturePreflight } from './idle-capture-preflight';
+import { finishPreviewCleanup } from './preview-cleanup';
+import { PrimaryNavigation, PrimaryWindowGeometry, windowPresentation } from './primary-window';
+import { DraftExitRequests } from './draft-exit';
 import { PreviewFrames } from './preview-frames';
 import {
   CountdownSignals,
   RecordingStartup,
   RecordingWindowLifecycle,
+  NativeStatusRequests,
+  AppQuitGate,
+  recordingStoppedActions,
+  recoverIdleRecorder,
   type StartupAttempt,
 } from './recording-controls';
 import { openAreaPicker } from './area-picker';
@@ -54,6 +63,7 @@ import {
   cloudSettingsSchema,
   shareCommands,
   defaultOptions,
+  preflightInputs,
   type RecordingOptions,
   type CloudSettings,
 } from '../shared/contracts';
@@ -65,6 +75,9 @@ protocol.registerSchemesAsPrivileged([
 ]);
 const windows = new Map<string, BrowserWindow>();
 let primaryView: PrimaryView = 'recorder';
+const primaryGeometry = new PrimaryWindowGeometry();
+const primaryNavigation = new PrimaryNavigation();
+let primaryBoundsTimer: ReturnType<typeof setTimeout> | undefined;
 const media = new MediaRegistry();
 const exportedFiles = new Set<string>();
 const userDir =
@@ -91,6 +104,7 @@ let tray: Tray;
 let quitting = false;
 let state = 'idle';
 let currentId: string | undefined;
+let selectedReviewId: string | undefined;
 let automationChild: ChildProcess | undefined;
 let engineReady = false;
 const pendingURLs: string[] = [];
@@ -103,6 +117,16 @@ let viewNotifications: ViewNotifications | undefined;
 const countdownSignals = new CountdownSignals();
 const recordingWindows = new RecordingWindowLifecycle();
 const recordingStartup = new RecordingStartup();
+const statusRequests = new NativeStatusRequests();
+const quitGate = new AppQuitGate();
+const draftExit = new DraftExitRequests((token) => {
+  const window = windows.get('recorder');
+  if (!window || window.isDestroyed() || window.webContents.isLoadingMainFrame()) {
+    draftExit.reply(token);
+    return;
+  }
+  window.webContents.send('rushes:event', { event: 'flush-draft', token });
+});
 const previewFrames = new PreviewFrames();
 const idlePreview = new IdleCameraPreview({
   allowed: () => engineReady && !quitting && !captureBusy() && recorderVisible(),
@@ -117,6 +141,38 @@ const idlePreview = new IdleCameraPreview({
     previewFrames.install(acknowledgment);
   },
 });
+let feedbackRefresh = 0;
+const idleCapture = new IdleCapturePreflight({
+  allowed: () => engineReady && !quitting && !captureBusy() && recorderVisible(),
+  start: (selectionToken, selectionRevision, args) =>
+    supervisor.client.request('capture.preflight.start', {
+      ...args,
+      selectionToken,
+      selectionRevision,
+    }),
+  stop: async (selectionToken, selectionRevision) => {
+    const value = await supervisor.client.request('capture.preflight.stop', {
+      selectionToken,
+      selectionRevision,
+    });
+    if (!z.object({ quiescent: z.boolean() }).parse(value).quiescent)
+      throw Object.assign(new Error('Input preview cleanup is still pending.'), {
+        code: 'preflight-busy',
+      });
+    return value;
+  },
+  snapshot: (previewToken) =>
+    supervisor.client.request('capture.preflight.snapshot', { previewToken }),
+  clear: () => broadcast({ event: 'preflight-cleared' }),
+  ready: (result) => broadcast({ event: 'preflight-ready', result }),
+  image: (result) => broadcast({ event: 'screen-preview', result }),
+  error: (error) =>
+    broadcast({
+      event: 'preflight-error',
+      message: String(error),
+      code: (error as { code?: string })?.code,
+    }),
+});
 const uiFile = join(__dirname, '../renderer/index.html');
 const devURL = app.isPackaged
   ? undefined
@@ -129,6 +185,7 @@ const devURL = app.isPackaged
       .optional()
       .parse(process.env.RUSHES_DEV_URL);
 const broadcast = (event: Record<string, unknown>) => {
+  if (event.event === 'microphone-level' && !idleCapture.acceptsLevel(event.result)) return;
   if (event.event === 'camera-preview' && !supervisor.active && !idlePreview.acceptsFrames) return;
   if (event.event === 'camera-preview' && !previewFrames.accepts(event.result ?? event)) return;
   for (const [view, window] of windows) {
@@ -141,19 +198,35 @@ const broadcast = (event: Record<string, unknown>) => {
     window.webContents.send('rushes:event', event);
   }
 };
-function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions = {}) {
+function windowFor(
+  view: string,
+  extra: Electron.BrowserWindowConstructorOptions = {},
+  notify = true,
+) {
   const primary = isPrimaryView(view);
   const key = windowKey(view);
-  if (primary) primaryView = view;
+  if (primary) {
+    primaryNavigation.select(view);
+    primaryView = view;
+  }
   const old = windows.get(key);
   if (old && !old.isDestroyed()) {
     if (primary) {
+      if (primaryGeometry.mode !== windowPresentation(view)) {
+        const selected = primaryGeometry.select(view, old.getNormalBounds(), primaryWorkAreas());
+        if (old.isFullScreen()) old.setFullScreen(false);
+        if (old.isMaximized()) old.unmaximize();
+        old.setMinimumSize(selected.minimum.width, selected.minimum.height);
+        old.setBounds(selected.bounds);
+      }
       const navigate = () => {
         if (!old.isDestroyed() && windows.get(key) === old && primaryView === view)
           old.webContents.send('rushes:event', { event: 'navigate', view });
       };
-      if (old.webContents.isLoading()) old.webContents.once('did-finish-load', navigate);
-      else navigate();
+      if (notify) {
+        if (old.webContents.isLoading()) old.webContents.once('did-finish-load', navigate);
+        else navigate();
+      }
       if (view !== 'recorder' && !captureBusy())
         void hideCameraBubble().catch((error) =>
           broadcast({ event: 'warning', message: String(error) }),
@@ -168,11 +241,16 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
   const compact = ['bar', 'bubble', 'area', 'teleprompter', 'drawing', 'drawing-tools'].includes(
     view,
   );
+  const primaryLayout = primary
+    ? primaryGeometry.select(view, undefined, primaryWorkAreas())
+    : undefined;
   const w = new BrowserWindow({
-    width: view === 'bar' ? 800 : 1120,
-    height: view === 'bar' ? 104 : 780,
-    minWidth: view === 'bubble' ? 1 : compact ? 100 : 800,
-    minHeight: view === 'bubble' ? 1 : compact ? 60 : 600,
+    ...(primaryLayout?.bounds ?? {
+      width: view === 'bar' ? 800 : 1120,
+      height: view === 'bar' ? 104 : 780,
+    }),
+    minWidth: primaryLayout?.minimum.width ?? (view === 'bubble' ? 1 : compact ? 100 : 800),
+    minHeight: primaryLayout?.minimum.height ?? (view === 'bubble' ? 1 : compact ? 60 : 600),
     show: false,
     title: view === 'drawing' ? 'Rushes Drawing' : 'Rushes',
     backgroundColor: '#f7f8fa',
@@ -222,6 +300,31 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
       void hideDrawing().catch((error) => broadcast({ event: 'warning', message: String(error) }));
   });
   if (primary) {
+    const remember = () => {
+      if (w.isDestroyed() || w.isMaximized() || w.isFullScreen()) return;
+      primaryGeometry.remember(w.getNormalBounds());
+      clearTimeout(primaryBoundsTimer);
+      primaryBoundsTimer = setTimeout(
+        () =>
+          void atomicJSON(join(userDir, 'primary-window.json'), primaryGeometry.snapshot()).catch(
+            (error) => console.error('[Rushes] Window position save failed', String(error)),
+          ),
+        200,
+      );
+    };
+    w.on('moved', remember);
+    w.on('resized', remember);
+    w.on('close', (event) => {
+      remember();
+      if (!quitting) {
+        event.preventDefault();
+        w.hide();
+        if (!captureBusy())
+          void hideCameraBubble().catch((error) =>
+            broadcast({ event: 'warning', message: String(error) }),
+          );
+      }
+    });
     w.on('show', () => void syncIdlePreview());
     w.on('hide', () => {
       if (!captureBusy())
@@ -255,6 +358,12 @@ function windowFor(view: string, extra: Electron.BrowserWindowConstructorOptions
   const url = devURL ? `${devURL}/#${view}` : `${pathToFileURL(uiFile).toString()}#${view}`;
   void w.loadURL(url);
   return w;
+}
+function primaryWorkAreas() {
+  const primary = screen.getPrimaryDisplay();
+  return [primary, ...screen.getAllDisplays().filter((display) => display.id !== primary.id)].map(
+    (display) => display.workArea,
+  );
 }
 function startAutomationHost() {
   if (
@@ -482,7 +591,11 @@ async function syncBubble() {
   });
 }
 function captureBusy() {
-  return supervisor.active || startRequests > 0;
+  return (
+    supervisor.active ||
+    startRequests > 0 ||
+    ['preparing', 'armed', 'recording', 'paused', 'finishing'].includes(state)
+  );
 }
 function queueBubbleWrite(write: () => Promise<void>) {
   const next = bubbleWrites.catch(() => {}).then(write);
@@ -490,24 +603,39 @@ function queueBubbleWrite(write: () => Promise<void>) {
   return next;
 }
 async function hideCameraBubble() {
+  ++feedbackRefresh;
+  const feedbackStopped = idleCapture.stop();
+  void feedbackStopped.catch(() => {});
   const generation = cameraOverlay.hide();
+  const cameraToken = previewFrames.currentToken;
   idlePreview.invalidate();
   const busy = captureBusy();
   const id = currentId;
   if (busy) bubbleSuppressed = true;
   windows.get('bubble')?.close();
   broadcast({ event: 'camera-preview-cleared' });
-  await supervisor.client.request('camera.preview.subscribe', { enabled: false });
-  if (busy) {
-    await queueBubbleWrite(async () => {
-      if (supervisor.active && currentId === id && cameraOverlay.sameGeneration(generation))
-        await supervisor.client.request('record.bubble', { ...lastBubble, visible: false });
-    });
-  } else if (!captureBusy() && cameraOverlay.sameGeneration(generation)) {
-    await idlePreview.stop();
-  }
+  await finishPreviewCleanup([
+    () => feedbackStopped,
+    () =>
+      cameraToken
+        ? supervisor.client.request('camera.preview.subscribe', {
+            enabled: false,
+            previewToken: cameraToken,
+          })
+        : Promise.resolve(),
+    async () => {
+      if (busy) {
+        await queueBubbleWrite(async () => {
+          if (supervisor.active && currentId === id && cameraOverlay.sameGeneration(generation))
+            await supervisor.client.request('record.bubble', { ...lastBubble, visible: false });
+        });
+      } else if (!captureBusy() && cameraOverlay.sameGeneration(generation))
+        await idlePreview.stop();
+    },
+  ]);
 }
 async function syncIdlePreview() {
+  void syncIdleCapture();
   const camera = options.camera;
   if (camera === 'none' || !engineReady || captureBusy() || quitting || !recorderVisible()) return;
   const generation = cameraOverlay.begin();
@@ -526,6 +654,45 @@ async function syncIdlePreview() {
     if (!captureBusy() && recorderVisible())
       broadcast({
         event: 'warning',
+        message: String(error),
+        code: (error as { code?: string })?.code,
+      });
+  }
+}
+async function syncIdleCapture() {
+  const generation = ++feedbackRefresh;
+  if (!engineReady || quitting || captureBusy() || !recorderVisible()) return;
+  const selection = preflightInputs(options);
+  try {
+    const live = await supervisor.client.request('status');
+    if (
+      generation !== feedbackRefresh ||
+      !recorderVisible() ||
+      captureBusy() ||
+      quitting ||
+      live.state !== 'idle'
+    )
+      return;
+    const permissions = live.permissions ?? (await supervisor.client.request('permissions.check'));
+    if (generation !== feedbackRefresh || !recorderVisible() || captureBusy() || quitting) return;
+    const inputs: Record<string, unknown> = {
+      ...selection,
+      mic: permissions.microphone === 'granted' ? selection.mic : 'none',
+    };
+    if (permissions.screen !== 'granted') {
+      delete inputs.display;
+      delete inputs.window;
+      delete inputs.area;
+    }
+    if (inputs.mic === 'none' && !inputs.display && !inputs.window) {
+      await idleCapture.stop();
+      return;
+    }
+    await idleCapture.select(inputs);
+  } catch (error) {
+    if (generation === feedbackRefresh && recorderVisible() && !captureBusy())
+      broadcast({
+        event: 'preflight-error',
         message: String(error),
         code: (error as { code?: string })?.code,
       });
@@ -622,6 +789,24 @@ function showRecordingBubble(id: string) {
       },
     )
     .catch((error) => broadcast({ event: 'warning', message: String(error) }));
+}
+function openReviewWindow(id: string) {
+  selectedReviewId = id;
+  const window = windowFor('review');
+  const current = primaryNavigation.checkpoint();
+  const open = () => {
+    if (
+      !quitting &&
+      current() &&
+      primaryView === 'review' &&
+      selectedReviewId === id &&
+      !window.isDestroyed()
+    )
+      window.webContents.send('rushes:event', { event: 'open-recording', id });
+  };
+  if (window.webContents.isLoading())
+    window.webContents.once('did-finish-load', () => setTimeout(open, 100));
+  else open();
 }
 async function requestControl(cmd: string, args: Record<string, unknown> = {}) {
   try {
@@ -736,6 +921,11 @@ async function ready() {
   await mkdir(recordingsRoot, { recursive: true });
   await media.allowRoot(recordingsRoot);
   try {
+    primaryGeometry.restore(
+      JSON.parse(await readFile(join(userDir, 'primary-window.json'), 'utf8')),
+    );
+  } catch {}
+  try {
     options = recordingOptionsSchema.parse(
       JSON.parse(await readFile(join(userDir, 'settings.json'), 'utf8')),
     );
@@ -794,7 +984,27 @@ async function ready() {
     enginePath,
     packaged: app.isPackaged,
     primaryView,
+    reviewId: selectedReviewId,
+    inputPreflight: idleCapture.currentAcknowledgment,
   }));
+  handle('rushes:open-recording', async (value) => {
+    const id = z.string().min(1).max(200).parse(value);
+    await supervisor.client.request('show', { id });
+    selectedReviewId = id;
+    const window = windowFor('review');
+    window.webContents.send('rushes:event', { event: 'open-recording', id });
+  });
+  handle('rushes:restore-primary-view', (value) => {
+    const view = z.enum(['recorder', 'review', 'editor', 'library', 'settings']).parse(value);
+    windowFor(view, {}, false);
+  });
+  handle('rushes:draft-flushed', (value) => {
+    const result = z
+      .object({ token: z.uuid(), error: z.string().max(2000).optional() })
+      .strict()
+      .parse(value);
+    draftExit.reply(result.token, result.error);
+  });
   handle('rushes:onboarding', async (value) => {
     const result = await onboarding.action(value);
     if (value !== 'get') {
@@ -865,6 +1075,7 @@ async function ready() {
       broadcast({ event: 'camera-preview-cleared' });
     let startAttempt: StartupAttempt | undefined;
     if (request.cmd === 'record.start') {
+      statusRequests.changed();
       startAttempt = recordingStartup.begin();
       startRequests++;
       bubbleSuppressed = false;
@@ -875,10 +1086,23 @@ async function ready() {
     try {
       // Finish idle warm-up before native acquisition takes over the camera.
       if (startAttempt) {
+        ++feedbackRefresh;
+        await idleCapture.stop();
         await idlePreview.stop();
         recordingStartup.issue(startAttempt);
       }
-      result = await supervisor.client.request(request.cmd, request.args);
+      result =
+        request.cmd === 'status'
+          ? await statusRequests.read(() => supervisor.client.request(request.cmd, request.args))
+          : await supervisor.client.request(request.cmd, request.args);
+      if (request.cmd === 'status') {
+        const previous = state;
+        state = result.state;
+        supervisor.active = ['preparing', 'armed', 'recording', 'paused', 'finishing'].includes(
+          state,
+        );
+        if (state === 'idle' && previous !== 'idle') void syncIdlePreview();
+      }
     } catch (error) {
       if (request.cmd === 'record.start') clearCountdown();
       throw error;
@@ -893,8 +1117,7 @@ async function ready() {
       const u = new URL(result.url);
       if (u.protocol === 'x-apple.systempreferences:') await shell.openExternal(result.url);
     }
-    if (request.cmd === 'permissions.request' && result.camera === 'granted')
-      void syncIdlePreview();
+    if (['permissions.request', 'permissions.check'].includes(request.cmd)) void syncIdlePreview();
     if (request.cmd === 'teleprompter.set') {
       promptScript = String(request.args.script ?? '');
       promptEnabled = request.args.enabled === true;
@@ -930,12 +1153,18 @@ async function ready() {
     const next = recordingOptionsSchema.parse(value);
     if (next.editorCommandTemplate.trim()) editorArguments(next.editorCommandTemplate);
     const previousCamera = options.camera;
+    const previousInputs = JSON.stringify(preflightInputs(options));
     options = next.mode === 'camera-only' ? { ...next, systemAudio: false } : next;
+    if (previousInputs !== JSON.stringify(preflightInputs(options))) {
+      ++feedbackRefresh;
+      void idleCapture.stop().catch(() => {});
+    }
     await writeOptions();
     if (options.camera !== previousCamera && !captureBusy()) {
       if (options.camera === 'none') await hideCameraBubble();
       else void syncIdlePreview();
     }
+    void syncIdlePreview();
   });
   handle('rushes:select-area', async (value) => {
     const local = z
@@ -957,6 +1186,7 @@ async function ready() {
     await writeOptions();
     broadcast({ event: 'area-selected', area, source });
     selector.close();
+    void syncIdleCapture();
   });
   handle('rushes:media', async (value) => media.allowFile(z.string().max(4000).parse(value)));
   handle('rushes:reveal', async (value) => {
@@ -983,6 +1213,8 @@ async function ready() {
       case 'library':
       case 'settings':
       case 'recorder':
+      case 'review':
+      case 'editor':
         windowFor(v.action);
         return;
       case 'drawing':
@@ -992,9 +1224,13 @@ async function ready() {
       case 'teleprompter':
         return showTeleprompter();
       case 'close':
-        return windows.get('recorder')?.hide();
+        windows.get('recorder')?.hide();
+        if (!captureBusy()) await hideCameraBubble();
+        return;
       case 'minimize':
-        return windows.get('recorder')?.minimize();
+        windows.get('recorder')?.minimize();
+        if (!captureBusy()) await hideCameraBubble();
+        return;
       case 'maximize': {
         const window = windows.get('recorder');
         if (!window || window.isDestroyed()) return;
@@ -1285,6 +1521,16 @@ async function ready() {
     desktopNotification,
   );
   supervisor.client.on('event', async (e) => {
+    if (e.event === 'microphone-level') {
+      broadcast(e);
+      return;
+    }
+    if (
+      ['state-changed', 'recording-started', 'recording-stopped', 'engine-reconnected'].includes(
+        e.event,
+      )
+    )
+      statusRequests.changed();
     const countdownCurrent = countdownSignals.current(e);
     const tick = recordingStartup.canceling ? undefined : countdownSignals.event(e);
     if (e.event !== 'countdown' || (countdownCurrent && !recordingStartup.canceling))
@@ -1293,6 +1539,8 @@ async function ready() {
       state = 'recording';
       currentId = e.recordingId;
       idlePreview.invalidate();
+      ++feedbackRefresh;
+      idleCapture.invalidate();
       recordingWindows.event(e, () => {
         for (const view of ['recorder', 'library', 'settings']) {
           const window = windows.get(view);
@@ -1315,6 +1563,9 @@ async function ready() {
       void syncBubble().catch((error) => broadcast({ event: 'warning', message: String(error) }));
     }
     if (e.event === 'engine-reconnected' && !quitting) {
+      const previousId = currentId;
+      ++feedbackRefresh;
+      idleCapture.invalidate();
       previewFrames.clear();
       const recoveredId = e.status?.recording?.recordingID;
       bubbleSuppressed = recoveredBubbleHidden(currentId, recoveredId, e.state, bubbleSuppressed);
@@ -1333,11 +1584,38 @@ async function ready() {
         windows.get('teleprompter')?.close();
         void hideDrawing().catch(() => {});
         broadcast({ event: 'camera-preview-cleared' });
+        if (e.state === 'idle' && primaryView === 'recorder') {
+          const navigationCurrent = primaryNavigation.checkpoint();
+          try {
+            await recoverIdleRecorder(previousId, {
+              current: () =>
+                navigationCurrent() &&
+                !quitting &&
+                !captureBusy() &&
+                !currentId &&
+                primaryView === 'recorder',
+              show: (id) => statusRequests.read(() => supervisor.client.request('show', { id })),
+              open: openReviewWindow,
+              rearm: syncIdlePreview,
+            });
+          } catch (error) {
+            if (
+              !['not-found', 'status-superseded'].includes((error as { code?: string }).code ?? '')
+            )
+              broadcast({
+                event: 'warning',
+                message:
+                  'Your saved take is in My recordings. Review could not reopen automatically.',
+              });
+          }
+        }
       }
     }
     if (e.event === 'state-changed' && typeof e.state === 'string') {
       if (cameraOverlay.newTake(state, e.state)) {
         idlePreview.invalidate();
+        ++feedbackRefresh;
+        idleCapture.invalidate();
         if (startRequests === 0) bubbleSuppressed = false;
         windows.get('bubble')?.close();
       }
@@ -1345,10 +1623,14 @@ async function ready() {
       state = e.state;
     }
     if (e.event === 'recording-stopped') {
+      const actions = recordingStoppedActions(e);
       const stoppedId = e.recordingId ?? currentId;
-      if (typeof stoppedId === 'string')
+      if (actions.view === 'review')
+        selectedReviewId = typeof stoppedId === 'string' ? stoppedId : undefined;
+      if (actions.autoShare && typeof stoppedId === 'string')
         void autoShare.recordingStopped(stoppedId, options.autoShare);
-      state = 'idle';
+      state = 'finishing';
+      supervisor.active = true;
       previewFrames.clear();
       cameraOverlay.hide();
       bubbleSuppressed = false;
@@ -1358,23 +1640,19 @@ async function ready() {
       windows.get('bar')?.close();
       windows.get('bubble')?.close();
       void supervisor.client.request('camera.preview.stop').catch(() => {});
-      const library = windowFor('library');
-      const openReview = () =>
-        library.webContents.send('rushes:event', {
-          event: 'open-recording',
-          id: stoppedId,
-        });
-      if (library.webContents.isLoading())
-        library.webContents.once('did-finish-load', () => setTimeout(openReview, 100));
-      else openReview();
+      if (actions.view === 'review' && typeof stoppedId === 'string') openReviewWindow(stoppedId);
+      else windowFor(actions.view);
       currentId = undefined;
     }
     trayUpdate();
   });
   supervisor.client.on('engine-error', (e) => broadcast({ event: 'error', ...e }));
   supervisor.client.on('disconnected', () => {
+    statusRequests.changed();
     clearCountdown();
     idlePreview.invalidate();
+    ++feedbackRefresh;
+    idleCapture.invalidate();
     cameraOverlay.hide();
     windows.get('bubble')?.close();
     broadcast({ event: 'camera-preview-cleared' });
@@ -1480,8 +1758,10 @@ async function ready() {
             `window.__windowProbe = crypto.randomUUID()`,
           );
           if (process.env.RUSHES_TEST_ENGINE_STUB === '1') {
-            await w.webContents.executeJavaScript(
-              `window.rushes.request('camera.preview.start', {camera:'camera-diagnostic'})`,
+            unwrapNativeResponse(
+              await w.webContents.executeJavaScript(
+                `window.rushes.request('camera.preview.start', {camera:'camera-diagnostic'})`,
+              ),
             );
             if (BrowserWindow.getAllWindows().length !== 1)
               throw new Error('Idle camera preview opened an extra window');
@@ -1723,7 +2003,7 @@ async function ready() {
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('activate', () => {
-    if (!engineReady || quitting || captureBusy()) return;
+    if (!engineReady || quitting || (captureBusy() && state !== 'finishing')) return;
     const main = windows.get('recorder');
     if (!main || main.isDestroyed() || !main.isVisible() || main.isMinimized())
       windowFor(primaryView);
@@ -1737,27 +2017,41 @@ else {
 }
 app.on('window-all-closed', () => {});
 app.on('before-quit', (event) => {
-  if (quitting) return;
+  const action = quitGate.request();
+  if (action === 'exit') return;
   event.preventDefault();
+  if (action === 'wait') return;
   quitting = true;
+  ++feedbackRefresh;
   cameraOverlay.hide();
-  void supervisor
-    .quit()
+  void finishPreviewCleanup([() => draftExit.flush(), () => hideCameraBubble()])
+    .then(() => supervisor.quit())
     .then(async () => {
       viewNotifications?.stop();
       await writeOptions().catch((error) =>
         console.error('[Rushes] Could not save window positions', String(error)),
       );
+      clearTimeout(primaryBoundsTimer);
+      await atomicJSON(join(userDir, 'primary-window.json'), primaryGeometry.snapshot()).catch(
+        () => {},
+      );
       globalShortcut.unregisterAll();
       automationChild?.kill('SIGTERM');
       automationChild = undefined;
+      quitGate.confirm();
       app.quit();
     })
     .catch((error) => {
       quitting = false;
+      quitGate.failed();
       void dialog.showMessageBox({
         type: 'error',
-        message: 'Rushes could not confirm that the recording finished.',
+        message:
+          (error as { code?: string })?.code === 'draft-save-failed'
+            ? 'Rushes could not save the current edit. Retry before quitting.'
+            : (error as { code?: string })?.code === 'preflight-busy'
+              ? 'Rushes is still closing an input preview. Try Quit again in a moment.'
+              : 'Rushes could not confirm that the recording finished.',
         detail: (error as Error).message,
       });
       if (supervisor.active) bar();

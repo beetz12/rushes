@@ -103,7 +103,8 @@ public struct ControlGuide: Codable, Equatable, Sendable {
     }
 
     private static func productionCommandDocs() -> [CommandDoc] {
-        var docs = [CommandDoc(name: "record.geometry", cli: ["record geometry"], summary: "Read current captured content bounds in global screen points without acquiring a device.", usage: "rushes record geometry", result: "{mode,rect:{x,y,width,height},displayID?}|null")]
+        var docs = [CommandDoc(name: "record.geometry", cli: ["record geometry"], summary: "Read current captured content bounds in global screen points without acquiring a device.", usage: "rushes record geometry", result: "{mode,rect:{x,y,width,height},displayID?}|null"),
+            CommandDoc(name: "preview.subscribe", cli: [], summary: "Select a preview-only data connection. Ordinary control connections receive reliable events only; this never acquires a source.", usage: "socket preview.subscribe {enabled:true}", params: [.init(name: "enabled", type: "boolean", required: true, description: "true selects preview-only delivery; false restores control delivery on this connection")], result: "{enabled}")]
         for name in ProductionEffectsCoordinator.commands.sorted() {
             let camera = name.hasPrefix("camera.")
             var params: [ParamDoc] = []
@@ -133,7 +134,10 @@ public struct ControlGuide: Codable, Equatable, Sendable {
             CommandDoc(name: "permissions.check", cli: ["permissions check"], summary: "Inspect native permissions without prompting.", usage: "rushes permissions check", result: "{screen,camera,microphone,accessibility,inputMonitoring,details}"),
             CommandDoc(name: "permissions.request", cli: ["permissions request"], summary: "Explicitly request one native permission.", usage: "rushes permissions request PERMISSION", result: "permission states"),
             CommandDoc(name: "permissions.settings", cli: ["permissions settings"], summary: "Get the relevant Settings link.", usage: "rushes permissions settings PERMISSION", result: "{url}"),
-            CommandDoc(name: "camera.preview.subscribe", cli: [], summary: "Enable or disable preview events without changing camera device lifecycle; allowed during active CLI takes.", usage: "socket camera.preview.subscribe {enabled:true}", result: "{enabled}"),
+            CommandDoc(name: "capture.preflight.start", cli: [], summary: "Check selected native inputs while idle without requesting permissions.", usage: "socket capture.preflight.start {selectionToken:UUID,selectionRevision:positiveInteger,mic,display|window?,area?}", params: [.init(name: "selectionToken", type: "string", required: true, description: "Fresh UUID correlating selection and cancellation before acknowledgment."), .init(name: "selectionRevision", type: "integer", required: true, description: "Positive monotonic revision for this connection; old Starts remain cancelled regardless of wire task order.")], result: "{previewToken,selectionToken,selectionRevision,microphone,source}; memory-only meter events"),
+            CommandDoc(name: "capture.preflight.stop", cli: [], summary: "Preserve cancellation order and drain originating idle native monitoring.", usage: "socket capture.preflight.stop {selectionToken:UUID,selectionRevision:positiveInteger}", result: "{quiescent}; false means another selection or native cleanup still owns input. Stale revision cannot close a newer input."),
+            CommandDoc(name: "capture.preflight.snapshot", cli: [], summary: "Get one bounded JPEG of the selected screen surface without audio capture.", usage: "socket capture.preflight.snapshot {previewToken:UUID}", result: "{previewToken,source,jpeg,mime,width,height}; at most640px and256KiB"),
+            CommandDoc(name: "camera.preview.subscribe", cli: [], summary: "Enable or disable preview events without changing camera device lifecycle; allowed during active CLI takes.", usage: "socket camera.preview.subscribe {enabled:true,previewToken?:UUID}", result: "{enabled,previewToken,ignored?}; supplied old token cannot change a replacement publisher"),
             CommandDoc(name: "camera.preview.start", cli: ["camera preview-start"], summary: "Warm camera and publish bounded JPEG preview events.", usage: "rushes camera preview-start --camera default", result: "{running,camera,name}"),
             CommandDoc(name: "camera.preview.stop", cli: ["camera preview-stop"], summary: "Close camera preview while idle.", usage: "rushes camera preview-stop", result: "{}"),
             CommandDoc(name: "record.cancel", cli: ["record cancel"], summary: "Cancel countdown.", usage: "rushes record cancel", result: "{state}"),
@@ -303,6 +307,7 @@ public struct ControlGuide: Codable, Equatable, Sendable {
 
     private static func eventDocs() -> [EventDoc] {
         [
+            EventDoc(event: "microphone-level", fields: ["result.previewToken", "result.microphone", "result.available", "result.rms", "result.peak", "result.clipping", "result.frames", "result.measuredAtMs"], description: "Bounded best-effort measurements of the selected native idle input. No PCM or persistence; unavailable is not silence."),
             EventDoc(event: "camera-preview", fields: ["result.jpeg", "result.mime", "result.mirrored"], description: "Bounded best-effort JPEG frames from the recording camera session."),
             EventDoc(event: "countdown", fields: ["recordingId", "result.remaining"], description: "Warm pipeline countdown, then zero at the gate."),
             EventDoc(

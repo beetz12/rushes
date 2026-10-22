@@ -1,4 +1,90 @@
 import type { EngineEvent } from '../shared/contracts';
+import { z } from 'zod';
+
+const retainedTake = z.object({
+  manifest: z.object({
+    id: z.string(),
+    status: z.enum(['complete', 'failed', 'recovered']),
+    tracks: z.array(z.object({ present: z.boolean() })),
+  }),
+});
+
+export function retainedFinishedTake(id: string, response: unknown): string | undefined {
+  const parsed = retainedTake.safeParse(response);
+  if (
+    parsed.success &&
+    parsed.data.manifest.id === id &&
+    parsed.data.manifest.tracks.some((track) => track.present)
+  )
+    return id;
+}
+
+export async function recoverIdleRecorder(
+  id: string | undefined,
+  io: {
+    current(): boolean;
+    show(id: string): Promise<unknown>;
+    open(id: string): void;
+    rearm(): Promise<void>;
+  },
+) {
+  let retained: string | undefined;
+  if (id) {
+    try {
+      retained = retainedFinishedTake(id, await io.show(id));
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === 'status-superseded') return;
+      if (code !== 'not-found') throw error;
+    }
+  }
+  if (!io.current()) return;
+  if (retained) io.open(retained);
+  else await io.rearm();
+}
+
+export function recordingStoppedActions(event: EngineEvent) {
+  const payload = event.result;
+  const discard =
+    !!payload &&
+    typeof payload === 'object' &&
+    'discardRequested' in payload &&
+    payload.discardRequested === true;
+  return { view: discard ? 'recorder' : 'review', autoShare: !discard } as const;
+}
+
+// A status read started before a take transition must not restore the old UI.
+export class NativeStatusRequests {
+  private revision = 0;
+  changed() {
+    ++this.revision;
+  }
+  async read<T>(request: () => Promise<T>): Promise<T> {
+    const revision = this.revision;
+    const result = await request();
+    if (revision !== this.revision)
+      throw Object.assign(new Error('Recording state changed while status was being read.'), {
+        code: 'status-superseded',
+      });
+    return result;
+  }
+}
+
+export class AppQuitGate {
+  private phase: 'idle' | 'closing' | 'confirmed' = 'idle';
+  request() {
+    if (this.phase === 'confirmed') return 'exit';
+    if (this.phase === 'closing') return 'wait';
+    this.phase = 'closing';
+    return 'begin';
+  }
+  confirm() {
+    this.phase = 'confirmed';
+  }
+  failed() {
+    this.phase = 'idle';
+  }
+}
 
 // Countdown sounds follow native steps, rather than a second renderer timer.
 export class CountdownSignals {

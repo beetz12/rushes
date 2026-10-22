@@ -6,7 +6,8 @@ import {
   type ShareFeedback,
 } from '../shared/contracts';
 
-const api = window.rushes;
+import { createNativeAPI } from './native-api';
+const api = window.rushes ? createNativeAPI(window.rushes) : window.rushes;
 function localDate(value: string | null) {
   if (!value) return '';
   const date = new Date(value);

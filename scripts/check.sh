@@ -57,11 +57,18 @@ for surface in shell cloud viewer worker; do
     fi
     PATH="$node_dir:$PATH" npm --prefix "$surface" run build
     PATH="$node_dir:$PATH" npm --prefix "$surface" test
+    if [ "$surface" = "shell" ]; then
+      PATH="$node_dir:$PATH" node --test verification/helper-process.mjs
+    fi
     if [ -d "$surface/src" ]; then
       clean_paths+=("$surface/src")
     fi
   fi
 done
+# Packaging helpers and independent verifiers are first-party source too.
+# These owned source directories exclude generated dependency/build outputs.
+clean_paths+=(shell/scripts shell/tests scripts/app-intents verification .github/workflows docs/design)
+clean_paths+=(viewer/test viewer/viewer.css scripts/check.sh docs/PLAN.md viewer/README.md)
 
 echo "== clean-room check on our source =="
 python3 tools/checks/test_clean_inputs.py
@@ -73,5 +80,8 @@ first=${clean_output%%$'\n'*}
 echo "== notices sync =="
 python3 tools/checks/test_notices.py
 python3 -I tools/checks/check_notices.py
+
+echo "== independent verifier self-checks =="
+python3 -m unittest discover -s verification -p 'test_*.py'
 
 echo "OK: build, tests, clean-room and notices all pass"
