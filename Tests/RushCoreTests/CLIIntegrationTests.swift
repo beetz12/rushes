@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import Testing
 
 @testable import RushCore
@@ -277,11 +278,56 @@ while True:
         try child.run()
         try #require(entered.wait(timeout: .now() + 2) == .success)
         child.waitUntilExit()
-        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) { release.signal() }
-        let evidence = capture.retireReaders(process: child, stdout: handles.stdout, stderr: handles.stderr)
+        let evidence = capture.retireReaders(process: child, stdout: handles.stdout, stderr: handles.stderr,
+                                             beforeOutputWait: { release.signal() })
         #expect(evidence.outputComplete)
         #expect(evidence.stdoutTail == "generated-held-final-output")
         #expect(evidence.exitStatus == 23 && !evidence.requestedRetirement)
+    }
+
+    @Test("An incomplete retirement keeps observing owned bytes until the actual EOF")
+    func incompleteRetirementRetainsLateEOF() throws {
+        let child = Process(), capture = CLIEngineOutputLedger(bootID: 86)
+        let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0)
+        child.executableURL = URL(fileURLWithPath: "/bin/sh")
+        child.arguments = ["-c", "printf 'generated-late-eof'; exit 23"]
+        let handles = capture.install(on: child, beforeStdoutAppend: { entered.signal(); release.wait() })
+        defer { release.signal(); handles.stdout.readabilityHandler = nil; handles.stderr.readabilityHandler = nil }
+        try child.run()
+        try #require(entered.wait(timeout: .now() + 2) == .success)
+        child.waitUntilExit()
+        let incomplete = capture.retireReaders(process: child, stdout: handles.stdout, stderr: handles.stderr)
+        #expect(!incomplete.outputComplete)
+        release.signal()
+        var final = capture.snapshot(process: child, waitForOutput: false)
+        for _ in 0..<200 {
+            if final.outputComplete { break }
+            Thread.sleep(forTimeInterval: 0.005)
+            final = capture.snapshot(process: child, waitForOutput: false)
+        }
+        #expect(final.outputComplete)
+        #expect(final.stdoutTail == "generated-late-eof")
+        #expect(final.exitStatus == 23 && !final.requestedRetirement)
+    }
+
+    @Test("Pipe diagnostics distinguish a live owned writer from actual EOF without reading bytes")
+    func pipeDiagnosticsObserveOwnedEOF() throws {
+        let child = Process(), pipe = Pipe()
+        child.executableURL = URL(fileURLWithPath: "/bin/sleep"); child.arguments = ["5"]
+        child.standardOutput = pipe; child.standardError = FileHandle.nullDevice
+        let descriptor = pipe.fileHandleForReading.fileDescriptor
+        let before = CLIOutputCapture.kernelState(descriptor)
+        try child.run()
+        defer { if child.isRunning { child.terminate(); child.waitUntilExit() } }
+        let live = CLIOutputCapture.kernelState(descriptor)
+        let liveEvents = try #require(Int16(live["pollEvents"] ?? ""))
+        #expect(liveEvents & Int16(POLLHUP) == 0)
+        child.terminate(); child.waitUntilExit()
+        let ended = CLIOutputCapture.kernelState(descriptor)
+        let endedEvents = try #require(Int16(ended["pollEvents"] ?? ""))
+        #expect(endedEvents & Int16(POLLHUP) != 0)
+        #expect(ended["device"] == before["device"] && ended["inode"] == before["inode"])
+        #expect(ended["fstatResult"] == "0")
     }
 
     @Test("Every owned terminal exit is published even without a failed CLI request")
@@ -703,16 +749,20 @@ final class EngineHarness: @unchecked Sendable {
         let err = Pipe()
         process.standardOutput = out
         process.standardError = err
+        let writerFDs = [out.fileHandleForWriting.fileDescriptor, err.fileHandleForWriting.fileDescriptor]
+        let writersBeforeLaunch = writerFDs.map(CLIOutputCapture.kernelState)
         try process.run()
         let collection = DispatchGroup()
         let captured = CLIOutputCapture()
         collection.enter()
         DispatchQueue.global(qos: .utility).async {
+            captured.markReaderEntered("stdout")
             captured.stdout = out.fileHandleForReading.readDataToEndOfFile()
             collection.leave()
         }
         collection.enter()
         DispatchQueue.global(qos: .utility).async {
+            captured.markReaderEntered("stderr")
             captured.stderr = err.fileHandleForReading.readDataToEndOfFile()
             collection.leave()
         }
@@ -729,6 +779,17 @@ final class EngineHarness: @unchecked Sendable {
             throw CLIHarnessError.engineDidNotStart("CLI timed out after \(timeout)s: \(arguments)")
         }
         guard collection.wait(timeout: .now() + 5) == .success else {
+            let evidence: [String: Any] = [
+                "pid": process.processIdentifier, "running": process.isRunning,
+                "exitStatus": process.terminationStatus, "terminationReason": process.terminationReason.rawValue,
+                "readers": captured.readerStages(), "writersBeforeLaunch": writersBeforeLaunch,
+                "writersAtFailure": writerFDs.map(CLIOutputCapture.kernelState),
+                "stdoutReadFD": CLIOutputCapture.kernelState(out.fileHandleForReading.fileDescriptor),
+                "stderrReadFD": CLIOutputCapture.kernelState(err.fileHandleForReading.fileDescriptor)
+            ]
+            if let data = try? JSONSerialization.data(withJSONObject: evidence, options: [.sortedKeys]) {
+                FileHandle.standardError.write(Data("CLI_PIPE_WAIT_FAILURE ".utf8) + data + Data([10]))
+            }
             throw CLIHarnessError.engineDidNotStart("CLI output did not reach EOF")
         }
         let stdout = String(data: captured.stdout, encoding: .utf8) ?? ""
@@ -783,8 +844,13 @@ final class CLIEngineOutputLedger: @unchecked Sendable {
             let data = handle.availableData
             if !data.isEmpty { beforeStdoutAppend() }
             append(data, standardOutput: true)
+            if data.isEmpty { handle.readabilityHandler = nil }
         }
-        err.fileHandleForReading.readabilityHandler = { [self] in append($0.availableData, standardOutput: false) }
+        err.fileHandleForReading.readabilityHandler = { [self] handle in
+            let data = handle.availableData
+            append(data, standardOutput: false)
+            if data.isEmpty { handle.readabilityHandler = nil }
+        }
         process.terminationHandler = { [self] child in
             changed.lock()
             observedExitUnixMs = Date().timeIntervalSince1970 * 1000
@@ -817,10 +883,15 @@ final class CLIEngineOutputLedger: @unchecked Sendable {
     func terminateIfRunning(_ process: Process) {
         if process.isRunning { markRetirement(); process.terminate() }
     }
-    func retireReaders(process: Process, stdout: FileHandle, stderr: FileHandle) -> CLIEngineEvidence {
-        let evidence = snapshot(process: process)
+    func retireReaders(process: Process, stdout: FileHandle, stderr: FileHandle,
+                       beforeOutputWait: @Sendable () -> Void = {}) -> CLIEngineEvidence {
+        let evidence = snapshot(process: process, beforeOutputWait: beforeOutputWait)
         if !evidence.outputComplete { Self.emit("CLI_ENGINE_OUTPUT_INCOMPLETE", evidence) }
-        stdout.readabilityHandler = nil; stderr.readabilityHandler = nil
+        // A deadline is not EOF. Late callbacks retain this boot's ledger and
+        // detach their own observations only after consuming the actual EOF.
+        if evidence.outputComplete {
+            stdout.readabilityHandler = nil; stderr.readabilityHandler = nil
+        }
         return evidence
     }
     func markRetirement() { changed.lock(); requestedRetirement = true; changed.unlock() }
@@ -828,11 +899,15 @@ final class CLIEngineOutputLedger: @unchecked Sendable {
         changed.lock(); defer { changed.unlock() }
         return String(decoding: stdout + stderr, as: UTF8.self)
     }
-    func snapshot(process: Process?, waitForOutput: Bool = true) -> CLIEngineEvidence {
+    func snapshot(process: Process?, waitForOutput: Bool = true,
+                  beforeOutputWait: @Sendable () -> Void = {}) -> CLIEngineEvidence {
         let running = process?.isRunning ?? false
         changed.lock(); defer { changed.unlock() }
         if !running && waitForOutput {
             let deadline = Date().addingTimeInterval(0.5)
+            // This fixture rendezvous only signals a held callback; no scheduler
+            // delay is assumed and the original drain deadline stays unchanged.
+            if !(stdoutEnded && stderrEnded) { beforeOutputWait() }
             while !(stdoutEnded && stderrEnded), changed.wait(until: deadline) {}
         }
         let observedExit = exitStatus ?? (running ? nil : process?.terminationStatus)
@@ -980,12 +1055,42 @@ private final class CLIOutputCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var output = Data()
     private var errorOutput = Data()
+    private var stages: [String: String] = [:]
+    func markReaderEntered(_ stream: String) {
+        lock.withLock { stages[stream + "EnteredUnixMs"] = String(Date().timeIntervalSince1970 * 1000) }
+    }
+    func readerStages() -> [String: String] {
+        lock.withLock {
+            var result = stages
+            result["stdoutBytesReturned"] = String(output.count)
+            result["stderrBytesReturned"] = String(errorOutput.count)
+            return result
+        }
+    }
+    // Descriptor numbers may be reused after launch; device/inode identity is
+    // retained as well. poll never consumes bytes from the owned pipe.
+    static func kernelState(_ descriptor: Int32) -> [String: String] {
+        var value: [String: String] = ["descriptor": String(descriptor)]
+        let flags = fcntl(descriptor, F_GETFD, 0)
+        value["descriptorFlags"] = String(flags)
+        value["flagsErrno"] = String(flags == -1 ? errno : 0)
+        var identity = stat()
+        let observed = fstat(descriptor, &identity)
+        value["fstatResult"] = String(observed)
+        value["fstatErrno"] = String(observed == -1 ? errno : 0)
+        if observed == 0 { value["device"] = String(identity.st_dev); value["inode"] = String(identity.st_ino) }
+        var readiness = pollfd(fd: descriptor, events: Int16(POLLIN | POLLHUP), revents: 0)
+        let polled = Darwin.poll(&readiness, 1, 0)
+        value["pollResult"] = String(polled); value["pollEvents"] = String(readiness.revents)
+        value["observedUnixMs"] = String(Date().timeIntervalSince1970 * 1000)
+        return value
+    }
     var stdout: Data {
         get { lock.withLock { output } }
-        set { lock.withLock { output = newValue } }
+        set { lock.withLock { output = newValue; stages["stdoutReturnedUnixMs"] = String(Date().timeIntervalSince1970 * 1000) } }
     }
     var stderr: Data {
         get { lock.withLock { errorOutput } }
-        set { lock.withLock { errorOutput = newValue } }
+        set { lock.withLock { errorOutput = newValue; stages["stderrReturnedUnixMs"] = String(Date().timeIntervalSince1970 * 1000) } }
     }
 }

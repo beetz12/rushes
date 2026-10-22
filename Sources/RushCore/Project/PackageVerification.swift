@@ -20,20 +20,40 @@ public struct PackageVerifier: Sendable {
     /// AVFoundation's synchronous decoder can wait for codec work. Keep those
     /// waits outside Swift's cooperative executor, which must remain available
     /// to concurrent writers and cancellation tasks.
-    private final class Decoder: @unchecked Sendable {
-        let reader: AVAssetReader
-        let output: AVAssetReaderTrackOutput
+    final class Decoder: @unchecked Sendable {
+        private let startNative: () -> Bool
+        private let copyNative: () -> Int?
+        private let cancelNative: () -> Void
+        private let nativeLock = NSLock()
         private var started = false
-        init(reader: AVAssetReader, output: AVAssetReaderTrackOutput) {
-            self.reader = reader; self.output = output
+        private var cancelled = false
+        init(start: @escaping () -> Bool, copy: @escaping () -> Int?, cancel: @escaping () -> Void) {
+            startNative = start; copyNative = copy; cancelNative = cancel
         }
-        // Called only by this reader's dedicated serial queue.
+        convenience init(reader: AVAssetReader, output: AVAssetReaderTrackOutput) {
+            self.init(start: { reader.startReading() },
+                      copy: { output.copyNextSampleBuffer().map(CMSampleBufferGetNumSamples) },
+                      cancel: { reader.cancelReading() })
+        }
+        // AVAssetReader forbids cancelReading concurrent with a sample read.
+        // BoundedMediaRead resolves its caller before invoking cancellation, so
+        // waiting here for an in-flight native call cannot hold that caller.
         func copyCount() -> Int? {
-            if !started {
-                started = true
-                guard reader.startReading() else { return nil }
+            nativeLock.withLock {
+                guard !cancelled else { return nil }
+                if !started {
+                    started = true
+                    guard startNative() else { return nil }
+                }
+                return copyNative()
             }
-            return output.copyNextSampleBuffer().map(CMSampleBufferGetNumSamples)
+        }
+        func cancel() {
+            nativeLock.withLock {
+                guard !cancelled else { return }
+                cancelled = true
+                cancelNative()
+            }
         }
     }
 
@@ -239,7 +259,7 @@ public struct PackageVerifier: Sendable {
                 reader.add(output)
                 let decoder = Decoder(reader: reader, output: output)
                 let reads = BoundedMediaRead<Int>(copy: { decoder.copyCount() },
-                                                  cancel: { decoder.reader.cancelReading() })
+                                                  cancel: { decoder.cancel() })
                 defer { reads.cancel() }
                 var samples = 0
                 while let count = try await reads.read() {
