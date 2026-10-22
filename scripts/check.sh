@@ -35,7 +35,7 @@ sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
 PY
 
 clean_paths=(Sources Tests)
-for surface in shell cloud viewer worker; do
+for surface in shell cloud viewer worker browser; do
   if [ -f "$surface/package.json" ]; then
     if [ ! -f "$surface/.nvmrc" ]; then
       echo "Missing pinned Node runtime: $surface/.nvmrc" >&2
@@ -69,6 +69,8 @@ done
 # These owned source directories exclude generated dependency/build outputs.
 clean_paths+=(shell/scripts shell/tests scripts/app-intents verification .github/workflows docs/design)
 clean_paths+=(viewer/test viewer/viewer.css scripts/check.sh docs/PLAN.md viewer/README.md)
+clean_paths+=(browser/test browser/index.html browser/vite.config.ts browser/tsconfig.json browser/package.json)
+clean_paths+=(scripts/check-browser-recorder.mjs scripts/install-test-chrome.mjs tools/checks/check_notices.py THIRD_PARTY_NOTICES.md)
 
 echo "== clean-room check on our source =="
 python3 tools/checks/test_clean_inputs.py

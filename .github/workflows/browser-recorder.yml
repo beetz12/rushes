@@ -1,0 +1,213 @@
+name: browser-recorder
+on:
+  pull_request:
+    paths:
+      - 'browser/**'
+      - 'scripts/check-browser-recorder.mjs'
+      - 'scripts/install-test-chrome.mjs'
+      - '.github/workflows/browser-recorder.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'browser/**'
+      - 'scripts/check-browser-recorder.mjs'
+      - 'scripts/install-test-chrome.mjs'
+      - '.github/workflows/browser-recorder.yml'
+  workflow_dispatch:
+    inputs:
+      maximum_take:
+        description: Run the protected ten-minute matrix (failures block acceptance)
+        type: boolean
+        default: false
+concurrency:
+  group: shared-recorder-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  browser:
+    name: ${{ matrix.os }} / Chrome ${{ matrix.chrome }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        chrome: [current, previous]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+      - name: Install browser test dependencies
+        run: npm --prefix browser ci --no-audit --no-fund
+      - name: Isolated official current or previous Chrome
+        run: node scripts/install-test-chrome.mjs --generation ${{ matrix.chrome }} --destination "${{ runner.temp }}/rushes-test-chrome"
+      - name: Install decode tools on Mac
+        if: runner.os == 'macOS'
+        run: brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+      - name: Install decode tools on Windows
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+      - name: Build browser
+        id: browser_build
+        run: npm --prefix browser run build
+      - name: Shared capture and UI checks; private provider seam runs separately
+        timeout-minutes: 8
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-proof
+          RUSHES_UI_PROOF: ${{ runner.temp }}/rushes-browser-ui
+          RUSHES_COLD_TRACE_PROOF: ${{ runner.temp }}/rushes-browser-cold-trace
+        run: node scripts/check-browser-recorder.mjs
+      - name: Direct generated source control
+        env:
+          RUSHES_M1_SOURCE_MODE: container
+          RUSHES_M1_SOURCE_CONTROL: '1'
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-source-control
+        run: node browser/test/matrix.mjs
+      - name: Independent short recording matrix
+        env:
+          RUSHES_M1_SOURCE_MODE: container
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-proof
+        run: node browser/test/matrix.mjs
+      - name: Qualified180s reference
+        env:
+          RUSHES_M1_SOURCE_MODE: container
+          RUSHES_M1_REFERENCE: '1'
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-reference
+        run: node browser/test/matrix.mjs
+      - name: Protected maximum take
+        if: github.event_name == 'workflow_dispatch' && inputs.maximum_take
+        env:
+          RUSHES_M1_SOURCE_MODE: container
+          RUSHES_M1_LONG: '1'
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-maximum
+        run: node browser/test/matrix.mjs
+      # Retain a failed unit verdict while collecting independent source evidence.
+      # This workflow does not replace the existing container/maximum-take gates.
+      - name: Supplied-reference short qualification
+        id: native_short
+        if: ${{ !cancelled() && steps.browser_build.conclusion == 'success' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_NATIVE_TRACE_PROOF: '1'
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-native-short
+        run: node browser/test/matrix.mjs
+      - name: Supplied-reference180s qualification
+        if: ${{ !cancelled() && steps.native_short.conclusion == 'success' }}
+        timeout-minutes: 8
+        env:
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_REFERENCE: '1'
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-native-reference
+        run: node browser/test/matrix.mjs
+      - name: Preserve fixture evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-${{ matrix.os }}-${{ matrix.chrome }}
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-browser-cold-trace/report.json
+            ${{ runner.temp }}/rushes-browser-cold-trace/trace.json
+            ${{ runner.temp }}/rushes-browser-source-control/metrics.json
+            ${{ runner.temp }}/rushes-browser-source-control/*.webm
+            ${{ runner.temp }}/rushes-browser-source-control/*.log
+            ${{ runner.temp }}/rushes-browser-proof/metrics.json
+            ${{ runner.temp }}/rushes-browser-proof/capture-cold-*.webm
+            ${{ runner.temp }}/rushes-browser-proof/normal-stop/*.webm
+            ${{ runner.temp }}/rushes-browser-proof/*.log
+            ${{ runner.temp }}/rushes-browser-proof/normal-stop/*.log
+            ${{ runner.temp }}/rushes-browser-ui/*.png
+            ${{ runner.temp }}/rushes-browser-ui/unclosed-*.json
+            ${{ runner.temp }}/rushes-browser-reference/metrics.json
+            ${{ runner.temp }}/rushes-browser-reference/*.log
+            ${{ runner.temp }}/rushes-browser-reference/normal-stop/*.log
+            ${{ runner.temp }}/rushes-browser-maximum/metrics.json
+            ${{ runner.temp }}/rushes-browser-maximum/normal-stop/*.webm
+            ${{ runner.temp }}/rushes-browser-maximum/*.log
+            ${{ runner.temp }}/rushes-browser-maximum/normal-stop/*.log
+            ${{ runner.temp }}/rushes-browser-native-short/metrics.json
+            ${{ runner.temp }}/rushes-browser-native-short/native-trace/report.json
+            ${{ runner.temp }}/rushes-browser-native-short/native-trace/trace.json
+            ${{ runner.temp }}/rushes-browser-native-short/*.log
+            ${{ runner.temp }}/rushes-browser-native-short/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-browser-native-short/normal-stop/*.webm
+            ${{ runner.temp }}/rushes-browser-native-short/normal-stop/*.log
+            ${{ runner.temp }}/rushes-browser-native-reference/metrics.json
+            ${{ runner.temp }}/rushes-browser-native-reference/*.log
+            ${{ runner.temp }}/rushes-browser-native-reference/normal-stop/*.log
+
+  # Independent jobs isolate native-source capture from the full unit job and retain its evidence.
+  # These are diagnostic qualifications; the existing matrix remains authoritative.
+  independent-reference-diagnostic:
+    name: ${{ matrix.os }} independent native / Chrome ${{ matrix.chrome }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 18
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+        chrome: [current, previous]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+      - name: Install browser test dependencies
+        run: npm --prefix browser ci --no-audit --no-fund
+      - name: Isolated official current or previous Chrome
+        run: node scripts/install-test-chrome.mjs --generation ${{ matrix.chrome }} --destination "${{ runner.temp }}/rushes-test-chrome"
+      - name: Install decode tools on Mac
+        if: runner.os == 'macOS'
+        run: brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+      - name: Install decode tools on Windows
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+      - name: Build browser
+        run: npm --prefix browser run build
+      - name: Independent supplied-reference short qualification
+        id: native_short
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_NATIVE_TRACE_PROOF: '1'
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-independent-native-short
+        run: node browser/test/matrix.mjs
+      - name: Preserve independent short evidence before a later step can fail
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-short-${{ matrix.os }}-${{ matrix.chrome }}
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-independent-native-short/metrics.json
+            ${{ runner.temp }}/rushes-independent-native-short/native-trace/report.json
+            ${{ runner.temp }}/rushes-independent-native-short/native-trace/trace.json
+            ${{ runner.temp }}/rushes-independent-native-short/*.log
+            ${{ runner.temp }}/rushes-independent-native-short/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-independent-native-short/normal-stop/*.webm
+      - name: Independent supplied-reference180s qualification
+        if: ${{ !cancelled() && steps.native_short.conclusion == 'success' }}
+        timeout-minutes: 8
+        env:
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_REFERENCE: '1'
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-independent-native-reference
+        run: node browser/test/matrix.mjs
+      - name: Preserve independent reference evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-reference-${{ matrix.os }}-${{ matrix.chrome }}
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/rushes-independent-native-reference/metrics.json
+            ${{ runner.temp }}/rushes-independent-native-reference/*.log
+            ${{ runner.temp }}/rushes-independent-native-reference/supplied-reference.f32le
