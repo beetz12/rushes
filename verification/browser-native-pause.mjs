@@ -1,17 +1,17 @@
 // Generated native MediaRecorder control. No product storage, composition or device access.
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
-import { mkdir, writeFile } from 'node:fs/promises';
-import { resolve, join } from 'node:path';
-import { execFile } from 'node:child_process';
+import * as proofFiles from 'node:fs/promises';
+import * as proofPaths from 'node:path';
+import * as proofCommands from 'node:child_process';
 import { promisify } from 'node:util';
 import { ownedTestBrowser } from '../browser/test/owned-test-browser.mjs';
 
 const require = createRequire(new URL('../browser/package.json', import.meta.url));
 const { chromium } = require('playwright');
 if (process.argv.length !== 3) throw new Error('Usage: node verification/browser-native-pause.mjs <new-proof-directory>');
-const proof = resolve(process.argv[2]);
-await mkdir(proof, { mode: 0o700 });
+const proof = proofPaths.resolve(process.argv[2]);
+await proofFiles.mkdir(proof, { mode: 0o700 });
 const report = { scope: 'Vanilla canvas MediaRecorder paused/unpaused control; duration only, not A/V qualification',
   errors: [], rows: [], retired: false };
 const server = createServer((_request, response) => {
@@ -111,9 +111,9 @@ try {
     }
   });
   for (const row of report.rows) {
-    const path = join(proof, `${row.kind}.webm`);
-    await writeFile(path, Buffer.from(row.base64, 'base64'), { flag: 'wx' }); delete row.base64;
-    const { stdout } = await promisify(execFile)(process.env.RUSHES_FFPROBE || 'ffprobe', [
+    const path = proofPaths.join(proof, `${row.kind}.webm`);
+    await proofFiles.writeFile(path, Buffer.from(row.base64, 'base64'), { flag: 'wx' }); delete row.base64;
+    const { stdout } = await promisify(proofCommands.execFile)(process.env.RUSHES_FFPROBE || 'ffprobe', [
       '-v', 'error', '-show_packets', '-show_entries', 'packet=codec_type,pts_time,duration_time', '-of', 'json', path,
     ], { timeout: 10_000, maxBuffer: 4 * 1024 ** 2 });
     row.packets = JSON.parse(stdout).packets;
@@ -128,7 +128,7 @@ finally {
   try { await owner?.close(); report.retired = !!owner; } catch (error) { report.errors.push(`Owned cleanup: ${error}`); }
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));
-  await writeFile(join(proof, 'report.json'), JSON.stringify(report, null, 2), { flag: 'wx' });
+  await proofFiles.writeFile(proofPaths.join(proof, 'report.json'), JSON.stringify(report, null, 2), { flag: 'wx' });
 }
 console.log(JSON.stringify({ ...report, rows: report.rows.map(({ packets, ...row }) => ({ ...row, packetCount: packets?.length })) }));
 if (report.errors.length || !report.retired || report.rows.length !== 2) process.exitCode = 1;

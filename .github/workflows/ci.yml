@@ -50,10 +50,27 @@ jobs:
             test -x "$NVM_DIR/versions/node/v$bare/bin/node"
             "$NVM_DIR/versions/node/v$bare/bin/node" --version
           done
+      - name: Install media verification tools
+        run: |
+          brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+          ffmpeg -version
+          ffprobe -version
       - name: Gate
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-proof
         run: |
           set -euo pipefail
           bash scripts/check.sh 2>&1 | tee "$RUNNER_TEMP/rushes-source-gate.log"
+      - name: Preserve generated browser failure evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-source-gate-evidence
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/rushes-browser-proof/capture-cold.log
+            ${{ runner.temp }}/rushes-browser-proof/capture-cold-*.webm
       - name: Collect only owned engine crash stack metadata
         if: always()
         run: |
