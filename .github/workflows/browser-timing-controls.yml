@@ -5,6 +5,8 @@ on:
     paths:
       - '.github/workflows/browser-timing-controls.yml'
       - 'verification/browser-retirement.mjs'
+      - 'scripts/install-test-chrome.mjs'
+      - 'browser/test/windows-chrome-access.mjs'
 permissions:
   contents: read
 jobs:
@@ -144,6 +146,7 @@ jobs:
           if-no-files-found: error
           path: |
             ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-test-chrome/windows-sandbox-access.json
             ${{ runner.temp }}/rushes-control-media/pins.json
             ${{ runner.temp }}/rushes-control-source128/metrics.json
             ${{ runner.temp }}/rushes-control-source128/retirement.json
@@ -236,6 +239,7 @@ jobs:
           if-no-files-found: error
           path: |
             ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-test-chrome/windows-sandbox-access.json
             ${{ runner.temp }}/rushes-control-media/pins.json
             ${{ runner.temp }}/rushes-control-*/metrics.json
             ${{ runner.temp }}/rushes-control-*/retirement.json

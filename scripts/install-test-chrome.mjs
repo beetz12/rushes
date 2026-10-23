@@ -1,11 +1,12 @@
 // Official Chrome for Testing binaries, isolated from the user's Chrome profile.
-import { mkdir, writeFile, appendFile, access, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, appendFile, access, readFile, lstat } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
+import { configureWindowsChromeAccess } from '../browser/test/windows-chrome-access.mjs';
 const { values } = parseArgs({ options: { generation: { type: 'string', default: 'current' }, destination: { type: 'string' }, 'plan-only': { type: 'boolean', default: false } }, strict: true });
 if (!['current', 'previous'].includes(values.generation)) throw new Error('Generation must be current or previous.');
 const platform = process.platform === 'win32' ? 'win64' : process.platform === 'darwin' ? process.arch === 'arm64' ? 'mac-arm64' : 'mac-x64' : 'linux64';
@@ -27,6 +28,11 @@ const plan = { generation: values.generation, version: release.version, platform
 if (values['plan-only']) { console.log(JSON.stringify(plan)); process.exit(0); }
 if (!values.destination) throw new Error('An isolated destination is required.');
 const destination = resolve(values.destination); await mkdir(destination, { recursive: true });
+const payloadRoot = join(destination, `chrome-${platform}`);
+if (process.platform === 'win32') {
+  try { await lstat(payloadRoot); throw new Error('Use a fresh isolated Chrome payload directory'); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+}
 const archive = join(destination, 'chrome.zip');
 const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(180000) });
 if (!response.ok) throw new Error(`Official Chrome download HTTP${response.status}.`);
@@ -41,6 +47,7 @@ if (process.platform === 'win32') {
 } else await run('/usr/bin/unzip', ['-q', '-o', archive, '-d', destination]);
 const executable = join(destination, `chrome-${platform}`, process.platform === 'win32' ? 'chrome.exe' : process.platform === 'darwin' ? 'Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing' : 'chrome');
 await access(executable);
+const sandboxAccess = process.platform === 'win32' ? await configureWindowsChromeAccess(payloadRoot, run) : undefined;
 const engine = process.platform === 'darwin'
   ? join(destination, `chrome-${platform}`, 'Google Chrome for Testing.app/Contents/Frameworks/Google Chrome for Testing Framework.framework/Versions', release.version, 'Google Chrome for Testing Framework')
   : process.platform === 'win32' ? join(destination, `chrome-${platform}`, 'chrome.dll') : executable;
@@ -51,6 +58,6 @@ async function digestFile(path) {
 }
 const payloads = [];
 for (const path of [...new Set([executable, engine])]) payloads.push({ path, sha256: await digestFile(path) });
-await writeFile(join(destination, 'release.json'), JSON.stringify({ ...plan, archiveSHA256, executable, payloads }, null, 2));
+await writeFile(join(destination, 'release.json'), JSON.stringify({ ...plan, archiveSHA256, executable, payloads, ...(sandboxAccess ? { sandboxAccess } : {}) }, null, 2));
 if (process.env.GITHUB_ENV) await appendFile(process.env.GITHUB_ENV, `RUSHES_CAPTURE_BROWSER_EXECUTABLE=${executable}\nRUSHES_CHROME=${executable}\n`);
 console.log(JSON.stringify({ ...plan, executable }));

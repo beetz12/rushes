@@ -115,6 +115,7 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-test-chrome/windows-sandbox-access.json
             ${{ runner.temp }}/rushes-browser-cold-trace/report.json
             ${{ runner.temp }}/rushes-browser-cold-trace/trace.json
             ${{ runner.temp }}/rushes-browser-source-control/metrics.json
@@ -192,6 +193,7 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-test-chrome/windows-sandbox-access.json
             ${{ runner.temp }}/rushes-independent-native-short/metrics.json
             ${{ runner.temp }}/rushes-independent-native-short/native-trace/report.json
             ${{ runner.temp }}/rushes-independent-native-short/native-trace/trace.json
