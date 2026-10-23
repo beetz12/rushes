@@ -154,7 +154,7 @@ export async function createDraftStore(backup?: FileSystemDirectoryHandle): Prom
       tracks, pauses: [], events: [{ timeMs: 0, kind: 'metadata-unreadable' }], bubble: { x: 1040, y: 500, size: 180 },
       lastCheckpointMs: 0, persistent: false, backupFolder: false, recoveryNote: notes.join(' '), };
   }
-  async function reconcile(id: string, interrupted: boolean) {
+  async function reconcile(id: string, interrupted: boolean, verified?: Map<string, File>) {
     const folder = await directory(id);
     let manifest: DraftManifest;
     try { manifest = await stored(id); }
@@ -185,6 +185,7 @@ export async function createDraftStore(backup?: FileSystemDirectoryHandle): Prom
         } else if (chunk.bytes !== data.size || chunk.sha256 !== digest) {
           notes.push(`Checksum mismatch in ${name}; original bytes retained.`);
         }
+        if (chunk && chunk.bytes === data.size && chunk.sha256 === digest) verified?.set(name, data);
       }
       for (const chunk of descriptors.values()) if (!files.includes(`${chunkName(track.kind, chunk.sequence)}.bin`))
         notes.push(`Missing ${track.kind} chunk file; available bytes retained.`);
@@ -290,6 +291,28 @@ export async function createDraftStore(backup?: FileSystemDirectoryHandle): Prom
       if (file.size !== chunk.bytes || await chunkDigest(file) !== chunk.sha256) throw new Error('Stored chunk checksum failed. Bytes have been retained.');
       return file.slice(0, file.size, chunk.mimeType);
     }),
+    readSnapshot: id => {
+      const queued = performance.now();
+      return serialized(id, async () => {
+        const acquired = performance.now(), verified = new Map<string, File>();
+        const manifest = await reconcile(id, false, verified), checked = performance.now();
+        const tracks = new Map<TrackKind, Blob>();
+        let chunks = 0, bytes = 0;
+        for (const track of manifest.tracks) {
+          const parts = track.chunks.map((chunk, index) => {
+            const file = verified.get(`${chunkName(track.kind, chunk.sequence)}.bin`);
+            if (chunk.sequence !== index || !file || file.size !== chunk.bytes)
+              throw new Error('Stored chunk checksum or sequence failed. Bytes have been retained.');
+            chunks++; bytes += file.size; return file;
+          });
+          tracks.set(track.kind, new Blob(parts, { type: track.mimeType }));
+        }
+        // These File objects were checked in this locked read. No digest or
+        // file cache survives into another append, export or finalization pass.
+        return { manifest, tracks, read: { queueWaitMs: acquired - queued, integrityMs: checked - acquired,
+          assemblyMs: performance.now() - checked, chunks, bytes } };
+      });
+    },
     trackBlob: (id, kind) => serialized(id, async () => {
       const manifest = await reconcile(id, false);
       const track = manifest.tracks.find(value => value.kind === kind);

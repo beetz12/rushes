@@ -817,11 +817,11 @@ test('a live camera source that silently stops producing frames cannot report a 
     try { value = await fixture('camera', true); }
     finally { globalThis.setInterval = originalInterval; }
     const digest = async blob => [...new Uint8Array(await crypto.subtle.digest('SHA-256', await blob.arrayBuffer()))].join(',');
-    const readBlob = value.store.trackBlob.bind(value.store); let beforeVerificationHash;
-    value.store.trackBlob = async (id, kind) => {
-      const blob = await readBlob(id, kind);
-      if (kind === 'camera' && !beforeVerificationHash) beforeVerificationHash = await digest(blob);
-      return blob;
+    const readSnapshot = value.store.readSnapshot.bind(value.store); let beforeVerificationHash;
+    value.store.readSnapshot = async id => {
+      const snapshot = await readSnapshot(id);
+      if (!beforeVerificationHash) beforeVerificationHash = await digest(snapshot.tracks.get('camera'));
+      return snapshot;
     };
     try {
       if (sourceTimers.length !== 2) throw new Error('Expected exactly the two generated video producers');
@@ -882,15 +882,21 @@ test('matrix witnesses freeze at Stop while later product finalization is parked
   await page.exposeFunction('witnessStage', stage);
   const result = await page.evaluate(async () => {
     const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
-    let take, release;
+    let take, release, previewEndedAtBarrier = false;
     try {
       await window.witnessStage({ stage: 'before-prepare' });
       take = await prepareMatrix({ sourceMode: 'native-reference' });
       await window.witnessStage({ stage: 'before-start' }); await take.start();
-      const load = take.store.load; let entered;
+      const readSnapshot = take.store.readSnapshot; let entered;
       const parked = new Promise(resolve => { entered = resolve; });
       const gate = new Promise(resolve => { release = resolve; });
-      take.store.load = async (...args) => { entered(); await gate; return load(...args); };
+      take.store.readSnapshot = async (...args) => {
+        // Park the same post-native-Stop journal boundary, not an earlier drain.
+        if (take.session.preview.getTracks().every(track => track.readyState === 'ended')) {
+          previewEndedAtBarrier = true; entered(); await gate;
+        }
+        return readSnapshot(...args);
+      };
       await new Promise(resolve => setTimeout(resolve, 650));
       await window.witnessStage({ stage: 'before-stop' });
       const finishing = take.finish();
@@ -904,7 +910,7 @@ test('matrix witnesses freeze at Stop while later product finalization is parked
       await window.witnessStage({ stage: 'retirement-finished', snapshot: first });
       await new Promise(resolve => setTimeout(resolve, 300)); const second = take.snapshot();
       release(); const final = await finishing;
-      return { first, second, final };
+      return { first, second, final, previewEndedAtBarrier };
     } catch (error) {
       try { await window.witnessStage({ stage: 'browser-failure', error: String(error), snapshot: take?.snapshot() ?? null }); }
       catch { /* Node owns abort/exit evidence when this page is already gone. */ }
@@ -912,6 +918,7 @@ test('matrix witnesses freeze at Stop while later product finalization is parked
     } finally { release?.(); }
   });
   await stage({ stage: 'before-assertions', result });
+  assert.equal(result.previewEndedAtBarrier, true);
   const output = result.first.metrics.generatedAudioOutput;
   assert.deepEqual({ type: output.type, sampleRate: output.sampleRate, state: output.state,
     requestedCallbackFrames: output.requestedCallbackFrames }, { type: 'none', sampleRate: 48000, state: 'running', requestedCallbackFrames: 128 });
@@ -1015,13 +1022,13 @@ for (const phase of ['after-stop', 'before-stop']) test(`audio source retirement
     };
     try {
       value = await fixture('screen', true); await value.session.start(); await waitForActiveTime(value.store, value.id, 2200);
-      const trackBlob = value.store.trackBlob.bind(value.store); let first = true;
-      value.store.trackBlob = async (...args) => {
+      const readSnapshot = value.store.readSnapshot.bind(value.store); let first = true;
+      value.store.readSnapshot = async (...args) => {
         if (first && phase === 'after-stop') {
           first = false; await boundedRetirement();
           outputWasLive = recorders.at(-1).tracks.find(track => track.kind === 'audio').readyState === 'live';
         }
-        return trackBlob(...args);
+        return readSnapshot(...args);
       };
       inject = true;
       if (phase === 'before-stop') await boundedRetirement();
@@ -1155,4 +1162,132 @@ test('an inactive recorder still owes its queued Stop acknowledgement', { timeou
   });
   assert.equal(result.manifest.state, 'interrupted'); assert.equal(result.acknowledged, true);
   assert.equal(result.released, true); assert.ok(result.manifest.tracks.every(track => track.bytes > 0));
+}));
+
+test('one verified all-track read hashes each closed chunk once and freshly detects changed bytes', { timeout: 45000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { createDraftStore } = await import('/src/capture/storage.ts');
+    const store = await createDraftStore(), id = crypto.randomUUID();
+    const kinds = ['screen', 'camera', 'microphone', 'tab-audio', 'composed'];
+    const manifest = { schema: 'rushes.browser-recording/1', id, title: 'Generated verified read', createdAt: new Date().toISOString(),
+      mode: 'screen-camera', state: 'recording', durationMs: 0, epochMs: 1,
+      tracks: kinds.map(kind => ({ kind, mimeType: kind.includes('audio') || kind === 'microphone' ? 'audio/webm' : 'video/webm', startOffsetMs: 0, chunks: [], bytes: 0 })),
+      pauses: [], events: [], bubble: { x: 0, y: 0, size: 180 }, lastCheckpointMs: 0, persistent: false, backupFolder: false };
+    const expected = new Map(kinds.map(kind => [kind, []]));
+    const digest = crypto.subtle.digest.bind(crypto.subtle);
+    const hash = async blob => [...new Uint8Array(await digest('SHA-256', await blob.arrayBuffer()))].map(value => value.toString(16).padStart(2, '0')).join('');
+    // On old source this follows the real per-track drain path, rather than
+    // failing merely because the new batch method does not exist.
+    const readAll = async () => {
+      if (store.readSnapshot) return store.readSnapshot(id);
+      const tracks = new Map();
+      for (const kind of kinds) tracks.set(kind, await store.trackBlob(id, kind));
+      return { tracks };
+    };
+    await store.create(manifest);
+    try {
+      for (let sequence = 0; sequence < 20; sequence++) for (const [index, kind] of kinds.entries()) {
+        const bytes = new Uint8Array(64 * 1024); bytes.fill(index * 37 + sequence * 3);
+        const blob = new Blob([bytes], { type: manifest.tracks[index].mimeType }); expected.get(kind).push(blob);
+        await store.append(id, kind, sequence, blob, (sequence + 1) * 100);
+      }
+      const fileRead = FileSystemFileHandle.prototype.getFile;
+      let chunkReads = 0, digestCalls = 0, digestBytes = 0, snapshot;
+      FileSystemFileHandle.prototype.getFile = function(...args) {
+        if (/^(screen|camera|microphone|tab-audio|composed)-\d{5}\.bin$/.test(this.name)) chunkReads++;
+        return fileRead.apply(this, args);
+      };
+      crypto.subtle.digest = function(algorithm, bytes) { digestCalls++; digestBytes += bytes.byteLength; return digest(algorithm, bytes); };
+      const started = performance.now();
+      try { snapshot = await readAll(); }
+      finally { FileSystemFileHandle.prototype.getFile = fileRead; crypto.subtle.digest = digest; }
+      const elapsedMs = performance.now() - started;
+      const exact = await Promise.all(kinds.map(async kind => ({ kind, bytes: snapshot.tracks.get(kind).size,
+        expectedBytes: new Blob(expected.get(kind)).size, sha: await hash(snapshot.tracks.get(kind)), expectedSha: await hash(new Blob(expected.get(kind))) })));
+      const root = await navigator.storage.getDirectory();
+      const folder = await (await root.getDirectoryHandle('rushes-browser-v1')).getDirectoryHandle(id);
+      const handle = await folder.getFileHandle('camera-00000.bin');
+      const rewrite = async blob => { const writer = await handle.createWritable(); await writer.write(blob); await writer.close(); };
+      const altered = new Uint8Array(await expected.get('camera')[0].arrayBuffer()); altered[0] ^= 1;
+      await rewrite(new Blob([altered]));
+      let sameSizeCorruptionRejected = false;
+      try { await readAll(); } catch (error) { sameSizeCorruptionRejected = /checksum/i.test(error.message); }
+      await rewrite(expected.get('camera')[0]);
+      const extra = new Blob(['newly closed chunk'], { type: 'video/webm' });
+      await store.append(id, 'camera', 20, extra, 2100); expected.get('camera').push(extra);
+      const fresh = await readAll();
+      const appendedBytes = fresh.tracks.get('camera').size, expectedAppendedBytes = new Blob(expected.get('camera')).size;
+      const appendedSha = await hash(fresh.tracks.get('camera')), expectedAppendedSha = await hash(new Blob(expected.get('camera')));
+      // An incomplete journal retains bytes; a subsequent verified read cannot
+      // reuse its earlier success after a recognized chunk disappears.
+      await folder.removeEntry('composed-00003.bin');
+      let missingRejected = false;
+      try { await readAll(); } catch { missingRejected = true; }
+      return { chunkReads, digestCalls, digestBytes, elapsedMs, chunkCount: 100, rawBytes: 100 * 64 * 1024,
+        exact, sameSizeCorruptionRejected, appendedBytes, expectedAppendedBytes, appendedSha, expectedAppendedSha,
+        earlierSnapshotBytes: snapshot.tracks.get('camera').size, missingRejected };
+    } finally { await store.remove(id); }
+  });
+  assert.ok(result.exact.every(row => row.bytes === row.expectedBytes && row.sha === row.expectedSha));
+  assert.equal(result.sameSizeCorruptionRejected, true); assert.equal(result.missingRejected, true);
+  assert.equal(result.appendedBytes, result.expectedAppendedBytes); assert.equal(result.appendedSha, result.expectedAppendedSha);
+  assert.equal(result.earlierSnapshotBytes, 20 * 64 * 1024);
+  console.log('Verified all-track read control', JSON.stringify({ chunkReads: result.chunkReads, digestCalls: result.digestCalls,
+    digestBytes: result.digestBytes, rawBytes: result.rawBytes, elapsedMs: result.elapsedMs, exactBytes: true,
+    sameSizeCorruptionRejected: result.sameSizeCorruptionRejected, missingRejected: result.missingRejected, freshAppend: true }));
+  assert.equal(result.chunkReads, result.chunkCount, 'one fresh verified all-track pass reads each closed chunk once');
+  assert.equal(result.digestCalls, result.chunkCount, 'each returned chunk must actually pass its digest check once');
+  assert.equal(result.digestBytes, result.rawBytes);
+}));
+
+test('cancel during a verified snapshot cannot revive the take or publish complete', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { fixture, waitForActiveTime } = await import('/test/capture-fixture.mjs');
+    const value = await fixture('screen', false), read = value.store.readSnapshot.bind(value.store);
+    let announce, release, first = true;
+    const entered = new Promise(resolve => { announce = resolve; });
+    const held = new Promise(resolve => { release = resolve; });
+    value.store.readSnapshot = async id => {
+      const snapshot = await read(id);
+      if (first) { first = false; announce(); await held; }
+      return snapshot;
+    };
+    try {
+      await value.session.start(); await waitForActiveTime(value.store, value.id, 1200);
+      const stopping = value.session.stop(); let timer;
+      try { await Promise.race([entered, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('No verified snapshot observed')), 5000); })]); }
+      finally { clearTimeout(timer); }
+      const cancelAt = value.states.length, canceling = value.session.cancel();
+      await Promise.resolve();
+      const endedWhileHeld = [...value.feeds[0].getTracks(), ...value.session.preview.getTracks()].every(track => track.readyState === 'ended');
+      release(); const manifest = await stopping; await canceling;
+      return { state: manifest.state, states: value.states.slice(cancelAt), endedWhileHeld, drafts: await value.store.list() };
+    } finally { release(); await value.session.cancel(); await value.cleanup(); }
+  });
+  assert.equal(result.state, 'failed'); assert.equal(result.states.includes('complete'), false);
+  assert.equal(result.endedWhileHeld, true); assert.deepEqual(result.drafts, []);
+}));
+
+test('final playback verifies a new snapshot after every native Stop acknowledgement', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const NativeRecorder = MediaRecorder; let stopEvents = 0, encoders = 0;
+    globalThis.MediaRecorder = class extends NativeRecorder {
+      constructor(...args) { super(...args); encoders++; this.addEventListener('stop', () => { stopEvents++; }); }
+    };
+    const { fixture, waitForActiveTime } = await import('/test/capture-fixture.mjs'); let value;
+    try {
+      value = await fixture('screen', true); const read = value.store.readSnapshot.bind(value.store), reads = [];
+      value.store.readSnapshot = async id => {
+        const stopsAtReadStart = stopEvents, snapshot = await read(id);
+        reads.push({ stopsAtReadStart, bytes: [...snapshot.tracks].map(([kind, blob]) => [kind, blob.size]) }); return snapshot;
+      };
+      await value.session.start(); await waitForActiveTime(value.store, value.id, 2200);
+      const manifest = await value.session.stop();
+      return { manifest, reads, encoders, stopEvents };
+    } finally { if (value) { await value.session.cancel(); await value.cleanup(); } globalThis.MediaRecorder = NativeRecorder; }
+  });
+  assert.equal(result.manifest.state, 'complete'); assert.ok(result.reads.length >= 2);
+  assert.equal(result.reads[0].stopsAtReadStart, 0);
+  assert.equal(result.stopEvents, result.encoders); assert.equal(result.reads.at(-1).stopsAtReadStart, result.encoders);
+  assert.deepEqual(result.reads.at(-1).bytes, result.manifest.tracks.map(track => [track.kind, track.bytes]));
 }));

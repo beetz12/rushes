@@ -30,6 +30,10 @@ export type DraftManifest = {
   backupFolder: boolean; recoveryNote?: string; cloudRecordingId?: string;
   upload?: { url: string; uid: string; offset: number; expiresAt: string };
 };
+export type DraftSnapshot = {
+  manifest: DraftManifest; tracks: Map<TrackKind, Blob>;
+  read: { queueWaitMs: number; integrityMs: number; assemblyMs: number; chunks: number; bytes: number };
+};
 export type DraftStore = {
   create(manifest: DraftManifest): Promise<void>;
   save(manifest: DraftManifest): Promise<void>;
@@ -38,6 +42,7 @@ export type DraftStore = {
   append(id: string, track: TrackKind, sequence: number, blob: Blob, checkpointMs: number): Promise<ChunkDescriptor>;
   readChunk(id: string, chunk: ChunkDescriptor): Promise<Blob>;
   trackBlob(id: string, track: TrackKind): Promise<Blob>;
+  readSnapshot(id: string): Promise<DraftSnapshot>;
   remove(id: string): Promise<void>;
 };
 export type CaptureInputs = {

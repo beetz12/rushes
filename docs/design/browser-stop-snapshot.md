@@ -1,0 +1,13 @@
+# Fresh verified snapshots during browser finalization
+
+A ten-minute generated take retained playable, aligned tracks but returned an interrupted Stop because a saved-track read exhausted the remaining shared encoder deadline. The existing per-track reader reconciles every track, then hashes the selected track again. Five reads therefore repeat roughly six times the retained-byte hash work. This source-derived cost is a hypothesis for the observed timeout, not a measured allocation of its budget.
+
+Add one serialized, fresh all-track read operation. Reconciliation records the exact File objects whose size and SHA match the recovered descriptors. The operation constructs each Blob from those checked objects in descriptor sequence, without reopening or hashing it again. Missing, changed or discontinuous chunks reject the snapshot; diagnostic recovery state is returned alongside the blobs. Existing single-track export, append, backups and recovery keep their current behavior.
+
+There is no digest/mtime cache across operations. The [File System Standard](https://fs.spec.whatwg.org/#api-filesystemfilehandle-getfile) specifies getFile as a state-at-read File and warns that later disk changes can invalidate readability. Reusing checked File objects is limited to one locked read operation; later appends and mutations require another read.
+
+After each native requestData and saved-write acknowledgement, capture obtains one snapshot and checks actual decoded coverage for every active track under the existing shared 15-second encoder deadline. A reconciled interrupted/failed state cannot become complete. Additional drain passes obtain another snapshot. After native Stop and the last write acknowledgement, final verification obtains a new snapshot with its matching manifest, so the native tail cannot be omitted by reusing an earlier result.
+
+Record bounded metadata for drain-pass read/verification start and completion, remaining budget, queue wait, checked chunk/byte totals and read/assembly duration. No frame/audio payload, extra media reader, clock fit, new timeout or sleep is introduced.
+
+Regression control invokes the old real per-track path and demonstrates correct returned bytes but excessive actual reads/hashes. The replacement must check each closed chunk once, preserve exact all-track bytes/order, detect same-size mutation on the next read, observe new appends and reject missing chunks. Existing Stop-boundary injection tests move their hooks to the new real read boundary while preserving all causal assertions. Cancellation, native acknowledgement, duration, checksum, recovery and fault gates remain unchanged.

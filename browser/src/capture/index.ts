@@ -1,5 +1,5 @@
 import { BROWSER_LIMITS, type BubblePlacement, type CaptureInputs, type CaptureSession, type CaptureState,
-  type DraftManifest, type TrackKind } from '../contracts';
+  type DraftManifest, type DraftSnapshot, type TrackKind } from '../contracts';
 
 import { composedAudio } from './audio';
 
@@ -244,16 +244,28 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
       }));
       await limited(saveTail, remaining(), 'Encoder drain storage timed out. Closed chunks are preserved.');
       if (canceled || failure) throw new Error(failure ?? 'Recording canceled during finalization.');
+      event('encoder-drain-read-start', JSON.stringify({ attempt, remainingMs: remaining() }));
+      const snapshot = await limited(inputs.store.readSnapshot(inputs.id), remaining(), 'Reading encoder drain data timed out.');
+      event('encoder-drain-read', JSON.stringify({ attempt, remainingMs: remaining(), ...snapshot.read }));
+      if (['interrupted', 'failed'].includes(snapshot.manifest.state))
+        throw new Error(snapshot.manifest.recoveryNote ?? 'The stored recording is interrupted. Original bytes are retained.');
+      if (canceled || failure) throw new Error(failure ?? 'Recording canceled during finalization.');
       let covered = true; uncovered = undefined;
       for (const slot of active) {
-        const blob = await limited(inputs.store.trackBlob(inputs.id, slot.kind), remaining(), 'Reading encoder drain data timed out.');
+        const blob = snapshot.tracks.get(slot.kind);
+        if (!blob) throw new Error(`The saved ${slot.kind} track is unavailable. Original bytes are retained.`);
         if (!blob.size) { covered = false; uncovered ??= new Error(`The saved ${slot.kind} has no playable bytes.`); continue; }
+        const verifying = performance.now();
+        event('encoder-drain-verify-start', JSON.stringify({ attempt, track: slot.kind, remainingMs: remaining() }));
         try {
           await verifyPlayback(blob, !['microphone', 'tab-audio'].includes(slot.kind),
             { durationMs, kind: slot.kind }, remaining());
         } catch (error) {
           if (error instanceof PlaybackDurationMismatch && error.actualMs >= 0 && error.actualMs < durationMs - 250) { covered = false; uncovered ??= error; }
           else throw error;
+        } finally {
+          event('encoder-drain-verify', JSON.stringify({ attempt, track: slot.kind,
+            elapsedMs: performance.now() - verifying, remainingMs: expires - performance.now() }));
         }
       }
       if (canceled || failure) throw new Error(failure ?? 'Recording canceled during finalization.');
@@ -299,18 +311,23 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
       finally { if (deadline) clearTimeout(deadline); release(); }
       if (performance.now() > encoderExpires) failure ??= 'Encoder finalization exceeded its deadline. Closed chunks are preserved.';
       let queueFinished = true;
+      let finalSnapshot: DraftSnapshot | undefined;
       try { await limited(saveTail, 20_000, 'Storage finalization timed out. Closed chunks remain recoverable after reload.'); }
       catch (error) { queueFinished = false; failure ??= messageOf(error); }
       manifest.durationMs = duration;
       if (queueFinished) {
         try {
-          const durable = await limited(inputs.store.load(inputs.id), 20_000, 'Reading the final chunk journal timed out.');
+          if (!failure && !canceled)
+            finalSnapshot = await limited(inputs.store.readSnapshot(inputs.id), 20_000, 'Reading the final chunk journal timed out.');
+          const durable = finalSnapshot?.manifest ?? await limited(inputs.store.load(inputs.id), 20_000, 'Reading the final chunk journal timed out.');
           for (const track of manifest.tracks) {
             const saved = durable.tracks.find(value => value.kind === track.kind);
             if (saved) { track.chunks = saved.chunks; track.bytes = saved.bytes; }
           }
           manifest.lastCheckpointMs = durable.lastCheckpointMs;
           if (durable.recoveryNote) failure ??= durable.recoveryNote;
+          if (['interrupted', 'failed'].includes(durable.state))
+            failure ??= 'The stored recording is interrupted. Original bytes are retained.';
         } catch (error) { failure ??= messageOf(error); }
       }
       if (audio?.diagnostics) event('composed-audio-timing', JSON.stringify(audio.diagnostics));
@@ -319,7 +336,8 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
         try {
           for (const track of manifest.tracks) {
             if (canceled) break;
-            const blob = await limited(inputs.store.trackBlob(inputs.id, track.kind), 20_000, 'Reading the saved track timed out. Closed chunks remain available after reload.');
+            const blob = finalSnapshot?.tracks.get(track.kind);
+            if (!blob) throw new Error('The saved track is unavailable. Closed chunks remain available after reload.');
             await verifyPlayback(blob, !['microphone', 'tab-audio'].includes(track.kind), { durationMs: duration, kind: track.kind });
           }
         } catch (error) { failure = messageOf(error); }
