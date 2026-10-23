@@ -21,7 +21,7 @@ import { productSyncSourceVerdict, requireProductSyncSource } from './matrix-sou
 import { inspectHistogramPayload } from './matrix-native-observation.mjs';
 import { macHostState, isVerifiedUnlockedMac, assertUnlockedMac, monitorMacLock } from './matrix-host-state.mjs';
 import { nativeClockSeed } from './native-clock-seed.mjs';
-import { beginColdTrace, requireNativeClockTrace, recorderCallMetadata } from './cold-trace.mjs';
+import { beginColdTrace, requireNativeClockTrace, recorderCallMetadata, sourceTaskObservationWindow } from './cold-trace.mjs';
 import { collectStartupMetadata, startupPrefix } from './startup-metadata.mjs';
 import { requestCheckpoint } from './matrix-checkpoint-action.mjs';
 
@@ -68,6 +68,7 @@ if (sourceVideoTrace && (!sourceAudioTrace || sourceAudioSink !== 'default'))
 const sourceTaskTrace=process.env.RUSHES_M1_SOURCE_TASK_TRACE_PROOF==='1';
 if(process.env.RUSHES_M1_SOURCE_TASK_TRACE_PROOF!==undefined&&!sourceTaskTrace)throw new Error('Native source task trace option must be1');
 if(sourceTaskTrace&&!sourceVideoTrace)throw new Error('Whole capture task tracing requires the isolated native video trace');
+const sourceTaskWindowMs = sourceTaskObservationWindow(process.env.RUSHES_M1_SOURCE_TASK_TRACE_WINDOW_MS, sourceTaskTrace);
 if (process.env.RUSHES_M1_NATIVE_TRACE_PROOF !== undefined && !fullNativeTrace) throw new Error('Native trace option must be1');
 if (nativeTraceRequested && (sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl))
   throw new Error('Native audio tracing is limited to the existing short supplied-reference qualification');
@@ -82,7 +83,7 @@ const proof = resolve(process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir()
 await mkdir(proof, { recursive: true, mode: 0o700 });
 const profile = join(proof, 'isolated-chrome-profile');
 const evidence = { schema: sourceOnly ? 'rushes.source-load-control/1' : 'rushes.independent-m1/1', startedAt: new Date().toISOString(),
-  node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceAudioSink, sourceAudioTrace, sourceVideoTrace, sourceTaskTrace, checkpointRequested, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
+  node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceAudioSink, sourceAudioTrace, sourceVideoTrace, sourceTaskTrace, sourceTaskWindowMs, checkpointRequested, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
   normalBackgroundFlags: true, source: 'native Chrome fake MJPEG with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; tab activation alone is not physical minimization',
@@ -136,6 +137,7 @@ let processHandle, browser, server, origin, page;
 let stderrWrites = Promise.resolve();
 let histogramSession, hostMonitor, latestHostSample;
 let nativeTrace, nativeTraceFinished = false;
+let traceWindowTimer, releaseTraceRead;
 async function finishNativeTrace(context) {
   if (!nativeTrace || nativeTraceFinished) return;
   nativeTraceFinished = true;
@@ -486,6 +488,24 @@ try {
   else if (diagnostic) await runDiagnostic();
   else {
   await startMatrixTake();
+  if (sourceTaskWindowMs) {
+    assert.ok(nativeTrace, 'The source task window requires an owned native trace');
+    const readAfter = new Promise(resolve => {
+      releaseTraceRead = reason => {
+        evidence.nativeTraceWindow.readReleasedAtNodeMs = performance.now();
+        evidence.nativeTraceWindow.readReleaseReason = reason;
+        resolve(); releaseTraceRead = undefined;
+      };
+    });
+    evidence.nativeTraceWindow = { requestedAfterStartMs: sourceTaskWindowMs, armedAtNodeMs: performance.now(),
+      scope: 'Partial native task collection plus setup only; whole8s source checks remain authoritative' };
+    traceWindowTimer = setTimeout(() => {
+      evidence.nativeTraceWindow.closeRequestedAtNodeMs = performance.now();
+      // The final retirement joins this same promise and records any error.
+      void nativeTrace.finish({ stage: 'partial-source-task-window', requestedAfterStartMs: sourceTaskWindowMs },
+        { readAfter }).catch(() => undefined);
+    }, sourceTaskWindowMs);
+  }
   if (!long) await page.evaluate(targetMs => {
     // A foreground smoke-only control clock keeps process/RSS polling latency
     // outside the target duration. Neither fake input nor composition uses it.
@@ -540,6 +560,7 @@ try {
     const observationPath = join(proof, 'supplied-reference.f32le'); await (await pending).saveAs(observationPath);
     evidence.sourceObservationFile = await mediaFileEvidence(observationPath);
     await save();
+    releaseTraceRead?.('whole-source-and-PCM-retired');
   }
   if (sourceOnly) {
     evidence.scope = 'Canonical supplied-reference source-only control; no product recording acceptance';
@@ -705,6 +726,7 @@ try {
     catch (failure) { evidence.observerErrorReadFailure = String(failure); }
   }
 } finally {
+  clearTimeout(traceWindowTimer); releaseTraceRead?.('failure-or-final-retirement');
   try { await durableCheckpoint('final-before-close'); } catch (checkpointError) { evidence.failures.push(`Durable retirement checkpoint: ${checkpointError.name}`); }
   await finishNativeTrace({ stage: 'failure-or-final-retirement' });
   check('independent fixture pages never boot the Rushes App', () => assert.deepEqual(evidence.appRequests, []));

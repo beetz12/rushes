@@ -72,6 +72,13 @@ export function recorderCallMetadata(text) {
   return row;
 }
 
+export function sourceTaskObservationWindow(value, taskDiagnostics) {
+  if (value === undefined) return 0;
+  if (value !== '2000' || taskDiagnostics !== true)
+    throw new Error('A2000ms trace window requires the isolated source task diagnostic');
+  return 2000;
+}
+
 export async function beginColdTrace(browser, page, directory, limits = {}) {
   if (limits.audioDiagnostics !== undefined && typeof limits.audioDiagnostics !== 'boolean') throw new Error('Audio trace option must be boolean');
   if (limits.canvasDiagnostics !== undefined && typeof limits.canvasDiagnostics !== 'boolean') throw new Error('Canvas trace option must be boolean');
@@ -86,8 +93,10 @@ export async function beginColdTrace(browser, page, directory, limits = {}) {
   const report = { scope: 'Optional generated cold timing diagnostic; existing recording assertions remain authoritative',
     token, chrome: browser.version(), errors: [], traceReceipt: null };
   let started = false, finishing;
-  const finish = context => {
+  const finish = (context, { readAfter } = {}) => {
     if (finishing) return finishing;
+    if (readAfter !== undefined && (!limits.captureTaskDiagnostics || typeof readAfter?.then !== 'function'))
+      throw new Error('Deferred trace reads require a source task retirement promise');
     finishing = (async () => {
       let stream, handle, onComplete;
       const begun = performance.now(), expires = begun + finalizationMs;
@@ -109,6 +118,10 @@ export async function beginColdTrace(browser, page, directory, limits = {}) {
           report.traceReceipt = await step(completed, 'Cold trace receipt');
           stream = report.traceReceipt.stream;
           if (!stream) throw new Error('Cold trace did not provide an evidence stream');
+          // Collection is already closed. The original aggregate budget also
+          // covers waiting for the live source to retire before heavy IO.
+          if (readAfter) await step(readAfter, 'Cold trace source retirement');
+          if (performance.now() >= expires) throw new Error('Cold trace exceeded its read/time budget');
           const file = paths.join(directory, 'trace.json'); handle = await step(files.open(file, 'wx'), 'Cold trace file'); let bytes = 0, reads = 0;
           for (;;) {
             if (++reads > 2048 || performance.now() >= expires) throw new Error('Cold trace exceeded its read/time budget');

@@ -66,6 +66,7 @@ jobs:
           export RUSHES_M1_SOURCE_AUDIO_TRACE_PROOF=1
           export RUSHES_M1_SOURCE_VIDEO_TRACE_PROOF=1
           export RUSHES_M1_SOURCE_TASK_TRACE_PROOF=1
+          export RUSHES_M1_SOURCE_TASK_TRACE_WINDOW_MS=2000
           set +e
           node browser/test/matrix.mjs
           verdict=$?

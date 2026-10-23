@@ -16,9 +16,11 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
     throw new Error('This Chrome version cannot preserve composed audio references');
   const owned: MediaStreamTrack[] = [], readers: ReadableStreamDefaultReader<PCMFrame>[] = [];
   const pendingFrames = [0, 0];
+  const capacityWake: Array<(() => void) | undefined> = [undefined, undefined];
   let output: InstanceType<AudioTransformAPIs['MediaStreamTrackGenerator']> | undefined, worker: Worker | undefined;
   let writer: WritableStreamDefaultWriter<PCMFrame> | undefined;
   let closed = false, quiesced = false, writing = false, readied = false, hasFailureDiagnostics = false, diagnostics: unknown, deadline: ReturnType<typeof setTimeout> | undefined;
+  let quiescedAt: number | undefined;
   let readyResolve: () => void, readyReject: (error: Error) => void;
   const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
   void ready.catch(() => undefined);
@@ -27,10 +29,12 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
   void stopped.catch(() => undefined);
   function quiesce() {
     if (!quiesced) {
+      quiescedAt = performance.now();
       quiesced = true; clearTimeout(deadline);
       // Native recorders are paused first. Retire new input while their saved
       // encoder callbacks drain; ending the output track here would stop them.
       owned.forEach(track => track.stop());
+      capacityWake.forEach(wake => wake?.());
       for (const reader of readers) void reader.cancel().catch(() => undefined);
       worker?.postMessage({ kind: 'stop' });
     }
@@ -44,6 +48,23 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
     if (worker) deadline = setTimeout(() => worker?.terminate(), 500);
   }
   function failure(message: string) { if (!closed) { readyReject(new Error(message)); try { failed(message); } finally { close(); } } }
+  async function waitForCapacity(source: number, frames: number, rate: number) {
+    const expires = performance.now() + 250;
+    while (!quiesced && pendingFrames[source] + frames > rate / 4) {
+      const remaining = expires - performance.now();
+      if (remaining <= 0) throw new Error('Audio worker capacity receipt timed out');
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          capacityWake[source] = resolve;
+          timer = setTimeout(() => reject(new Error('Audio worker capacity receipt timed out')), remaining);
+        });
+        // A queued receipt cannot beat an already-expired deadline. A prior
+        // Stop still retires its held packet at the time quiescence began.
+        if ((quiescedAt ?? performance.now()) >= expires) throw new Error('Audio worker capacity receipt timed out');
+      } finally { clearTimeout(timer); capacityWake[source] = undefined; }
+    }
+  }
   async function consume(reader: ReadableStreamDefaultReader<PCMFrame>, source: number) {
     try {
       while (!quiesced) {
@@ -54,6 +75,9 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
           if (quiesced) continue;
           if (![1, 2, 4, 6].includes(frame.numberOfChannels) || frame.numberOfFrames > frame.sampleRate / 4)
             throw new Error('Unsupported composed audio packet');
+          if (pendingFrames[source] + frame.numberOfFrames > frame.sampleRate / 4)
+            await waitForCapacity(source, frame.numberOfFrames, frame.sampleRate);
+          if (quiesced) continue;
           const channels = Array.from({ length: frame.numberOfChannels }, (_, planeIndex) => {
             const data = new Float32Array(frame.numberOfFrames); frame.copyTo(data, { planeIndex, format: 'f32-planar' }); return data;
           });
@@ -92,7 +116,12 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
       if (event.data.kind === 'stopped') { clearTimeout(deadline); stoppedResolve(); worker?.terminate(); }
       else if (event.data.kind === 'timing') { if (!hasFailureDiagnostics) diagnostics = event.data.diagnostics; }
       else if (closed) return;
-      else if (event.data.kind === 'consumed') pendingFrames[event.data.source] -= event.data.frames;
+      else if (event.data.kind === 'consumed') {
+        const { source, frames } = event.data;
+        if (![0, 1].includes(source) || !Number.isSafeInteger(frames) || frames <= 0 || frames > pendingFrames[source])
+          failure('Invalid audio input receipt');
+        else { pendingFrames[source] -= frames; capacityWake[source]?.(); }
+      }
       else if (event.data.kind === 'packet') { if (!quiesced) void write(event.data.sequence, event.data.timestamp, event.data.data); }
       else if (event.data.kind === 'ready') { readied = true; clearTimeout(deadline); readyResolve(); }
       else if (event.data.kind === 'error') {

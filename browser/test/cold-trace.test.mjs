@@ -1,7 +1,7 @@
 import * as nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import { checkPrescribedTraceMarks } from './cold-trace.mjs';
-import { beginColdTrace,recorderCallMetadata } from './cold-trace.mjs';
+import { beginColdTrace,recorderCallMetadata,sourceTaskObservationWindow } from './cold-trace.mjs';
 import * as files from 'node:fs/promises';
 import * as paths from 'node:path';
 import * as operatingSystem from 'node:os';
@@ -121,4 +121,58 @@ nodeTest.test('streamed recorder call metadata rejects payload fields and malfor
  assert.deepEqual(recorderCallMetadata(encode(row)),row);
  for(const value of [{...row,samples:[1,2]},{...row,id:-1},{...row,timeMs:'12'},{...row,method:'other'},{...row,edge:'unknown'}])assert.equal(recorderCallMetadata(encode(value)),undefined);
  for(const text of ['x','GENERATED_RECORDER_CALL [',encode({...row,state:'x'.repeat(2000)})])assert.equal(recorderCallMetadata(text),undefined);
+});
+
+nodeTest.test('only the explicit source task diagnostic admits the fixed two-second observation window', () => {
+  assert.equal(sourceTaskObservationWindow(undefined, false), 0);
+  assert.equal(sourceTaskObservationWindow(undefined, true), 0);
+  assert.equal(sourceTaskObservationWindow('2000', true), 2000);
+  for (const value of ['', '0', '2001', '20000', 2000, true, null])
+    assert.throws(() => sourceTaskObservationWindow(value, true), /isolated source task diagnostic/);
+  for (const enabled of [false, undefined, 'true'])
+    assert.throws(() => sourceTaskObservationWindow('2000', enabled), /isolated source task diagnostic/);
+});
+
+nodeTest.test('collection closes once while trace IO waits for actual source retirement', async context => {
+  const f = await retirementFixture(context, false);
+  const trace = await beginColdTrace(f.browser, f.page, f.directory, { captureTaskDiagnostics: true });
+  let release;
+  const readAfter = new Promise(resolve => { release = resolve; });
+  const finishing = trace.finish({ stage: 'partial-window' }, { readAfter });
+  const rejected = assert.rejects(finishing, /metadata retirement rejected/);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(f.calls, ['Tracing.start', 'Tracing.end']);
+  await assert.rejects(files.access(paths.join(f.directory, 'trace.json')), /ENOENT/);
+  assert.equal(trace.finish({ stage: 'later-source-retired' }), finishing);
+  release(); await rejected;
+  assert.deepEqual(f.calls, ['Tracing.start', 'Tracing.end', 'IO.read', 'IO.close', 'detach']);
+});
+
+nodeTest.test('source deferral consumes the original aggregate budget and cannot restart it', async context => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'performance'); let now = 0;
+  Object.defineProperty(globalThis, 'performance', { configurable: true, value: { now: () => now } });
+  try {
+    const f = await retirementFixture(context, false);
+    const trace = await beginColdTrace(f.browser, f.page, f.directory,
+      { captureTaskDiagnostics: true, finalizationMs: 500, metadataMs: 30 });
+    let release; const readAfter = new Promise(resolve => { release = resolve; });
+    const finishing = trace.finish({ stage: 'partial-window' }, { readAfter });
+    const rejected = assert.rejects(finishing, /read\/time budget/);
+    await new Promise(resolve => setImmediate(resolve));
+    now = 501; release(); await rejected;
+    const report = JSON.parse(await files.readFile(paths.join(f.directory, 'report.json'), 'utf8'));
+    assert.equal(report.finalizationMs, 501);
+    assert.ok(report.errors.some(error => error.includes('aggregate retirement budget expired')));
+    assert.deepEqual(f.calls, ['Tracing.start', 'Tracing.end', 'IO.close', 'detach']);
+    await assert.rejects(files.access(paths.join(f.directory, 'trace.json')), /ENOENT/);
+  } finally { Object.defineProperty(globalThis, 'performance', descriptor); }
+});
+
+nodeTest.test('ordinary traces and malformed gates cannot defer reads', async context => {
+  for (const limits of [{}, { captureTaskDiagnostics: true }]) {
+    const f = await retirementFixture(context, false), trace = await beginColdTrace(f.browser, f.page, f.directory, limits);
+    assert.throws(() => trace.finish({}, { readAfter: limits.captureTaskDiagnostics ? {} : Promise.resolve() }), /retirement promise/);
+    await assert.rejects(trace.finish({ stage: 'retire-after-invalid-call' }), /metadata retirement rejected/);
+    assert.deepEqual(f.calls, ['Tracing.start', 'Tracing.end', 'IO.read', 'IO.close', 'detach']);
+  }
 });
