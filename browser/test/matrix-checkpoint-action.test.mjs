@@ -5,7 +5,8 @@ import * as brokerFiles from 'node:fs/promises';
 import * as brokerPaths from 'node:path';
 import * as brokerProcesses from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { superviseCheckpoints, requestCheckpoint, uploadInWorker, withoutCredentials, matrixChildEnvironment, parseArtifactOutput } from './matrix-checkpoint-action.mjs';
+import { superviseCheckpoints, requestCheckpoint, uploadInWorker, withoutCredentials, matrixChildEnvironment, parseArtifactOutput,
+  supervisorSnapshot,waitForOwnedReady,matrixOutcomeBeforeDeadline } from './matrix-checkpoint-action.mjs';
 const artifact = { id: 123, size: 42, digest: 'a'.repeat(64) };
 const assert = verifyBroker.default, EventEmitter = brokerEvents.EventEmitter;
 class Child extends EventEmitter { connected = true; replies = []; send(reply) { this.replies.push(reply); this.emit('reply', reply); } }
@@ -113,8 +114,57 @@ test('owned child does not import media until the parent persists ownership and 
   const child=brokerProcesses.fork(bootstrap,[],{execPath:process.execPath,env:withoutCredentials(process.env),stdio:['ignore','ignore','ignore','ipc']});
   const ended=new Promise(resolve=>child.once('close',code=>resolve(code)));
   context.after(async()=>{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await ended;});
-  await new Promise(resolve=>child.once('message',message=>{assert.equal(message.kind,'awaiting-owned-matrix');resolve();}));
+  await waitForOwnedReady(child,ended,performance.now()+2000);
   await assert.rejects(brokerFiles.stat(marker),{code:'ENOENT'});
   child.send({kind:'begin-owned-matrix'});assert.equal(await ended,0);
   assert.equal(await brokerFiles.readFile(marker,'utf8'),'owned generated stub entered');
+});
+test('startup receipt freezes only supervisor facts before any child or media exists',async context=>{
+  const root=await proof(context);
+  await brokerFiles.writeFile(brokerPaths.join(root,'supervisor-owner.json'),JSON.stringify({supervisorPid:123,state:'before-child-start'}));
+  await brokerFiles.writeFile(brokerPaths.join(root,'uploader-tool.json'),JSON.stringify({expectedProgram:'generated fixture'}));
+  let calls=0;
+  const receipt=await supervisorSnapshot(root,'supervisor-startup',{prefix:'startup-fixture',upload:async(name,files)=>{
+    calls++;assert.deepEqual(files.map(file=>brokerPaths.basename(file)).sort(),['checkpoint.json','supervisor-owner.json','uploader-tool.json']);return artifact;
+  }});
+  assert.equal(calls,1);assert.equal(receipt.stage,'supervisor-startup');assert.match(receipt.scope,/never satisfies/);
+});
+test('deadline snapshot retains explicit missing and invalid evidence without qualifying it',async context=>{
+  const root=await proof(context);
+  for(const name of ['supervisor-owner.json','uploader-tool.json','supervisor-deadline.json'])await brokerFiles.writeFile(brokerPaths.join(root,name),'{}');
+  await brokerFiles.writeFile(brokerPaths.join(root,'metrics.json'),'{unfinished');await brokerFiles.unlink(brokerPaths.join(root,'owned-browser-pid.json'));
+  await supervisorSnapshot(root,'supervisor-deadline',{prefix:'deadline-fixture',upload:async(name,files,frozen)=>{
+    assert.equal(files.some(file=>brokerPaths.basename(file)==='.env'),false);
+    const metadata=JSON.parse(await brokerFiles.readFile(brokerPaths.join(frozen,'checkpoint.json'),'utf8'));
+    assert.match(metadata.scope,/no child normal/);assert.equal(metadata.identities.find(row=>row.name==='owned-browser-pid.json').unavailable,true);
+    assert.match(metadata.identities.find(row=>row.name==='metrics.json').jsonValidity,/invalid/);return artifact;
+  }});
+});
+test('readiness requires the owned positive message and rejects premature child closure',async()=>{
+  const child=new Child(),closed=Promise.withResolvers();let released=false;
+  const ready=waitForOwnedReady(child,closed.promise,performance.now()+1000).then(()=>{released=true;});
+  child.emit('message',{kind:'other-message'});await new Promise(resolve=>setImmediate(resolve));assert.equal(released,false);
+  child.emit('message',{kind:'awaiting-owned-matrix'});await ready;assert.equal(released,true);assert.equal(child.listenerCount('message'),0);
+  const failed=new Child();await assert.rejects(waitForOwnedReady(failed,Promise.resolve({actualExit:1}),performance.now()+1000),/closed before readiness/);
+  assert.equal(failed.listenerCount('message'),0);
+});
+test('a supervisor deadline finalizes diagnostics before forced cleanup and stays fatal after an actual zero exit',async()=>{
+  const events=[],closed=Promise.withResolvers();
+  const result=await matrixOutcomeBeforeDeadline(closed.promise,{expires:performance.now()-1,
+    beforeTerminate:async()=>{events.push('snapshot-finalized');return {artifact};},
+    terminate:async()=>{events.push('terminate');const outcome={actualExit:0,signal:null,closeObserved:true};closed.resolve(outcome);return outcome;}});
+  assert.deepEqual(events,['snapshot-finalized','terminate']);assert.equal(result.supervisorDeadlineExceeded,true);assert.equal(result.outcome.actualExit,0);
+});
+test('failed deadline upload still attempts owned cleanup without inventing a clean child exit',async()=>{
+  let snapshots=0,terminations=0;
+  const result=await matrixOutcomeBeforeDeadline(new Promise(()=>{}),{expires:performance.now()-1,
+    beforeTerminate:async()=>{snapshots++;throw new Error('generated signed URL must remain private');},
+    terminate:async()=>{terminations++;throw new Error('generated unconfirmed cleanup');}});
+  assert.equal(snapshots,1);assert.equal(terminations,1);assert.equal(result.supervisorDeadlineExceeded,true);assert.equal(result.outcome,undefined);
+  assert.equal(result.diagnosticError,'Error');assert.equal(result.terminationError,'Error');assert.equal(JSON.stringify(result).includes('signed URL'),false);
+});
+test('a natural child close within budget requires no supervisor termination',async()=>{
+  const result=await matrixOutcomeBeforeDeadline(Promise.resolve({actualExit:1,signal:null,closeObserved:true}),{expires:performance.now()+1000,
+    beforeTerminate:()=>{throw new Error('unexpected snapshot');},terminate:()=>{throw new Error('unexpected termination');}});
+  assert.equal(result.supervisorDeadlineExceeded,false);assert.equal(result.outcome.actualExit,1);
 });

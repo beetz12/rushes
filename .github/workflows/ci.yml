@@ -71,6 +71,7 @@ jobs:
           path: |
             ${{ runner.temp }}/rushes-browser-proof/capture-cold.log
             ${{ runner.temp }}/rushes-browser-proof/capture-cold-*.webm
+            ${{ runner.temp }}/rushes-browser-proof/witness-stop.log
       - name: Collect only owned engine crash stack metadata
         if: always()
         run: |

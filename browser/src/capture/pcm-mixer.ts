@@ -37,6 +37,7 @@ export class PCMInput {
     this.samples = [new Float32Array(this.capacity), new Float32Array(this.capacity)];
   }
   get endUs() { return this.originUs + this.end * 1e6 / this.rate; }
+  get bufferState() { return { sampleRate: this.rate, originUs: this.originUs, firstSample: this.first, endSample: this.end, capacityFrames: this.capacity }; }
   push(timestampUs: number, left: Float32Array, right: Float32Array) {
     if (!Number.isSafeInteger(timestampUs) || left.length !== right.length || !left.length || left.length > this.rate / 4)
       throw new Error('Invalid or oversized audio packet');
@@ -86,6 +87,7 @@ export class TimestampMixer {
   readonly inputs: (PCMInput | undefined)[] = [undefined, undefined];
   readonly diagnostics = { missingSecondaryFrames: 0, incompleteSecondaryKernelFrames: 0, clippedSamples: 0, outputFrames: 0 };
   private cursor = 0;
+  get bufferState() { return { cursorFrames: this.cursor, inputs: this.inputs.map(input => input?.bufferState) }; }
   push(source: number, rate: number, timestampUs: number, left: Float32Array, right: Float32Array) {
     if (source !== 0 && source !== 1) throw new Error('Invalid audio input');
     const input = this.inputs[source] ??= new PCMInput(rate, timestampUs);

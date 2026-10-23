@@ -62,5 +62,7 @@ jobs:
             ${{ runner.temp }}/rushes-window-checkpoint/owned-browser-pid.json
             ${{ runner.temp }}/rushes-window-checkpoint/retirement.json
             ${{ runner.temp }}/rushes-window-checkpoint/supervisor-*.json
+            ${{ runner.temp }}/rushes-window-checkpoint/uploader-tool.json
+            ${{ runner.temp }}/rushes-window-checkpoint/checkpoint-phase-*.json
             ${{ runner.temp }}/rushes-window-checkpoint/checkpoint-receipt-*.json
             ${{ runner.temp }}/rushes-window-checkpoint/normal-stop/*.webm

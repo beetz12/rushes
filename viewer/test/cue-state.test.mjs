@@ -5,6 +5,7 @@ import { once as fixtureListening } from 'node:events';
 import { readFile as readFixtureFile } from 'node:fs/promises';
 import { chromium, webkit } from 'playwright';
 import { viewerPage } from '../../cloud/dist/page.js';
+import { ownedTestBrowser } from '../../browser/test/owned-test-browser.mjs';
 
 const ID = 'abcdefghijklmnopqrstuv';
 const originalCues = [
@@ -49,7 +50,8 @@ async function fixture(t, browserType, options, holdTranscript = false) {
     server.listen(0, '127.0.0.1'); await fixtureListening(server, 'listening');
     base = `http://127.0.0.1:${server.address().port}`;
     t.after(() => { for (const reply of delayed.splice(0)) reply(); server.close(); });
-    const browser = await browserType.launch({ headless: true, ...options }); t.after(() => browser.close());
+    const owned = await ownedTestBrowser(t.signal, () => browserType.launchServer({ headless: true, ...options }), endpoint => browserType.connect(endpoint));
+    const browser = owned.browser; t.after(() => owned.close());
     const page = await browser.newPage({ viewport: { width: 375, height: 900 } });
     const errors = []; page.on('pageerror', error => errors.push(error.message));
     // Shorten polling only; generated video and all manifest/transcript requests remain real.
@@ -63,16 +65,31 @@ async function fixture(t, browserType, options, holdTranscript = false) {
     await page.locator('video').evaluate(async video => { video.muted = true; await video.play(); video.pause(); });
     await page.waitForFunction(() => document.querySelector('video').readyState >= 2, null, { timeout: 5000 });
     const seek = async seconds => {
-        await page.locator('video').evaluate((video, time) => new Promise(resolve => {
-            video.pause(); video.addEventListener('seeked', () => resolve(), { once: true }); video.currentTime = time;
-        }), seconds);
+        let timer;
+        try {
+            await Promise.race([page.locator('video').evaluate((video, time) => new Promise(resolve => {
+                video.pause(); video.addEventListener('seeked', () => resolve(), { once: true }); video.currentTime = time;
+            }), seconds), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`Native viewer seek to${seconds}s exceeded5000ms`)), 5000); })]);
+        } catch (error) {
+            let state, diagnosticTimer;
+            try { state = await Promise.race([page.evaluate(() => {
+                const video = document.querySelector('video');
+                return video ? { time: video.currentTime, ready: video.readyState, seeking: video.seeking, paused: video.paused,
+                    src: video.currentSrc, seekable: Array.from({ length: video.seekable.length }, (_, index) => [video.seekable.start(index), video.seekable.end(index)]),
+                    error: video.error?.code } : { missingVideo: true };
+            }), new Promise((_, reject) => { diagnosticTimer = setTimeout(() => reject(new Error('Seek snapshot exceeded1000ms')), 1000); })]); }
+            catch (snapshotError) { state = { unavailable: snapshotError.message }; }
+            finally { clearTimeout(diagnosticTimer); }
+            t.diagnostic(JSON.stringify({ scope: 'Native seek failure; original seeked-event requirement retained', target: seconds, state }));
+            throw error;
+        } finally { clearTimeout(timer); }
     };
     const active = () => page.locator('#transcript button.active').allTextContents();
     return { page, manifest, seek, active, errors, version: browser.version(), releaseTranscript() { holdTranscript = false; for (const reply of delayed.splice(0)) reply(); } };
 }
 
 for (const [name, browserType, options] of [['Chrome', chromium, { channel: 'chrome' }], ['WebKit', webkit, {}]]) {
-    test(`${name} cue state matches real seeks, natural ending and a replacement video`, async t => {
+    test(`${name} cue state matches real seeks, natural ending and a replacement video`, { timeout: 60000 }, async t => {
         const f = await fixture(t, browserType, options);
         await f.page.waitForFunction(() => document.querySelectorAll('#transcript button').length === 3);
         for (const [seconds, text] of [[1, 'First fixture cue'], [4, 'Middle fixture cue'], [6, 'Final fixture cue']]) {
@@ -122,7 +139,7 @@ for (const [name, browserType, options] of [['Chrome', chromium, { channel: 'chr
         verifyCue.equal(await f.page.locator('video').evaluate(video => video.paused), true);
         verifyCue.deepEqual(f.errors, []);
     });
-    test(`${name} late transcript immediately marks the current paused cue`, async t => {
+    test(`${name} late transcript immediately marks the current paused cue`, { timeout: 60000 }, async t => {
         const f = await fixture(t, browserType, options, true);
         await f.seek(4);
         verifyCue.equal(await f.page.locator('#transcript button').count(), 0);
@@ -133,7 +150,7 @@ for (const [name, browserType, options] of [['Chrome', chromium, { channel: 'chr
         verifyCue.ok(Math.abs(await f.page.locator('video').evaluate(video => video.currentTime) - 4) < .05);
         verifyCue.deepEqual(f.errors, []);
     });
-    test(`${name} hover differs from the active cue, keyboard focus stays visible and footer contrast is measured`, async t => {
+    test(`${name} hover differs from the active cue, keyboard focus stays visible and footer contrast is measured`, { timeout: 60000 }, async t => {
         const f = await fixture(t, browserType, options);
         await f.page.waitForFunction(() => document.querySelectorAll('#transcript button').length === 3);
         await f.seek(4);

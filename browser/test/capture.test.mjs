@@ -53,6 +53,18 @@ before(async () => {
 after(async () => { await browser?.close(); await server?.close(); });
 async function pageFixture(callback) {
   const context = await browser.newContext(); const page = await context.newPage();
+  page.on('console',message=>{if(message.text().startsWith('GENERATED_AUDIO_FAILURE '))console.log(message.text());});
+  await page.addInitScript(()=>{
+    const NativeWorker=Worker;
+    globalThis.Worker=class extends NativeWorker{
+      constructor(url,options){
+        super(url,options);
+        if(String(url).includes('/audio.worker'))this.addEventListener('message',event=>{
+          if(event.data.kind==='error')console.log('GENERATED_AUDIO_FAILURE '+JSON.stringify(event.data));
+        });
+      }
+    };
+  });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   const appRequests = []; page.on('request', request => {
     const pathname = new URL(request.url()).pathname;

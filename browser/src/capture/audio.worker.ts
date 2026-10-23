@@ -9,7 +9,13 @@ const timing = () => endpoint.postMessage({ kind: 'timing', diagnostics: {
   ...mix.diagnostics, inputs: mix.inputs.map(input => input?.timing), modelUncertaintyUs: 5000,
 } });
 function stop() { if (stopping) return; stopping = true; wake?.(); written?.(); timing(); endpoint.postMessage({ kind: 'stopped' }); }
-function failure(error: unknown) { if (!stopping) endpoint.postMessage({ kind: 'error', message: String(error) }); stop(); }
+function failure(error: unknown, incoming?: unknown) {
+  if (!stopping) endpoint.postMessage({ kind: 'error', message: String(error), diagnostics: {
+    ...mix.diagnostics, inputs: mix.inputs.map(input => input?.timing), modelUncertaintyUs: 5000,
+    failure: { buffers: mix.bufferState, incoming, outputSequence, receiptPending: !!written },
+  } });
+  stop();
+}
 async function run() {
   while (!stopping) {
     const packet = mix.pull();
@@ -42,5 +48,6 @@ endpoint.onmessage = event => {
       mix.push(message.source, message.rate, message.timestamp, message.left, message.right);
       endpoint.postMessage({ kind: 'consumed', source: message.source, frames: message.left.length }); wake?.();
     }
-  } catch (error) { failure(error); }
+  } catch (error) { failure(error, message.kind === 'input' ? { kind: message.kind, source: message.source, rate: message.rate,
+    timestampUs: message.timestamp, frames: message.left.length } : { kind: message.kind }); }
 };

@@ -50,20 +50,35 @@ async function freezeCheckpoint(proof, sequence, stage, signal, requireOwner) {
   const root = checkpointPaths.join(proof, `checkpoint-${sequence}`);
   await checkpointFiles.mkdir(root, { mode: 0o700 }); signal.throwIfAborted();
   const identities = [], files = [];
-  for (const [name, maximum, required] of [['metrics.json', 32 * 1024 ** 2, true], ['chrome-stderr.log', 4 * 1024 ** 2, false], ['owned-browser-pid.json', 8192, requireOwner]]) {
+  const supervised = stage.startsWith('supervisor-');
+  const entries = stage === 'supervisor-startup'
+    ? [['supervisor-owner.json', 8192, true], ['uploader-tool.json', 8192, true]]
+    : [['metrics.json', 32 * 1024 ** 2, !supervised], ['chrome-stderr.log', 4 * 1024 ** 2, false], ['owned-browser-pid.json', 8192, requireOwner]];
+  if (stage === 'supervisor-deadline') entries.push(['supervisor-owner.json',8192,true],['uploader-tool.json',8192,true],['supervisor-deadline.json',8192,true],
+    ...['main','page','rss','monitor'].map(lane=>[`checkpoint-phase-${lane}.json`,8192,false]));
+  for (const [name, maximum, required] of entries) {
     signal.throwIfAborted(); const path = checkpointPaths.join(proof, name); let info;
     try { info = await checkpointFiles.lstat(path); }
     catch (error) { if (error.code !== 'ENOENT' || required) throw error; identities.push({ name, unavailable: true }); continue; }
     signal.throwIfAborted();
-    if (!info.isFile() || info.isSymbolicLink() || info.size > maximum) throw new Error('Checkpoint file is not an ordinary bounded generated file');
-    const bytes = await checkpointFiles.readFile(path, { signal });
-    if (bytes.length > maximum) throw new Error('Checkpoint file exceeded its bound');
+    if (!info.isFile() || info.isSymbolicLink() || info.size > maximum) {
+      if (supervised && !required) { identities.push({name,unavailable:'Unsafe or oversized file',bytes:info.size});continue; }
+      throw new Error('Checkpoint file is not an ordinary bounded generated file');
+    }
+    const handle=await checkpointFiles.open(path,'r');let bytes;
+    try {
+      const buffer=Buffer.alloc(info.size);let offset=0;
+      while(offset<buffer.length){signal.throwIfAborted();const read=await handle.read(buffer,offset,buffer.length-offset,offset);if(!read.bytesRead)break;offset+=read.bytesRead;}
+      bytes=buffer.subarray(0,offset);
+    } finally { await handle.close(); }
     const target = checkpointPaths.join(root, name); await checkpointFiles.writeFile(target, bytes, { flag: 'wx', mode: 0o600, signal }); files.push(target);
-    identities.push({ name, bytes: bytes.length, sha256: checkpointCrypto.createHash('sha256').update(bytes).digest('hex') });
+    let jsonValidity;
+    if (supervised && name.endsWith('.json')) { try { JSON.parse(bytes.toString('utf8')); jsonValidity='valid'; } catch { jsonValidity='invalid; raw diagnostic bytes only'; } }
+    identities.push({ name, bytes: bytes.length, sha256: checkpointCrypto.createHash('sha256').update(bytes).digest('hex'),jsonValidity });
   }
   const metadata = checkpointPaths.join(root, 'checkpoint.json');
-  await checkpointFiles.writeFile(metadata, JSON.stringify({ scope: 'Generated short-recording evidence before destructive recovery or cleanup; not retirement or acceptance',
-    sequence, stage, intent: stage === 'normal-before-recovery' ? 'Before alternate-tab close, reload and intentional abrupt-kill recovery' : stage === 'first-error' ? 'Before page/trace error read-back and cleanup' : 'Before trace retirement, browser.close and fallback owned-process kill', at: new Date().toISOString(), identities }, null, 2), { flag: 'wx', mode: 0o600, signal });
+  await checkpointFiles.writeFile(metadata, JSON.stringify({ scope: supervised ? 'Supervisor diagnostic only; no child normal/final receipt, natural exit or retirement inferred' : 'Generated short-recording evidence before destructive recovery or cleanup; not retirement or acceptance',
+    sequence, stage, intent: supervised ? stage === 'supervisor-startup' ? 'Before matrix child creation or media import' : 'Before supervisor-triggered termination; child may independently exit or clean up' : stage === 'normal-before-recovery' ? 'Before alternate-tab close, reload and intentional abrupt-kill recovery' : stage === 'first-error' ? 'Before page/trace error read-back and cleanup' : 'Before trace retirement, browser.close and fallback owned-process kill', at: new Date().toISOString(), identities }, null, 2), { flag: 'wx', mode: 0o600, signal });
   files.push(metadata); return { root, files };
 }
 export function parseArtifactOutput(text) {
@@ -167,45 +182,117 @@ export function superviseCheckpoints(child, { proof, upload, prefix, uploadBudge
     });
   };
   child.on('message', observe);
-  return { async finish() { await tail; child.off('message', observe); return { receipts, errors }; } };
+  return { async finish() { child.off('message', observe); await tail; return { receipts, errors }; } };
+}
+export async function waitForOwnedReady(child, ended, expires) {
+  let observe;
+  try {
+    const ready = new Promise(resolve => { observe = message => { if(message?.kind==='awaiting-owned-matrix')resolve(); };child.on('message',observe); });
+    await until(Promise.race([ready,ended.then(()=>{throw new Error('Owned child closed before readiness');})]),expires);
+  } finally { if(observe)child.off('message',observe); }
+}
+export async function supervisorSnapshot(proof, stage, { prefix, upload, signal, budgetMs=45000 }) {
+  if (!['supervisor-startup','supervisor-deadline'].includes(stage) || !Number.isSafeInteger(budgetMs) || budgetMs<1 || budgetMs>45000)throw new Error('Invalid supervisor snapshot');
+  const control=new AbortController(), expires=performance.now()+budgetMs;
+  const externalAbort=()=>control.abort();signal?.addEventListener('abort',externalAbort,{once:true});
+  if(signal?.aborted)control.abort();
+  const alarm=setTimeout(()=>control.abort(),budgetMs);let operation;
+  try {
+    control.signal.throwIfAborted();
+    const frozen=await until(freezeCheckpoint(proof,stage,stage,control.signal,false),expires);
+    operation=upload(`${prefix}-${stage}`,frozen.files,frozen.root,{retentionDays:1,compressionLevel:1},{signal:control.signal,expires});
+    const artifact=await until(operation,expires);if(!validArtifact(artifact))throw new Error('Supervisor snapshot was not finalized');
+    const receipt={stage,artifact:{id:artifact.id,digest:artifact.digest,size:artifact.size??null},uploadProof:artifact.uploadProof,
+      scope:'Diagnostic only; never satisfies child normal/final checkpoints or retirement'};
+    await until(checkpointFiles.writeFile(checkpointPaths.join(proof,`${stage}-receipt.json`),JSON.stringify(receipt),{flag:'wx',mode:0o600,signal:control.signal}),expires);
+    return receipt;
+  } finally {
+    clearTimeout(alarm);signal?.removeEventListener('abort',externalAbort);control.abort();
+    if(operation)await until(operation.catch(()=>undefined),performance.now()+2500);
+  }
+}
+export async function matrixOutcomeBeforeDeadline(ended, { expires, beforeTerminate, terminate }) {
+  if(!Number.isFinite(expires)||expires>performance.now()+300000)throw new Error('Invalid supervisor deadline');
+  let timer;
+  const result=await Promise.race([ended.then(outcome=>({outcome})),new Promise(resolve=>{timer=setTimeout(()=>resolve({expired:true}),Math.max(1,expires-performance.now()));})]).finally(()=>clearTimeout(timer));
+  if(!result.expired&&performance.now()<expires)return {outcome:result.outcome,supervisorDeadlineExceeded:false};
+  const control=new AbortController();let preparation,diagnostic,diagnosticError,outcome,terminationError;
+  try { preparation=beforeTerminate(control.signal);diagnostic=await until(preparation,performance.now()+110000); }
+  catch(error){diagnosticError=error.name;}
+  finally { control.abort();if(preparation)try{await until(preparation.catch(()=>undefined),performance.now()+2500);}catch{diagnosticError='DeadlineSnapshotShutdownUnconfirmed';} }
+  try { outcome=await until(terminate(),performance.now()+10000); }
+  catch(error){terminationError=error.name;}
+  return {outcome,supervisorDeadlineExceeded:true,diagnostic,diagnosticError,terminationError};
 }
 export async function main() {
+  const actionBegan=performance.now(),actionExpires=actionBegan+300000;
   const environment = process.env;
   if (environment.GITHUB_ACTIONS !== 'true' || process.platform !== 'win32') throw new Error('This diagnostic action requires a public Windows runner');
-  const event = JSON.parse(await checkpointFiles.readFile(environment.GITHUB_EVENT_PATH, 'utf8'));
+  const event = JSON.parse(await until(checkpointFiles.readFile(environment.GITHUB_EVENT_PATH, 'utf8'),performance.now()+5000));
   if (event.repository?.private !== false || event.repository?.full_name !== 'beetz12/rushes') throw new Error('Private Actions are forbidden');
+  console.log('Checkpoint supervisor: public repository verified');
   const workspace = environment.GITHUB_WORKSPACE, proof = checkpointPaths.resolve(environment.RUSHES_M1_PROOF);
-  const temporary = await checkpointFiles.realpath(environment.RUNNER_TEMP), relative = checkpointPaths.relative(temporary, proof);
+  const temporary = await until(checkpointFiles.realpath(environment.RUNNER_TEMP),performance.now()+5000), relative = checkpointPaths.relative(temporary, proof);
   if (!relative || relative.startsWith('..') || checkpointPaths.isAbsolute(relative)) throw new Error('Expected a fresh runner-temporary proof path');
   const node = environment.RUSHES_MATRIX_NODE, runFile = promisify(checkpointProcesses.execFile);
   if (!node || !checkpointPaths.isAbsolute(node) || (await runFile(node, ['--version'], { timeout: 5000 })).stdout.trim() !== 'v22.22.0') throw new Error('An explicit pinned matrix Node executable is required');
-  await checkpointFiles.mkdir(proof, { mode: 0o700 });
+  await until(checkpointFiles.mkdir(proof, { mode: 0o700 }),performance.now()+5000);
   const ownerFile = checkpointPaths.join(proof, 'supervisor-owner.json');
-  await checkpointFiles.writeFile(ownerFile, JSON.stringify({ supervisorPid: process.pid, supervisorNode: process.version, matrixNode: node, state: 'before-child-start' }), { flag: 'wx', mode: 0o600 });
+  await until(checkpointFiles.writeFile(ownerFile, JSON.stringify({ supervisorPid: process.pid, supervisorNode: process.version, matrixNode: node, state: 'before-child-start' }), { flag: 'wx', mode: 0o600 }),performance.now()+5000);
   const inheritedModules = environment.RUSHES_MATRIX_PS_MODULE_PATH, matrixEnvironment = matrixChildEnvironment(environment);
   const script = environment.RUSHES_UPLOAD_ACTION_SCRIPT;
   if (!script || !checkpointPaths.isAbsolute(script)) throw new Error('The pinned upload program is required');
+  const prefix=`matrix-boundary-${environment.GITHUB_RUN_ID}-${environment.GITHUB_RUN_ATTEMPT}-${checkpointCrypto.randomUUID().slice(0,8)}`;
+  const upload=(name,files,root,options,control)=>uploadInWorker({name,files,root,options,script,node},control);
+  await until(checkpointFiles.writeFile(checkpointPaths.join(proof,'uploader-tool.json'),JSON.stringify({expectedProgram:uploadProgram,matrixNode:node,
+    scope:'Expected tool identity; worker verification, clean exit and finalized ID/digest are required separately'}),{flag:'wx',mode:0o600}),performance.now()+5000);
+  const startup=await supervisorSnapshot(proof,'supervisor-startup',{prefix,upload});
+  console.log('Checkpoint supervisor: startup artifact finalized',JSON.stringify(startup.artifact));
   const child = checkpointProcesses.fork(fileURLToPath(new URL('./matrix-checkpoint-child.mjs', import.meta.url)), [], { cwd: workspace, execPath: node,
     env: matrixEnvironment, stdio: ['ignore','pipe','pipe','ipc'] });
   child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr);
   let matrixProcessError = false; child.on('error', () => { matrixProcessError = true; });
-  const ended = new Promise(resolve => child.once('close', (actualExit, signal) => resolve({ actualExit, signal, processError: matrixProcessError })));
-  const supervisor = superviseCheckpoints(child, { proof, prefix: `matrix-boundary-${environment.GITHUB_RUN_ID}-${environment.GITHUB_RUN_ATTEMPT}-${checkpointCrypto.randomUUID().slice(0, 8)}`,
-    upload: (name, files, root, options, control) => uploadInWorker({ name, files, root, options, script, node }, control) });
+  const ended = new Promise(resolve => child.once('close', (actualExit, signal) => resolve({ actualExit, signal, processError: matrixProcessError,closeObserved:true })));
+  const ready=waitForOwnedReady(child,ended,Math.min(actionExpires,performance.now()+10000));void ready.catch(()=>undefined);
+  const supervisor = superviseCheckpoints(child,{proof,prefix,upload});
   try {
-    await checkpointFiles.writeFile(ownerFile, JSON.stringify({ supervisorPid: process.pid, matrixPid: child.pid, supervisorNode: process.version, matrixNode: node, modulePathHash: checkpointCrypto.createHash('sha256').update(inheritedModules).digest('hex'), state: 'started' }));
+    await until(checkpointFiles.writeFile(ownerFile, JSON.stringify({ supervisorPid: process.pid, matrixPid: child.pid, supervisorNode: process.version, matrixNode: node, modulePathHash: checkpointCrypto.createHash('sha256').update(inheritedModules).digest('hex'), state: 'child-created-before-readiness' })),performance.now()+5000);
+    await ready;
+    console.log('Checkpoint supervisor: owned child is ready; releasing media import');
     child.send({ kind: 'begin-owned-matrix' });
   } catch {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     await until(ended, performance.now() + 2000); throw new Error('Matrix ownership could not be persisted before launch');
   }
-  const outcome = await ended, checkpoints = await supervisor.finish(); let retirementActualExit;
+  let checkpoints,settlement;
+  const settle=()=>settlement??=supervisor.finish();
+  const termination={};
+  const lifetime=await matrixOutcomeBeforeDeadline(ended,{expires:actionExpires,
+    beforeTerminate:async signal=>{
+      const settling=settle();void settling.catch(()=>undefined);
+      await until(checkpointFiles.writeFile(checkpointPaths.join(proof,'supervisor-deadline.json'),JSON.stringify({supervisorDeadlineExceeded:true,
+        actionElapsedMs:performance.now()-actionBegan,scope:'Wall deadline; no synthetic child exit or retirement inferred'}),{flag:'wx',mode:0o600,signal}),performance.now()+5000);
+      let settlementError;
+      try{checkpoints=await until(settling,performance.now()+50000);}catch(error){settlementError=error.name;}
+      const snapshot=await supervisorSnapshot(proof,'supervisor-deadline',{prefix,upload,signal});return {snapshot,settlementError};
+    },
+    terminate:async()=>{
+      if(child.exitCode===null&&child.signalCode===null){
+        try{await runFile('taskkill',['/PID',String(child.pid),'/T','/F'],{env:matrixEnvironment,timeout:5000});termination.commandActualExit=0;}
+        catch(error){termination.commandActualExit=Number.isInteger(error.code)?error.code:null;termination.commandError=error.name;}
+      }
+      const outcome=await until(ended,performance.now()+5000);termination.childClose=outcome;return outcome;
+    }});
+  if(!checkpoints)checkpoints=lifetime.supervisorDeadlineExceeded?{receipts:[],errors:[{name:'CheckpointSettlementUnconfirmed'}]}:await until(settle(),performance.now()+50000);
+  const outcome=lifetime.outcome??{actualExit:null,signal:null,processError:matrixProcessError,closeObserved:false};let retirementActualExit;
   try { await runFile(node, [checkpointPaths.join(workspace, 'verification/browser-retirement.mjs'), checkpointPaths.join(proof, 'owned-browser-pid.json'),
     checkpointPaths.join(proof, 'retirement.json')], { cwd: workspace, env: matrixEnvironment, timeout: 15000 }); retirementActualExit = 0; }
   catch { retirementActualExit = 1; }
-  const complete = outcome.actualExit === 0 && !outcome.signal && !outcome.processError && !checkpoints.errors.length && retirementActualExit === 0
+  const ids=[startup.artifact.id,...checkpoints.receipts.map(row=>row.artifact.id)];
+  const complete = !lifetime.supervisorDeadlineExceeded && outcome.closeObserved && outcome.actualExit === 0 && !outcome.signal && !outcome.processError && !checkpoints.errors.length && retirementActualExit === 0
+    && new Set(ids).size===ids.length
     && ['normal-before-recovery','final-before-close'].every(stage => checkpoints.receipts.some(receipt => receipt.stage === stage));
-  await checkpointFiles.writeFile(checkpointPaths.join(proof, 'supervisor-result.json'), JSON.stringify({ ...outcome, ...checkpoints, retirementActualExit,
-    scope: 'Original matrix verdict and independent retirement remain required', accepted: complete }, null, 2), { flag: 'wx', mode: 0o600 });
+  await until(checkpointFiles.writeFile(checkpointPaths.join(proof, 'supervisor-result.json'), JSON.stringify({ ...outcome, ...checkpoints, retirementActualExit,startup,lifetime,termination,
+    scope: 'Original matrix verdict and independent retirement remain required', accepted: complete }, null, 2), { flag: 'wx', mode: 0o600 }),performance.now()+5000);
   return complete ? 0 : 1;
 }

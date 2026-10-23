@@ -64,6 +64,7 @@ export function requireNativeClockTrace(report, capability) {
 export async function beginColdTrace(browser, page, directory, limits = {}) {
   if (limits.audioDiagnostics !== undefined && typeof limits.audioDiagnostics !== 'boolean') throw new Error('Audio trace option must be boolean');
   if (limits.canvasDiagnostics !== undefined && typeof limits.canvasDiagnostics !== 'boolean') throw new Error('Canvas trace option must be boolean');
+  if (limits.videoCaptureDiagnostics !== undefined && typeof limits.videoCaptureDiagnostics !== 'boolean') throw new Error('Video capture trace option must be boolean');
   const finalizationMs = limits.finalizationMs ?? 15000, metadataMs = limits.metadataMs ?? 2000;
   if (!Number.isSafeInteger(finalizationMs) || finalizationMs < 1 || finalizationMs > 15000
     || !Number.isSafeInteger(metadataMs) || metadataMs < 1 || metadataMs > Math.min(2000, finalizationMs))
@@ -135,6 +136,7 @@ export async function beginColdTrace(browser, page, directory, limits = {}) {
     if (limits.canvasDiagnostics) report.categories.push('blink');
     if (limits.audioDiagnostics) report.categories.push('mediastream', 'disabled-by-default-audio', 'webaudio',
       'disabled-by-default-webaudio.audionode', 'disabled-by-default-mediastream');
+    if (limits.videoCaptureDiagnostics) report.categories.push('disabled-by-default-video_and_image_capture');
     await deadline(session.send('Tracing.start', { transferMode: 'ReturnAsStream', streamFormat: 'json',
       traceConfig: { recordMode: 'recordContinuously', traceBufferSizeInKb: 32768,
         includedCategories: report.categories, enableArgumentFilter: false } }), 5000, 'Cold trace start');

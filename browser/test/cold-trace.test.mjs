@@ -63,6 +63,16 @@ nodeTest.test('metadata retirement failure still ends the trace, retains raw byt
   const report = JSON.parse(await files.readFile(paths.join(f.directory, 'report.json'), 'utf8'));
   assert.equal(report.traceReceipt.dataLossOccurred, false); assert.ok(report.errors.some(error => error.includes('metadata retirement rejected')));
 });
+nodeTest.test('native capture diagnostics add only the explicitly requested native category',async context=>{
+  for(const videoCaptureDiagnostics of [false,true]){
+    const f=await retirementFixture(context,false);
+    const trace=await beginColdTrace(f.browser,f.page,f.directory,{audioDiagnostics:true,videoCaptureDiagnostics});
+    const categories=f.requests.find(row=>row.method==='Tracing.start').parameters.traceConfig.includedCategories;
+    assert.deepEqual(categories,['media','blink.user_timing','mediastream','disabled-by-default-audio','webaudio',
+      'disabled-by-default-webaudio.audionode','disabled-by-default-mediastream',...(videoCaptureDiagnostics?['disabled-by-default-video_and_image_capture']:[])]);
+    await assert.rejects(trace.finish({generated:true}),/metadata retirement rejected/);
+  }
+});
 
 nodeTest.test('audio diagnostics request native callback and graph categories only when explicitly enabled', async context => {
   const f = await retirementFixture(context, false);

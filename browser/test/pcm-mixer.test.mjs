@@ -5,6 +5,13 @@ import { readFile } from 'node:fs/promises';
 const compiled = await transform(await readFile(new URL('../src/capture/pcm-mixer.ts', import.meta.url), 'utf8'), { loader: 'ts', format: 'esm' });
 const { TimestampMixer, PCMInput } = await import(`data:text/javascript;base64,${Buffer.from(compiled.code).toString('base64')}`);
 const plane = (length, value) => new Float32Array(length).fill(value);
+test('fatal buffer diagnostics retain actual bounds and expose no PCM samples',()=>{
+  const mix=new TimestampMixer();
+  for(let packet=0;packet<25;packet++)mix.push(0,48000,packet*10000,plane(480,.2),plane(480,.2));
+  assert.throws(()=>mix.push(0,48000,250000,plane(480,.2),plane(480,.2)),/buffer/);
+  assert.deepEqual(mix.bufferState,{cursorFrames:0,inputs:[{sampleRate:48000,originUs:0,firstSample:0,endSample:12000,capacityFrames:12128},undefined]});
+  assert.equal(JSON.stringify(mix.bufferState).includes('samples'),false);
+});
 test('same-rate stereo mix retains input timestamps and distinct channels with half gain', () => {
   const mix = new TimestampMixer();
   for (let packet = 0; packet < 10; packet++) {

@@ -18,7 +18,7 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
   const pendingFrames = [0, 0];
   let output: InstanceType<AudioTransformAPIs['MediaStreamTrackGenerator']> | undefined, worker: Worker | undefined;
   let writer: WritableStreamDefaultWriter<PCMFrame> | undefined;
-  let closed = false, quiesced = false, writing = false, diagnostics: unknown, deadline: ReturnType<typeof setTimeout> | undefined;
+  let closed = false, quiesced = false, writing = false, readied = false, hasFailureDiagnostics = false, diagnostics: unknown, deadline: ReturnType<typeof setTimeout> | undefined;
   let readyResolve: () => void, readyReject: (error: Error) => void;
   const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
   void ready.catch(() => undefined);
@@ -90,12 +90,16 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
     worker = new Worker(new URL('./audio.worker.ts', import.meta.url), { type: 'module' });
     worker.onmessage = event => {
       if (event.data.kind === 'stopped') { clearTimeout(deadline); stoppedResolve(); worker?.terminate(); }
-      else if (event.data.kind === 'timing') diagnostics = event.data.diagnostics;
+      else if (event.data.kind === 'timing') { if (!hasFailureDiagnostics) diagnostics = event.data.diagnostics; }
       else if (closed) return;
       else if (event.data.kind === 'consumed') pendingFrames[event.data.source] -= event.data.frames;
       else if (event.data.kind === 'packet') { if (!quiesced) void write(event.data.sequence, event.data.timestamp, event.data.data); }
-      else if (event.data.kind === 'ready') { clearTimeout(deadline); readyResolve(); }
-      else if (event.data.kind === 'error') failure(`Audio composition failed: ${event.data.message}`);
+      else if (event.data.kind === 'ready') { readied = true; clearTimeout(deadline); readyResolve(); }
+      else if (event.data.kind === 'error') {
+        hasFailureDiagnostics = true;
+        diagnostics = { ...event.data.diagnostics, parent: { closed, quiesced, writing, readied, pendingFrames: [...pendingFrames] } };
+        failure(`Audio composition failed: ${event.data.message}`);
+      }
     };
     worker.onerror = () => failure('Audio composition worker failed');
     deadline = setTimeout(() => failure('Composed audio did not become ready'), 10000);

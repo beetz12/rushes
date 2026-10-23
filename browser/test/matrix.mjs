@@ -59,6 +59,11 @@ if (![128, 480].includes(sourceAudioFrames) || (sourceAudioFrames !== 128 && sou
 const sourceAudioSink = process.env.RUSHES_M1_SOURCE_AUDIO_SINK ?? 'none';
 if (!['none', 'default'].includes(sourceAudioSink) || (sourceAudioSink === 'default' && (sourceMode !== 'native-reference' || sourceAudioFrames !== 128)))
   throw new Error('Default source sink requires explicit native-reference128 mode');
+const sourceVideoTrace = process.env.RUSHES_M1_SOURCE_VIDEO_TRACE_PROOF === '1';
+if (process.env.RUSHES_M1_SOURCE_VIDEO_TRACE_PROOF !== undefined && !sourceVideoTrace)
+  throw new Error('Native source video trace option must be1');
+if (sourceVideoTrace && (!sourceAudioTrace || sourceAudioSink !== 'default'))
+  throw new Error('Native source video tracing requires the isolated8s default128 source audio trace');
 if (process.env.RUSHES_M1_NATIVE_TRACE_PROOF !== undefined && !fullNativeTrace) throw new Error('Native trace option must be1');
 if (nativeTraceRequested && (sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl))
   throw new Error('Native audio tracing is limited to the existing short supplied-reference qualification');
@@ -73,7 +78,7 @@ const proof = resolve(process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir()
 await mkdir(proof, { recursive: true, mode: 0o700 });
 const profile = join(proof, 'isolated-chrome-profile');
 const evidence = { schema: sourceOnly ? 'rushes.source-load-control/1' : 'rushes.independent-m1/1', startedAt: new Date().toISOString(),
-  node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceAudioSink, sourceAudioTrace, checkpointRequested, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
+  node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceAudioSink, sourceAudioTrace, sourceVideoTrace, checkpointRequested, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
   normalBackgroundFlags: true, source: 'native Chrome fake MJPEG with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; tab activation alone is not physical minimization',
@@ -97,6 +102,22 @@ const check = (name, operation) => {
 };
 const save = () => writeFile(join(proof, 'metrics.json'), JSON.stringify(evidence, null, 2));
 async function stage(name, details) { evidence.lifecycle.push({ name, ...details, at: new Date().toISOString() }); await save(); }
+async function checkpointPhase(name,lane='main',status='pending',details) {
+  if(checkpointRequested)await writeFile(join(proof,`checkpoint-phase-${lane}.json`),JSON.stringify({name,status,details,at:new Date().toISOString(),scope:'Last issued diagnostic operation; no recording acceptance inferred'}));
+}
+async function checkpointOperation(lane,operation) {
+  if(!checkpointRequested)return operation();
+  await checkpointPhase('sample',lane);
+  try{const result=await operation();await checkpointPhase('sample',lane,'returned');return result;}
+  catch(error){
+    const details=lane==='rss'?{code:typeof error.code==='string'?error.code.slice(0,80):Number.isInteger(error.code)?error.code:undefined,
+      killed:typeof error.killed==='boolean'?error.killed:undefined,signal:typeof error.signal==='string'?error.signal.slice(0,32):undefined,
+      message:typeof error.message==='string'?error.message.slice(0,512):undefined,stderr:typeof error.stderr==='string'?error.stderr.slice(0,1536):undefined}:undefined;
+    try{await checkpointPhase(`sample:${error.name}`,lane,'rejected',details);}
+    catch(ledgerError){evidence.failures.push(`Diagnostic phase ledger failed: ${ledgerError.name}`);}
+    throw error;
+  }
+}
 let checkpointSequence = 0, checkpointFailed = false;
 async function durableCheckpoint(stageName) {
   if (!checkpointRequested) return;
@@ -264,7 +285,7 @@ async function rss() {
   return rows.filter(([child]) => ids.has(child)).reduce((total, row) => total + row[2] * 1024, 0);
 }
 async function sample(stage) {
-  const [snapshot, processRss, host, nativeProbe] = await Promise.all([page.evaluate(() => window.matrixTake?.snapshot()), rss(),
+  const [snapshot, processRss, host, nativeProbe] = await Promise.all([checkpointOperation('page',()=>page.evaluate(() => window.matrixTake?.snapshot())), checkpointOperation('rss',rss),
     allocationDiagnostic ? macHostState() : Promise.resolve(null),
     allocationDiagnostic ? nativeAllocationProbe() : Promise.resolve(null)]);
   if (host) { evidence.hostTimeline.push(host); latestHostSample = host; }
@@ -283,6 +304,7 @@ async function downloadTracks(manifest, directory) {
   await mkdir(directory, { recursive: true });
   const saved = {};
   for (const track of manifest.tracks) {
+    await checkpointPhase(`download:${track.kind}`);
     const downloaded = page.waitForEvent('download');
     await page.evaluate(kind => window.matrixTake.download(kind), track.kind);
     const file = join(directory, `${track.kind}.webm`); await (await downloaded).saveAs(file); saved[track.kind] = file;
@@ -414,7 +436,7 @@ try {
   await stage('browser-launch-start');
   const context = await launch(media);
   await stage('browser-launch-ready');
-  if (nativeTraceRequested) nativeTrace = await beginColdTrace(browser, page, join(proof, 'native-trace'), { audioDiagnostics: true });
+  if (nativeTraceRequested) nativeTrace = await beginColdTrace(browser, page, join(proof, 'native-trace'), { audioDiagnostics: true, videoCaptureDiagnostics: sourceVideoTrace });
   if (long && !diagnostic && process.platform === 'darwin') {
     evidence.hostObservationCoverage = 'Independent approximately2s lock metadata monitor, with fresh reads before each launch/start; unobserved intervals are not proven unlocked';
     hostMonitor = monitorMacLock({ read: macHostState,
@@ -481,13 +503,16 @@ try {
   }
   await context.setOffline(false); await page.bringToFront();
   const finalizationStarted = Date.now(); let finishing = true;
+  await checkpointPhase('finish-request');
   const monitor = (async () => { while (finishing) { await sample('finalization'); await sleep(250); } })();
+  void monitor.catch(async error=>{try{await checkpointPhase(`finalization-monitor:${error.name}`,'monitor','rejected');}catch{}});
   try { evidence.recording = await page.evaluate(() => window.matrixTake.finish()); }
   finally { finishing = false; await monitor; }
   evidence.finalizationMs = Date.now() - finalizationStarted;
   hostMonitor?.assert();
   // Keep the actual PCM even if a later shape/decode/phase guard rejects the run.
   if (sourceMode === 'native-reference') {
+    await checkpointPhase('source-reference-download');
     const pending = page.waitForEvent('download');
     await page.evaluate(() => window.matrixTake.downloadSourceReference());
     const observationPath = join(proof, 'supplied-reference.f32le'); await (await pending).saveAs(observationPath);
@@ -544,6 +569,7 @@ try {
   const files = await downloadTracks(manifest, join(proof, 'normal-stop'));
   evidence.decoded = {};
   for (const kind of ['screen', 'camera', 'composed']) {
+    await checkpointPhase(`probe-frames:${kind}`);
     evidence.decoded[kind] = await probeFrames(files[kind]);
     check(`${kind} 720p decoded frames`, () => assert.deepEqual([evidence.decoded[kind].width, evidence.decoded[kind].height], [1280, 720]));
     check(`${kind} decoded duration`, () => assert.ok(Math.abs(evidence.decoded[kind].durationSeconds * 1000 - manifest.durationMs) <= 250));
@@ -564,6 +590,7 @@ try {
   await save();
   evidence.sync = {};
   for (const kind of ['screen', 'camera', 'composed']) {
+    await checkpointPhase(`decoded-sync:${kind}`);
     evidence.sync[kind] = await decodedSync(files[kind], kind === 'composed' ? files.composed : files.microphone);
     check(`${kind} decoded beginning/middle/end sync within 100 ms`, () => requireDecodedAlignment(evidence.sync[kind].points));
     check(`${kind} decoded audio presentation gaps within250ms`, () => assert.ok(evidence.sync[kind].audioJoins.every(join => Math.abs(join.gapMs) <= 250)));
