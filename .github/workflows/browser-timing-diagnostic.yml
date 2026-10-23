@@ -1,0 +1,160 @@
+name: browser-timing-diagnostic
+on:
+  push:
+    branches: [codex/browser-production-20261022]
+    paths:
+      - '.github/workflows/browser-timing-diagnostic.yml'
+      - 'verification/browser-native-pause.mjs'
+permissions:
+  contents: read
+jobs:
+  compare:
+    name: Mac current / traced-untraced-traced and native pause control
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      RUSHES_M1_SOURCE_MODE: native-reference
+      RUSHES_M1_BROWSER_MODE: headful
+      RUSHES_M1_VIDEO_BUFFER: cpu
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+      - run: npm --prefix browser ci --no-audit --no-fund
+      - run: node scripts/install-test-chrome.mjs --generation current --destination "${{ runner.temp }}/rushes-test-chrome"
+      - run: brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+      - run: npm --prefix browser run build
+      - name: Prepare one immutable generated input for all three arms
+        id: prepare
+        env:
+          RUSHES_DIAGNOSTIC_MEDIA: ${{ runner.temp }}/rushes-timing-input
+        run: |
+          node --input-type=module <<'JS'
+          import { mkdir, readFile, writeFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { matrixMedia } from './browser/test/matrix-media.mjs';
+          const directory = process.env.RUSHES_DIAGNOSTIC_MEDIA;
+          await mkdir(directory, { mode: 0o700 });
+          const media = await matrixMedia(directory);
+          const hashes = {};
+          for (const [kind, path] of Object.entries(media))
+            hashes[kind] = { path, sha256: createHash('sha256').update(await readFile(path)).digest('hex') };
+          await writeFile(`${directory}/pins.json`, JSON.stringify(hashes, null, 2), { flag: 'wx' });
+          JS
+          echo "RUSHES_M1_SOURCE_FILE=${{ runner.temp }}/rushes-timing-input/timecoded.mjpeg" >> "$GITHUB_ENV"
+      # A failed arm remains a failed step. Later controls collect evidence without replacing its verdict.
+      - name: Traced short A
+        id: traced_a
+        if: ${{ !cancelled() && steps.prepare.conclusion == 'success' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_NATIVE_TRACE_PROOF: '1'
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-timing-traced-a
+        run: |
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import assert from 'node:assert/strict';
+          const proof = process.env.RUSHES_M1_PROOF;
+          const owner = JSON.parse(readFileSync(`${proof}/owned-browser-pid.json`, 'utf8'));
+          assert.equal(owner.profile, `${proof}/isolated-chrome-profile`);
+          const rows = execFileSync('ps', ['-axo', 'pid=,args='], { encoding: 'utf8' }).trim().split('\n');
+          assert.ok(rows.some(row => Number(row.trim().split(/\s+/)[0]) === process.pid));
+          assert.ok(!rows.some(row => Number(row.trim().split(/\s+/)[0]) === owner.pid || row.includes(`--user-data-dir=${owner.profile}`)));
+          writeFileSync(`${proof}/retirement.json`, JSON.stringify({ processAbsent: true, profileAbsent: true, positiveControl: process.pid }));
+          JS
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Untraced short B
+        id: untraced_b
+        if: ${{ !cancelled() && steps.traced_a.outputs.retired == 'true' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-timing-untraced-b
+        run: |
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import assert from 'node:assert/strict';
+          const proof = process.env.RUSHES_M1_PROOF;
+          const owner = JSON.parse(readFileSync(`${proof}/owned-browser-pid.json`, 'utf8'));
+          assert.equal(owner.profile, `${proof}/isolated-chrome-profile`);
+          const rows = execFileSync('ps', ['-axo', 'pid=,args='], { encoding: 'utf8' }).trim().split('\n');
+          assert.ok(rows.some(row => Number(row.trim().split(/\s+/)[0]) === process.pid));
+          assert.ok(!rows.some(row => Number(row.trim().split(/\s+/)[0]) === owner.pid || row.includes(`--user-data-dir=${owner.profile}`)));
+          writeFileSync(`${proof}/retirement.json`, JSON.stringify({ processAbsent: true, profileAbsent: true, positiveControl: process.pid }));
+          JS
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Traced short C
+        id: traced_c
+        if: ${{ !cancelled() && steps.untraced_b.outputs.retired == 'true' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_NATIVE_TRACE_PROOF: '1'
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-timing-traced-c
+        run: |
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          node --input-type=module <<'JS'
+          import { execFileSync } from 'node:child_process';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          import assert from 'node:assert/strict';
+          const proof = process.env.RUSHES_M1_PROOF;
+          const owner = JSON.parse(readFileSync(`${proof}/owned-browser-pid.json`, 'utf8'));
+          assert.equal(owner.profile, `${proof}/isolated-chrome-profile`);
+          const rows = execFileSync('ps', ['-axo', 'pid=,args='], { encoding: 'utf8' }).trim().split('\n');
+          assert.ok(rows.some(row => Number(row.trim().split(/\s+/)[0]) === process.pid));
+          assert.ok(!rows.some(row => Number(row.trim().split(/\s+/)[0]) === owner.pid || row.includes(`--user-data-dir=${owner.profile}`)));
+          writeFileSync(`${proof}/retirement.json`, JSON.stringify({ processAbsent: true, profileAbsent: true, positiveControl: process.pid }));
+          JS
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Vanilla native paused and unpaused control
+        if: ${{ !cancelled() && steps.traced_c.outputs.retired == 'true' }}
+        timeout-minutes: 2
+        run: node verification/browser-native-pause.mjs "${{ runner.temp }}/rushes-timing-native-pause"
+      - name: Verify immutable inputs after all controls
+        if: ${{ !cancelled() && steps.prepare.conclusion == 'success' }}
+        env:
+          RUSHES_DIAGNOSTIC_MEDIA: ${{ runner.temp }}/rushes-timing-input
+        run: |
+          node --input-type=module <<'JS'
+          import { readFile } from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import assert from 'node:assert/strict';
+          const pins = JSON.parse(await readFile(`${process.env.RUSHES_DIAGNOSTIC_MEDIA}/pins.json`, 'utf8'));
+          for (const row of Object.values(pins))
+            assert.equal(createHash('sha256').update(await readFile(row.path)).digest('hex'), row.sha256);
+          console.log('All three arms used the same unchanged generated media.');
+          JS
+      - name: Preserve bounded generated diagnostic evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-timing-current-mac
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-timing-input/pins.json
+            ${{ runner.temp }}/rushes-timing-*/metrics.json
+            ${{ runner.temp }}/rushes-timing-*/retirement.json
+            ${{ runner.temp }}/rushes-timing-*/*.log
+            ${{ runner.temp }}/rushes-timing-*/native-trace/report.json
+            ${{ runner.temp }}/rushes-timing-*/native-trace/trace.json
+            ${{ runner.temp }}/rushes-timing-*/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-timing-*/normal-stop/*.webm
+            ${{ runner.temp }}/rushes-timing-native-pause/report.json
+            ${{ runner.temp }}/rushes-timing-native-pause/*.webm
