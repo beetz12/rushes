@@ -85,9 +85,39 @@ for (const [name, browserType, options] of [['Chrome', chromium, { channel: 'chr
         const ended = await f.page.locator('video').evaluate(video => ({ currentTime: video.currentTime, duration: video.duration, ended: video.ended }));
         t.diagnostic(`${name} ${f.version}: actual native ending ${JSON.stringify(ended)}; no active cue at end.`);
         await f.seek(4);
+        const requests = []; let requestCount = 0;
+        const record = row => { requestCount++; requests.push(row); if (requests.length > 100) requests.shift(); };
+        f.page.on('response', response => { const path = new URL(response.url()).pathname; if (/share\.json|transcript-|video-/.test(path)) record({ path, status: response.status() }); });
+        f.page.on('requestfailed', request => record({ path: new URL(request.url()).pathname, failed: request.failure()?.errorText }));
+        await f.page.locator('video').evaluate(video => {
+            window.replacementEvents = []; window.replacementEventCount = 0;
+            for (const type of ['emptied','loadstart','loadedmetadata','loadeddata','canplay','seeking','seeked','error']) video.addEventListener(type, () => {
+                window.replacementEventCount++; window.replacementEvents.push({ type, src: video.currentSrc, time: video.currentTime,
+                    ready: video.readyState, seeking: video.seeking, seekable: Array.from({ length: video.seekable.length }, (_, index) => [video.seekable.start(index), video.seekable.end(index)]) });
+                if (window.replacementEvents.length > 100) window.replacementEvents.shift();
+            });
+        });
         f.manifest.video.file = 'video-fedcba98.mp4'; f.manifest.transcript = 'transcript-fedcba98.json';
-        await f.page.waitForFunction(() => document.querySelector('video').src.endsWith('video-fedcba98.mp4') && document.querySelector('video').readyState >= 2
-            && Math.abs(document.querySelector('video').currentTime - 4) < .05 && document.querySelector('#transcript').textContent.includes('Replacement current cue'));
+        try {
+            await f.page.waitForFunction(() => document.querySelector('video').src.endsWith('video-fedcba98.mp4') && document.querySelector('video').readyState >= 2
+                && Math.abs(document.querySelector('video').currentTime - 4) < .05 && document.querySelector('#transcript').textContent.includes('Replacement current cue'));
+        } catch (error) {
+            t.diagnostic(`Original replacement failure: ${error.name}: ${error.message}`);
+            let media, timer;
+            try { media = await Promise.race([f.page.evaluate(() => {
+                const video = document.querySelector('video'); if (!video) return { missingVideo: true };
+                return { src: video.src, currentSrc: video.currentSrc, time: video.currentTime,
+                    duration: video.duration, ready: video.readyState, network: video.networkState, paused: video.paused, seeking: video.seeking,
+                    error: video.error?.code, seekable: Array.from({ length: video.seekable.length }, (_, index) => [video.seekable.start(index), video.seekable.end(index)]),
+                    transcript: document.querySelector('#transcript')?.textContent, events: window.replacementEvents,
+                    droppedEvents: Math.max(0, window.replacementEventCount - window.replacementEvents.length) };
+            }), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Replacement snapshot exceeded1000ms')), 1000); })]); }
+            catch (snapshotError) { media = { unavailable: snapshotError.message }; }
+            finally { clearTimeout(timer); }
+            t.diagnostic(JSON.stringify({ scope: 'Unchanged replacement predicate failure; generated fixture only', requests,
+                droppedRequests: Math.max(0, requestCount - requests.length), errors: f.errors, media }));
+            throw error;
+        }
         verifyCue.ok((await f.active())[0]?.includes('Replacement current cue'));
         verifyCue.equal(await f.page.locator('video').evaluate(video => video.paused), true);
         verifyCue.deepEqual(f.errors, []);

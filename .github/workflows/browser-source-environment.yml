@@ -12,7 +12,7 @@ permissions:
   contents: read
 jobs:
   source-audio:
-    name: ARM source-only untraced / traced / untraced
+    name: ARM explicit-none versus default source sink
     runs-on: macos-latest
     timeout-minutes: 15
     defaults:
@@ -58,11 +58,13 @@ jobs:
           RUSHES_ENVIRONMENT_PROOF: ${{ runner.temp }}/rushes-source-audio
         run: |
           aggregate=0
-          for arm in a b c; do
+          for arm in none default none-traced default-traced; do
             export RUSHES_M1_PROOF="$RUSHES_ENVIRONMENT_PROOF/$arm"
             mkdir -p "$RUSHES_M1_PROOF"
             unset RUSHES_M1_SOURCE_AUDIO_TRACE_PROOF
-            if [ "$arm" = b ]; then export RUSHES_M1_SOURCE_AUDIO_TRACE_PROOF=1; fi
+            export RUSHES_M1_SOURCE_AUDIO_SINK=none
+            if [[ "$arm" == default* ]]; then export RUSHES_M1_SOURCE_AUDIO_SINK=default; fi
+            if [[ "$arm" == *-traced ]]; then export RUSHES_M1_SOURCE_AUDIO_TRACE_PROOF=1; fi
             set +e
             node browser/test/matrix.mjs
             verdict=$?
@@ -89,7 +91,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: arm-native-source-audio
+          name: arm-native-source-sink
           retention-days: 1
           if-no-files-found: error
           path: |

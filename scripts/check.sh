@@ -71,7 +71,7 @@ for surface in shell cloud viewer worker browser; do
 done
 # Packaging helpers and independent verifiers are first-party source too.
 # These owned source directories exclude generated dependency/build outputs.
-clean_paths+=(shell/scripts shell/tests scripts/app-intents verification .github/workflows docs/design)
+clean_paths+=(shell/scripts shell/tests scripts/app-intents verification .github/workflows .github/actions docs/design)
 clean_paths+=(viewer/test viewer/viewer.css scripts/check.sh docs/PLAN.md viewer/README.md)
 clean_paths+=(browser/test browser/index.html browser/vite.config.ts browser/tsconfig.json browser/package.json)
 clean_paths+=(scripts/check-browser-recorder.mjs scripts/install-test-chrome.mjs tools/checks/check_notices.py THIRD_PARTY_NOTICES.md)

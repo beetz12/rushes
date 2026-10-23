@@ -1,0 +1,5 @@
+name: Generated matrix with durable cleanup checkpoints
+description: Run the original short matrix and finalize generated evidence before destructive recovery or cleanup.
+runs:
+  using: node24
+  main: index.mjs

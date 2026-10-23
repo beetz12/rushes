@@ -22,6 +22,7 @@ import { inspectHistogramPayload } from './matrix-native-observation.mjs';
 import { macHostState, isVerifiedUnlockedMac, assertUnlockedMac, monitorMacLock } from './matrix-host-state.mjs';
 import { nativeClockSeed } from './native-clock-seed.mjs';
 import { beginColdTrace, requireNativeClockTrace } from './cold-trace.mjs';
+import { requestCheckpoint } from './matrix-checkpoint-action.mjs';
 
 const run = promisify(execFile), sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const bounded = async (operation, milliseconds, label) => {
@@ -55,9 +56,16 @@ if (sourceAudioTrace && (!sourceOnly || fullNativeTrace || sourceMode !== 'nativ
 const sourceAudioFrames = Number(process.env.RUSHES_M1_SOURCE_AUDIO_FRAMES ?? 128);
 if (![128, 480].includes(sourceAudioFrames) || (sourceAudioFrames !== 128 && sourceMode !== 'native-reference'))
   throw new Error('Source audio hint must be128 or480 in native-reference mode');
+const sourceAudioSink = process.env.RUSHES_M1_SOURCE_AUDIO_SINK ?? 'none';
+if (!['none', 'default'].includes(sourceAudioSink) || (sourceAudioSink === 'default' && (sourceMode !== 'native-reference' || sourceAudioFrames !== 128)))
+  throw new Error('Default source sink requires explicit native-reference128 mode');
 if (process.env.RUSHES_M1_NATIVE_TRACE_PROOF !== undefined && !fullNativeTrace) throw new Error('Native trace option must be1');
 if (nativeTraceRequested && (sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl))
   throw new Error('Native audio tracing is limited to the existing short supplied-reference qualification');
+const checkpointRequested = process.env.RUSHES_M1_DURABLE_CHECKPOINT === '1';
+if (process.env.RUSHES_M1_DURABLE_CHECKPOINT !== undefined && !checkpointRequested) throw new Error('Durable checkpoint option must be1');
+if (checkpointRequested && (process.platform !== 'win32' || typeof process.send !== 'function' || sourceOnly || sourceControl || diagnostic || long || reference || sourceMode !== 'native-reference'))
+  throw new Error('Durable checkpoints require the supervised short Windows native-reference diagnostic');
 const diagnosticDurationMs = allocationDiagnostic ? 180000 : 240000;
 const macLockRequired = allocationDiagnostic || (long && process.platform === 'darwin');
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -65,7 +73,7 @@ const proof = resolve(process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir()
 await mkdir(proof, { recursive: true, mode: 0o700 });
 const profile = join(proof, 'isolated-chrome-profile');
 const evidence = { schema: sourceOnly ? 'rushes.source-load-control/1' : 'rushes.independent-m1/1', startedAt: new Date().toISOString(),
-  node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceAudioTrace, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
+  node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceAudioSink, sourceAudioTrace, checkpointRequested, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
   normalBackgroundFlags: true, source: 'native Chrome fake MJPEG with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; tab activation alone is not physical minimization',
@@ -76,6 +84,7 @@ for (const filename of ['test/matrix.mjs', 'test/matrix-browser-options.mjs', 't
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 for (const filename of ['test/native-clock-seed.mjs', 'test/cold-trace.mjs'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
+evidence.fileHashes['test/matrix-checkpoint-action.mjs'] = createHash('sha256').update(await readFile(join(root, 'test/matrix-checkpoint-action.mjs'))).digest('hex');
 evidence.fileHashes['src/capture/cadence.ts'] = createHash('sha256').update(await readFile(join(root, 'src/capture/cadence.ts'))).digest('hex');
 evidence.fileHashes['test/native-optical-roi.mjs'] = createHash('sha256').update(await readFile(join(root, 'test/native-optical-roi.mjs'))).digest('hex');
 evidence.lifecycle.push({ name: 'decode-tool-identity-start', at: new Date().toISOString() });
@@ -88,6 +97,16 @@ const check = (name, operation) => {
 };
 const save = () => writeFile(join(proof, 'metrics.json'), JSON.stringify(evidence, null, 2));
 async function stage(name, details) { evidence.lifecycle.push({ name, ...details, at: new Date().toISOString() }); await save(); }
+let checkpointSequence = 0, checkpointFailed = false;
+async function durableCheckpoint(stageName) {
+  if (!checkpointRequested) return;
+  if (checkpointFailed) throw new Error('A prior durable checkpoint was not confirmed');
+  try {
+    await stage(`durable-${stageName}`);
+    const receipt = await requestCheckpoint(process, ++checkpointSequence, stageName);
+    (evidence.durableCheckpoints ??= []).push(receipt); await save();
+  } catch (error) { checkpointFailed = true; throw error; }
+}
 let processHandle, browser, server, origin, page;
 let stderrWrites = Promise.resolve();
 let histogramSession, hostMonitor, latestHostSample;
@@ -146,7 +165,7 @@ async function startMatrixTake(options = {}) {
   await bounded(page.evaluate(async options => {
     const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
     window.matrixTake = await prepareMatrix(options);
-  }, { ...options, sourceMode, sourceOnly, sourceAudioFrames, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed }), 30000, 'Matrix page preparation');
+  }, { ...options, sourceMode, sourceOnly, sourceAudioFrames, sourceAudioSink, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed }), 30000, 'Matrix page preparation');
   await stage('page-preparation-ready');
   await requireUnlockedHost('before-recording-start');
   await bounded(page.evaluate(() => window.matrixTake.start()), 30000, 'Matrix recording startup');
@@ -237,7 +256,7 @@ async function rss() {
   const pid = processHandle?.pid; if (!pid) return null;
   if (process.platform === 'win32') {
     const script = `$rows=Get-CimInstance Win32_Process;$ids=@(${pid});do{$prior=$ids.Count;foreach($p in $rows){if($ids -contains [int]$p.ParentProcessId -and $ids -notcontains [int]$p.ProcessId){$ids+=([int]$p.ProcessId)}}}while($ids.Count -ne $prior);$sum=0;foreach($id in $ids){$p=Get-Process -Id $id -ErrorAction SilentlyContinue;if($p){$sum+=$p.WorkingSet64}};Write-Output $sum`;
-    return Number((await run('powershell.exe', ['-NoProfile', '-Command', script])).stdout.trim());
+    return Number((await run('powershell.exe', ['-NoProfile', '-Command', script], { timeout: 5000 })).stdout.trim());
   }
   const rows = (await run('ps', ['-axo', 'pid=,ppid=,rss='])).stdout.trim().split('\n').map(line => line.trim().split(/\s+/).map(Number));
   const ids = new Set([pid]); let previous = 0;
@@ -557,7 +576,9 @@ try {
     peakHeapBytes: Math.max(...evidence.samples.map(value => value.heap?.used || 0)),
     maxChunkBytes: Math.max(...evidence.recording.metrics.chunks.map(chunk => chunk.bytes)),
     totalRecordedBytes: manifest.tracks.reduce((sum, track) => sum + track.bytes, 0) };
-  await save(); console.log('Normal recording measurements saved; starting abrupt-kill recovery.');
+  await save();
+  await durableCheckpoint('normal-before-recovery');
+  console.log('Normal recording measurements saved; starting abrupt-kill recovery.');
   await alternate.close(); await page.reload();
   await startMatrixTake();
   await sleep(6500); evidence.beforeKill = await page.evaluate(() => window.matrixTake.snapshot());
@@ -627,6 +648,7 @@ try {
   }
 } catch (error) {
   evidence.failures.push(`Harness execution: ${error.stack || error}`); console.error(error);
+  try { await durableCheckpoint('first-error'); } catch (checkpointError) { evidence.failures.push(`Durable first-error checkpoint: ${checkpointError.name}`); }
   if (page) {
     try { evidence.preparationMetrics = await bounded(page.evaluate(() => globalThis.matrixPreparationMetrics), 1000, 'Preparation error read-back'); }
     catch (failure) { evidence.preparationReadFailure = String(failure); }
@@ -634,6 +656,7 @@ try {
     catch (failure) { evidence.observerErrorReadFailure = String(failure); }
   }
 } finally {
+  try { await durableCheckpoint('final-before-close'); } catch (checkpointError) { evidence.failures.push(`Durable retirement checkpoint: ${checkpointError.name}`); }
   await finishNativeTrace({ stage: 'failure-or-final-retirement' });
   check('independent fixture pages never boot the Rushes App', () => assert.deepEqual(evidence.appRequests, []));
   if (hostMonitor) {

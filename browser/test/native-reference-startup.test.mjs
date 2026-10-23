@@ -13,7 +13,7 @@ const branch = source.slice(begin, end).replaceAll('import.meta.url', 'fixtureUR
 const run = new (Object.getPrototypeOf(async function() {}).constructor)(
   'navigator', 'AudioContext', 'AudioWorkletNode', 'nativeReferenceWitness', 'fixtureURL', 'observingReference', 'sourceAudioFrames',
   `let source, toneContext, tone, audio, suppliedReference;
-   const sourceMode = 'native-reference', diagnostic = false;
+   const sourceMode = 'native-reference', diagnostic = false, sourceAudioSink = 'none';
    const metrics = { observerErrors: [], clockCapability: { qualified: true } };
    const nativeRecorder = globalThis.MediaRecorder, nativeWorker = globalThis.Worker;
    if (false) { ${branch} }

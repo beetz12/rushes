@@ -1,0 +1,66 @@
+name: browser-windows-checkpoint
+on:
+  push:
+    branches: [codex/browser-production-20261022]
+    paths:
+      - 'browser/**'
+      - 'verification/browser-retirement.mjs'
+      - 'scripts/install-test-chrome.mjs'
+      - '.github/actions/matrix-checkpoint/**'
+      - '.github/workflows/browser-windows-checkpoint.yml'
+permissions:
+  contents: read
+jobs:
+  checkpoint:
+    if: github.event.repository.private == false
+    name: Windows native cleanup checkpoints / Chrome ${{ matrix.chrome }}
+    runs-on: windows-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        chrome: [current, previous]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+      - run: npm --prefix browser ci --no-audit --no-fund
+      - run: node scripts/install-test-chrome.mjs --generation ${{ matrix.chrome }} --destination "${{ runner.temp }}/rushes-test-chrome"
+      - run: choco install ffmpeg --no-progress -y
+      - run: |
+          ffmpeg -version
+          ffprobe -version
+      - run: npm --prefix browser run build
+      - name: Prepare the byte-pinned existing artifact uploader and its license
+        run: node .github/actions/matrix-checkpoint/prepare-upload.mjs
+      - name: Preserve the actual Node pin and PowerShell-parent module path
+        run: |
+          node --input-type=module -e "import { appendFileSync } from 'node:fs'; appendFileSync(process.env.GITHUB_ENV, 'RUSHES_MATRIX_NODE='+process.execPath+'\nRUSHES_MATRIX_PS_MODULE_PATH='+(process.env.PSModulePath ?? '')+'\n');"
+      - name: Original short matrix with finalized artifacts before destructive edges
+        timeout-minutes: 8
+        uses: ./.github/actions/matrix-checkpoint
+        env:
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_BROWSER_MODE: headful
+          RUSHES_M1_VIDEO_BUFFER: default
+          RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-window-checkpoint
+      - name: Retain final generated evidence when the step survives
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-checkpoint-final-${{ matrix.chrome }}
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            ${{ env.RUSHES_UPLOAD_TOOL_RECEIPT }}
+            ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-test-chrome/windows-sandbox-access.json
+            ${{ runner.temp }}/rushes-window-checkpoint/metrics.json
+            ${{ runner.temp }}/rushes-window-checkpoint/chrome-stderr.log
+            ${{ runner.temp }}/rushes-window-checkpoint/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-window-checkpoint/retirement.json
+            ${{ runner.temp }}/rushes-window-checkpoint/supervisor-*.json
+            ${{ runner.temp }}/rushes-window-checkpoint/checkpoint-receipt-*.json
+            ${{ runner.temp }}/rushes-window-checkpoint/normal-stop/*.webm

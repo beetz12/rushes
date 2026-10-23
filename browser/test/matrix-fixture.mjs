@@ -34,11 +34,13 @@ export async function directContainerControl(durationMs) {
 
 // Independent M1 instrumentation. Native Chrome fake media is supplied by the
 // runner; this page never requests a real screen or uses a timer as its video source.
-export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true, clockSeed, sourceOnly = false, sourceAudioFrames = 128 } = {}) {
+export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true, clockSeed, sourceOnly = false, sourceAudioFrames = 128, sourceAudioSink = 'none' } = {}) {
   if (typeof sourceOnly !== 'boolean' || (sourceOnly && (sourceMode !== 'native-reference' || diagnostic || !referenceWitness)))
     throw new Error('Source-only observation requires the ordinary native-reference witness');
   if (![128, 480].includes(sourceAudioFrames) || (sourceAudioFrames !== 128 && sourceMode !== 'native-reference'))
     throw new Error('Generated source audio hint must be128 or480 frames in native-reference mode');
+  if (!['none', 'default'].includes(sourceAudioSink) || (sourceAudioSink === 'default' && (sourceMode !== 'native-reference' || sourceAudioFrames !== 128)))
+    throw new Error('Default generated source sink requires explicit native-reference128 mode');
   const { createCaptureSession } = await import('/src/capture/index.ts');
   const { createDraftStore } = await import('/src/capture/storage.ts');
   const nativeRecorder = globalThis.MediaRecorder;
@@ -102,10 +104,13 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
     // Begin observing actual PCM before creating the native video source. Merely
     // opening its disk sink does not prove that any head samples were received.
     try {
-      toneContext = new AudioContext({ sampleRate: 48000, latencyHint: sourceAudioFrames / 48000, sinkId: { type: 'none' } });
-      if (toneContext.sinkId?.type !== 'none') throw new Error('Silent fixture audio output is unavailable');
-      metrics.generatedAudioOutput = { type: toneContext.sinkId.type, sampleRate: toneContext.sampleRate,
-        requestedCallbackFrames: sourceAudioFrames };
+      toneContext = new AudioContext({ sampleRate: 48000, latencyHint: sourceAudioFrames / 48000,
+        ...(sourceAudioSink === 'none' ? { sinkId: { type: 'none' } } : {}) });
+      const observedSink = toneContext.sinkId;
+      if (sourceAudioSink === 'none' ? observedSink?.type !== 'none' : observedSink !== '')
+        throw new Error(sourceAudioSink === 'none' ? 'Silent fixture audio output is unavailable' : 'Default fixture audio output is unavailable');
+      metrics.generatedAudioOutput = { type: sourceAudioSink, observedSink: typeof observedSink === 'string' ? observedSink : { type: observedSink.type },
+        sampleRate: toneContext.sampleRate, requestedCallbackFrames: sourceAudioFrames };
       await toneContext.audioWorklet.addModule(new URL('./matrix-tone.worklet.mjs', import.meta.url));
       tone = new AudioWorkletNode(toneContext, 'matrix-tone', { processorOptions: { diagnostic } });
       audio = toneContext.createMediaStreamDestination();

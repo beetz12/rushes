@@ -228,6 +228,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
     // flush them. Only saved, decoded coverage acknowledges this bounded drain.
     const active = slots.filter(slot => slot.started && slot.recorder.state !== 'inactive');
     for (const slot of active) if (slot.recorder.state === 'recording') slot.recorder.pause();
+    await limited(audio?.quiesce() ?? Promise.resolve(), remaining(), 'The audio mixer did not acknowledge its Stop boundary. Closed chunks are preserved.');
     let uncovered: Error | undefined;
     for (let attempt = 1; attempt <= 16; attempt++) {
       if (canceled || failure) throw new Error(failure ?? 'Recording canceled during finalization.');

@@ -930,6 +930,84 @@ test('saved coverage survives a native Stop that discards its late video tail', 
   for (const value of Object.values(result.decoded)) assert.ok(Math.abs(value.duration * 1000 - result.manifest.durationMs) <= 250);
 }));
 
+for (const phase of ['after-stop', 'before-stop']) test(`audio source retirement preserves the ${phase} discontinuity boundary`, { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async phase => {
+    const NativeWorker = Worker, NativeRecorder = MediaRecorder, recorders = [];
+    let inject = false, injected = 0, terminal, signalTerminal, audioWorker, heldError, replaying = false;
+    const retired = new Promise(resolve => { signalTerminal = resolve; });
+    globalThis.Worker = class extends NativeWorker {
+      constructor(url, options) {
+        super(url, options); this.audio = String(url).includes('/audio.worker');
+        if (this.audio) super.addEventListener('message', event => {
+          if (['error', 'stopped'].includes(event.data.kind)) { terminal ??= event.data.kind; signalTerminal(); }
+          if (phase === 'before-stop' && event.data.kind === 'error' && !replaying) { heldError = event.data; audioWorker = this; event.stopImmediatePropagation(); }
+        });
+      }
+      postMessage(message, ...args) {
+        if (this.audio && inject && message.kind === 'input') { message = { ...message, timestamp: message.timestamp + 500000 }; injected++; }
+        return super.postMessage(message, ...args);
+      }
+    };
+    globalThis.MediaRecorder = class extends NativeRecorder {
+      constructor(stream, ...args) { super(stream, ...args); recorders.push({ recorder: this, tracks: stream.getTracks() }); }
+    };
+    const { fixture, waitForActiveTime, inspectAudio } = await import('/test/capture-fixture.mjs'); let value, outputWasLive;
+    const boundedRetirement = async () => {
+      let timer;
+      try { await Promise.race([retired, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('No mixer terminal receipt')), 3000); })]); }
+      finally { clearTimeout(timer); }
+    };
+    try {
+      value = await fixture('screen', true); await value.session.start(); await waitForActiveTime(value.store, value.id, 2200);
+      const trackBlob = value.store.trackBlob.bind(value.store); let first = true;
+      value.store.trackBlob = async (...args) => {
+        if (first && phase === 'after-stop') {
+          first = false; await boundedRetirement();
+          outputWasLive = recorders.at(-1).tracks.find(track => track.kind === 'audio').readyState === 'live';
+        }
+        return trackBlob(...args);
+      };
+      inject = true;
+      if (phase === 'before-stop') await boundedRetirement();
+      const finishing = value.session.stop();
+      if (heldError) { replaying = true; audioWorker.dispatchEvent(new MessageEvent('message', { data: heldError })); }
+      const manifest = await finishing;
+      const decoded = phase === 'after-stop' ? await inspectAudio(await value.store.trackBlob(value.id, 'composed')) : undefined;
+      return { manifest, terminal, injected, outputWasLive, decoded, delayedPreStopError: !!heldError };
+    } finally { if (value) { await value.session.cancel(); await value.cleanup(); } globalThis.Worker = NativeWorker; globalThis.MediaRecorder = NativeRecorder; }
+  }, phase);
+  console.log('Audio Stop boundary', JSON.stringify({ phase, state: result.manifest.state, terminal: result.terminal, injected: result.injected, outputWasLive: result.outputWasLive }));
+  if (phase === 'after-stop') {
+    assert.equal(result.manifest.state, 'complete'); assert.equal(result.terminal, 'stopped'); assert.equal(result.injected, 0); assert.equal(result.outputWasLive, true);
+    assert.ok(Math.abs(result.decoded.duration * 1000 - result.manifest.durationMs) <= 250);
+    assert.ok(result.decoded.powers.every(power => power > .03));
+  } else {
+    assert.equal(result.manifest.state, 'interrupted'); assert.equal(result.terminal, 'error'); assert.ok(result.injected > 0);
+    assert.equal(result.delayedPreStopError, true);
+    assert.match(result.manifest.recoveryNote, /discontinuity/);
+  }
+}));
+
+test('a missing actual mixer Stop receipt cannot report a complete recording', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const NativeWorker = Worker; let held = 0;
+    globalThis.Worker = class extends NativeWorker {
+      constructor(url, options) {
+        super(url, options);
+        if (String(url).includes('/audio.worker')) super.addEventListener('message', event => {
+          if (event.data.kind === 'stopped') { held++; event.stopImmediatePropagation(); }
+        });
+      }
+    };
+    const { fixture, waitForActiveTime } = await import('/test/capture-fixture.mjs'); let value;
+    try {
+      value = await fixture('screen', true); await value.session.start(); await waitForActiveTime(value.store, value.id, 1200);
+      const manifest = await value.session.stop(); return { manifest, held };
+    } finally { if (value) { await value.session.cancel(); await value.cleanup(); } globalThis.Worker = NativeWorker; }
+  });
+  assert.equal(result.held, 1); assert.equal(result.manifest.state, 'interrupted'); assert.match(result.manifest.recoveryNote, /mixer.*acknowledge/i);
+}));
+
 test('empty drain acknowledgements cannot complete a short saved recording', { timeout: 30000 }, async () => pageFixture(async page => {
   const result = await page.evaluate(async () => {
     const NativeRecorder = MediaRecorder; let requests = 0, stops = 0;
