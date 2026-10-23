@@ -1,5 +1,5 @@
 // Synthetic calibration only: no device permission or real screen/camera input.
-export async function fixture(mode = 'screen-camera', audioEnabled = true, calibration = false, cloudRecordingId, cameraDelayMs = 0, initialSaveDelayMs = 0, canvasBacking = 'default') {
+export async function fixture(mode = 'screen-camera', audioEnabled = true, calibration = false, cloudRecordingId, cameraDelayMs = 0, initialSaveDelayMs = 0, canvasBacking = 'cpu') {
   if (!['default', 'cpu'].includes(canvasBacking)) throw new Error('Unknown synthetic Canvas backing');
   const capture = await import('/src/capture/index.ts');
   const storage = await import('/src/capture/storage.ts');

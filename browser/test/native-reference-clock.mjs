@@ -6,11 +6,15 @@ export async function nativeReferenceClock(seed){
   try{
    let base;
    if(seed!==undefined){
+    const admissionPageMs=performance.now();
+    result.seedAdmission={pageMs:admissionPageMs,ageMs:Number.isFinite(seed?.beforePageMs)?admissionPageMs-seed.beforePageMs:null,
+      tokenMatch:seed?.token===globalThis.__rushesNativeClockOwner,originMatch:seed?.timeOrigin===performance.timeOrigin,
+      pageOrderValid:Number.isFinite(seed?.afterPageMs)&&Number.isFinite(seed?.beforePageMs)&&seed.beforePageMs>=0&&seed.afterPageMs>=seed.beforePageMs&&admissionPageMs>=seed.afterPageMs};
     if(!seed||seed.kind!=='chromium-cdp-timeticks'||seed.token!==globalThis.__rushesNativeClockOwner
       ||seed.timeOrigin!==performance.timeOrigin||!Number.isSafeInteger(seed.timestampUs)||seed.timestampUs<=60000000
       ||!Number.isSafeInteger(seed.timestampUs+1000000)||!Number.isFinite(seed.beforePageMs)||!Number.isFinite(seed.afterPageMs)
       ||typeof seed.token!=='string'||!seed.token||seed.beforePageMs<0||seed.afterPageMs<seed.beforePageMs
-      ||performance.now()<seed.afterPageMs||performance.now()-seed.beforePageMs>1500)
+      ||admissionPageMs<seed.afterPageMs||admissionPageMs-seed.beforePageMs>1500)
       throw new Error('Invalid, stale or cross-document native clock seed');
     base=seed.timestampUs;result.sourceScalar={timestampUs:base,source:seed.kind};
    }else{

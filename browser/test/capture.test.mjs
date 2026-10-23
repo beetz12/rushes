@@ -17,7 +17,7 @@ const runFile = promisify(execFile);
 // (docs/design/browser-capture-recovery.md), never recorded-media alignment evidence.
 // Envelope bound far below the product's ten-second encoder-start deadline.
 const STARTUP_READINESS_MS = 1000;
-const coldCanvasBacking = process.env.RUSHES_COLD_CANVAS_BACKING ?? 'default';
+const coldCanvasBacking = process.env.RUSHES_COLD_CANVAS_BACKING ?? 'cpu';
 if (!['default', 'cpu'].includes(coldCanvasBacking)) throw new Error('Cold Canvas backing must be default or cpu');
 const coldRasterProof = process.env.RUSHES_COLD_RASTER_PROOF === '1';
 if (process.env.RUSHES_COLD_RASTER_PROOF !== undefined && (!coldRasterProof || !process.env.RUSHES_COLD_TRACE_PROOF))

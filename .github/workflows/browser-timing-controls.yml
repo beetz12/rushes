@@ -114,9 +114,50 @@ jobs:
           node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
           echo "retired=true" >> "$GITHUB_OUTPUT"
           exit "$verdict"
+      - name: Native source-only headless128
+        id: source_headless128
+        if: ${{ !cancelled() && steps.source128.outputs.retired == 'true' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-control-source-headless128
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_BROWSER_MODE: headless
+          RUSHES_M1_VIDEO_BUFFER: ${{ runner.os == 'macOS' && 'cpu' || 'default' }}
+          RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+          RUSHES_M1_NATIVE_SOURCE_ONLY: '1'
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Preserve source controls before encoder admission
+        id: source_checkpoint
+        if: ${{ !cancelled() && steps.source_headless128.outputs.retired == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: source-checkpoint-${{ matrix.os }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-control-media/pins.json
+            ${{ runner.temp }}/rushes-control-source128/metrics.json
+            ${{ runner.temp }}/rushes-control-source128/retirement.json
+            ${{ runner.temp }}/rushes-control-source128/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-control-source128/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-control-source-headless128/metrics.json
+            ${{ runner.temp }}/rushes-control-source-headless128/retirement.json
+            ${{ runner.temp }}/rushes-control-source-headless128/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-control-source-headless128/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-control-cold-*/capture-cold.log
+            ${{ runner.temp }}/rushes-control-cold-*/capture-cold-*.webm
       - name: Full recorder128
         id: loaded128
-        if: ${{ !cancelled() && steps.source128.outputs.retired == 'true' }}
+        if: ${{ !cancelled() && steps.source_headless128.outputs.retired == 'true' && steps.source_checkpoint.conclusion == 'success' && steps.source_checkpoint.outputs.artifact-id != '' }}
         timeout-minutes: 3
         env:
           RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-control-loaded128

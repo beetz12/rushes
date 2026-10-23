@@ -132,6 +132,10 @@ async function requireUnlockedHost(stage) {
 async function startMatrixTake(options = {}) {
   await requireUnlockedHost('before-media-preparation');
   await stage('page-preparation-start');
+  // Cold module compilation belongs to setup, before the finite clock-admission window.
+  await bounded(page.evaluate(async () => {
+    await Promise.all([import('/test/matrix-fixture.mjs'), import('/src/capture/index.ts'), import('/src/capture/storage.ts')]);
+  }), 30000, 'Matrix module loading');
   const clockSeed = sourceMode === 'native-reference' && !evidence.recording ? await nativeClockSeed(page) : undefined;
   await bounded(page.evaluate(async options => {
     const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
