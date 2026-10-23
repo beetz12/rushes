@@ -35,8 +35,14 @@ export function captureCapabilities(): { supported: boolean; reason?: string } {
   if (!navigator.storage?.getDirectory) return { supported: false, reason: 'Local recording storage is unavailable.' };
   return { supported: true };
 }
+class PlaybackDurationMismatch extends Error {
+  constructor(readonly actualMs: number, readonly expectedMs: number, kind: TrackKind) {
+    super(`The saved ${kind} duration (${Math.round(actualMs)} ms) does not match this ${Math.round(expectedMs)} ms recording. Original bytes remain available.`);
+  }
+}
 export async function verifyPlayback(blob: Blob, videoTrack: boolean,
-  expected?: { durationMs: number; kind: TrackKind }): Promise<void> {
+  expected?: { durationMs: number; kind: TrackKind }, budgetMs = 15_000): Promise<void> {
+  if (!Number.isFinite(budgetMs) || budgetMs < 1 || budgetMs > 15_000) throw new Error('Invalid playback verification budget.');
   if (!blob.size) throw new Error('The recorder produced no playable bytes.');
   if (expected && (!Number.isFinite(expected.durationMs) || expected.durationMs < 0))
     throw new Error('The recording has no valid duration to verify. Saved bytes remain available.');
@@ -47,7 +53,7 @@ export async function verifyPlayback(blob: Blob, videoTrack: boolean,
     await new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => settle(new Error(expected
         ? `The saved ${expected.kind} duration could not be verified before the playback deadline. Original bytes remain available.`
-        : 'Playback verification timed out; saved originals remain available.')), 15_000);
+        : 'Playback verification timed out; saved originals remain available.')), budgetMs);
       let settled = false, seekingEnd = false;
       const settle = (error?: Error) => {
         if (settled) return; settled = true;
@@ -65,7 +71,7 @@ export async function verifyPlayback(blob: Blob, videoTrack: boolean,
           return;
         }
         if (media.duration < 0 || Math.abs(media.duration * 1000 - expected.durationMs) > 250)
-          settle(new Error(`The saved ${expected.kind} duration (${Math.round(media.duration * 1000)} ms) does not match this ${Math.round(expected.durationMs)} ms recording. Original bytes remain available.`));
+          settle(new PlaybackDurationMismatch(media.duration * 1000, expected.durationMs, expected.kind));
         else settle();
       };
       media.onloadeddata = inspectExtent;
@@ -212,6 +218,51 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
     return slot;
   }
   async function save() { manifest.durationMs = elapsed(); await inputs.store.save(structuredClone(manifest)); }
+  async function drainCoverage(durationMs: number, expires: number): Promise<void> {
+    const remaining = () => {
+      const value = expires - performance.now();
+      if (value < 1) throw new Error('Encoder finalization timed out before playable coverage was acknowledged. Closed chunks are preserved.');
+      return value;
+    };
+    // Pause keeps already-submitted encoder callbacks alive. Native Stop does not
+    // flush them. Only saved, decoded coverage acknowledges this bounded drain.
+    const active = slots.filter(slot => slot.started && slot.recorder.state !== 'inactive');
+    for (const slot of active) if (slot.recorder.state === 'recording') slot.recorder.pause();
+    let uncovered: Error | undefined;
+    for (let attempt = 1; attempt <= 16; attempt++) {
+      if (canceled || failure) throw new Error(failure ?? 'Recording canceled during finalization.');
+      await Promise.all(active.map(async slot => {
+        let observed: (() => void) | undefined;
+        const delivered = new Promise<void>(resolve => {
+          observed = resolve; slot.recorder.addEventListener('dataavailable', observed, { once: true });
+        });
+        try {
+          slot.recorder.requestData();
+          await limited(delivered, remaining(), 'Encoder drain did not acknowledge its saved data. Closed chunks are preserved.');
+        } finally { if (observed) slot.recorder.removeEventListener('dataavailable', observed); }
+      }));
+      await limited(saveTail, remaining(), 'Encoder drain storage timed out. Closed chunks are preserved.');
+      if (canceled || failure) throw new Error(failure ?? 'Recording canceled during finalization.');
+      let covered = true; uncovered = undefined;
+      for (const slot of active) {
+        const blob = await limited(inputs.store.trackBlob(inputs.id, slot.kind), remaining(), 'Reading encoder drain data timed out.');
+        if (!blob.size) { covered = false; uncovered ??= new Error(`The saved ${slot.kind} has no playable bytes.`); continue; }
+        try {
+          await verifyPlayback(blob, !['microphone', 'tab-audio'].includes(slot.kind),
+            { durationMs, kind: slot.kind }, remaining());
+        } catch (error) {
+          if (error instanceof PlaybackDurationMismatch && error.actualMs >= 0 && error.actualMs < durationMs - 250) { covered = false; uncovered ??= error; }
+          else throw error;
+        }
+      }
+      if (canceled || failure) throw new Error(failure ?? 'Recording canceled during finalization.');
+      remaining();
+      if (covered && active.length === slots.filter(slot => slot.started).length) {
+        event('encoder-drain-covered', JSON.stringify({ requests: attempt, tracks: active.map(slot => slot.kind) })); return;
+      }
+    }
+    throw new Error(`${uncovered?.message ?? 'Playable track coverage is unavailable.'} Encoder finalization could not acknowledge playable coverage. Closed chunks are preserved.`);
+  }
   async function finish(): Promise<DraftManifest> {
     if (ending) return ending;
     if (canceled) throw new Error('This take was canceled.');
@@ -225,20 +276,27 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
         pausedMs += now - pauseAt; pauseAt = 0;
       }
       stoppedAt = performance.now(); notify('stopping'); event('stop-request');
+      const encoderExpires = performance.now() + 15_000;
+      if (!failure && startedAt) {
+        try { await drainCoverage(duration, encoderExpires); }
+        catch (error) { failure ??= messageOf(error); }
+      }
       const waiting: Promise<void>[] = [];
       for (const slot of slots) {
+        if (slot.started || slot.recorder.state !== 'inactive') waiting.push(slot.ended);
         if (slot.recorder.state !== 'inactive') {
-          try { slot.recorder.stop(); waiting.push(slot.ended); }
+          try { slot.recorder.stop(); }
           catch (error) { failure ??= messageOf(error); }
         }
       }
       let deadline: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([Promise.all(waiting), new Promise<never>((_, reject) => {
-          deadline = setTimeout(() => reject(new Error('Encoder finalization timed out. Closed chunks are preserved.')), 15_000);
+          deadline = setTimeout(() => reject(new Error('Encoder finalization timed out. Closed chunks are preserved.')), Math.max(1, encoderExpires - performance.now()));
         })]);
       } catch (error) { failure ??= messageOf(error); }
       finally { if (deadline) clearTimeout(deadline); release(); }
+      if (performance.now() > encoderExpires) failure ??= 'Encoder finalization exceeded its deadline. Closed chunks are preserved.';
       let queueFinished = true;
       try { await limited(saveTail, 20_000, 'Storage finalization timed out. Closed chunks remain recoverable after reload.'); }
       catch (error) { queueFinished = false; failure ??= messageOf(error); }
@@ -256,18 +314,21 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
       }
       if (audio?.diagnostics) event('composed-audio-timing', JSON.stringify(audio.diagnostics));
       event('recorders-stopped');
-      if (!failure) {
+      if (!failure && !canceled) {
         try {
           for (const track of manifest.tracks) {
+            if (canceled) break;
             const blob = await limited(inputs.store.trackBlob(inputs.id, track.kind), 20_000, 'Reading the saved track timed out. Closed chunks remain available after reload.');
             await verifyPlayback(blob, !['microphone', 'tab-audio'].includes(track.kind), { durationMs: duration, kind: track.kind });
           }
         } catch (error) { failure = messageOf(error); }
       }
+      if (canceled) { manifest.state = 'failed'; return structuredClone(manifest); }
       manifest.state = failure ? 'interrupted' : 'complete';
       if (failure) { manifest.recoveryNote = failure; warn(failure); }
       try { if (queueFinished) await limited(inputs.store.save(structuredClone(manifest)), 10_000, 'Final checkpoint timed out. Closed chunks remain recoverable.'); }
       catch (error) { failure ??= messageOf(error); manifest.state = 'interrupted'; manifest.recoveryNote = failure; warn(failure); }
+      if (canceled) { manifest.state = 'failed'; return structuredClone(manifest); }
       inputs.onCheckpoint?.(structuredClone(manifest));
       notify(manifest.state);
       return structuredClone(manifest);

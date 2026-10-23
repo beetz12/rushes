@@ -893,3 +893,132 @@ test('aborting a suspended generated browser evaluation confirms its owned proce
     assert.ok(owner.process.exitCode !== null || owner.process.signalCode !== null);
   } finally { await owner.close(); }
 });
+
+test('saved coverage survives a native Stop that discards its late video tail', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const NativeRecorder = MediaRecorder;
+    let discardedBytes = 0, requests = 0, stops = 0;
+    // Model the observed native weak-callback teardown using real encoded data:
+    // bytes flushed before Stop survive; bytes dispatched after Stop are lost.
+    globalThis.MediaRecorder = class extends NativeRecorder {
+      retired = false;
+      constructor(...args) {
+        super(...args);
+        super.addEventListener('dataavailable', event => {
+          if (this.retired && event.data.size) { discardedBytes += event.data.size; event.stopImmediatePropagation(); }
+        });
+      }
+      requestData() { requests++; return super.requestData(); }
+      stop() { stops++; this.retired = true; return super.stop(); }
+    };
+    const { fixture, inspectVideo, waitForActiveTime } = await import('/test/capture-fixture.mjs');
+    let value;
+    try {
+      value = await fixture('screen', false); await value.session.start();
+      await waitForActiveTime(value.store, value.id, 2800);
+      const manifest = await value.session.stop(), decoded = {};
+      for (const track of manifest.tracks) decoded[track.kind] = await inspectVideo(await value.store.trackBlob(value.id, track.kind));
+      return { manifest, decoded, requests, discardedBytes, stops,
+        released: [...value.feeds[0].getTracks(), ...value.session.preview.getTracks()].every(track => track.readyState === 'ended') };
+    } finally { if (value) { await value.session.cancel(); await value.cleanup(); } globalThis.MediaRecorder = NativeRecorder; }
+  });
+  console.log('Native Stop tail control', JSON.stringify({ state: result.manifest.state, durationMs: result.manifest.durationMs,
+    decoded: Object.fromEntries(Object.entries(result.decoded).map(([kind, value]) => [kind, value.duration])), requests: result.requests, discardedBytes: result.discardedBytes }));
+  assert.equal(result.manifest.state, 'complete');
+  assert.deepEqual(result.manifest.tracks.map(track => track.kind), ['screen', 'composed']);
+  assert.equal(result.stops, 2); assert.equal(result.released, true);
+  for (const value of Object.values(result.decoded)) assert.ok(Math.abs(value.duration * 1000 - result.manifest.durationMs) <= 250);
+}));
+
+test('empty drain acknowledgements cannot complete a short saved recording', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const NativeRecorder = MediaRecorder; let requests = 0, stops = 0;
+    globalThis.MediaRecorder = class extends NativeRecorder {
+      retired = false;
+      constructor(...args) {
+        super(...args);
+        super.addEventListener('dataavailable', event => {
+          if (this.retired && event.data.size) event.stopImmediatePropagation();
+        });
+      }
+      requestData() { requests++; this.dispatchEvent(new BlobEvent('dataavailable', { data: new Blob() })); }
+      stop() { stops++; this.retired = true; return super.stop(); }
+    };
+    const { fixture, waitForActiveTime } = await import('/test/capture-fixture.mjs'); let value;
+    try {
+      value = await fixture('screen', false); await value.session.start();
+      await waitForActiveTime(value.store, value.id, 2800);
+      const before = performance.now(), manifest = await value.session.stop();
+      return { manifest, states: value.states, requests, stops, stopMs: performance.now() - before,
+        released: [...value.feeds[0].getTracks(), ...value.session.preview.getTracks()].every(track => track.readyState === 'ended') };
+    } finally { if (value) { await value.session.cancel(); await value.cleanup(); } globalThis.MediaRecorder = NativeRecorder; }
+  });
+  assert.equal(result.manifest.state, 'interrupted'); assert.equal(result.states.includes('complete'), false);
+  assert.match(result.manifest.recoveryNote, /coverage/); assert.ok(result.requests > 0);
+  assert.equal(result.stops, 2); assert.equal(result.released, true); assert.ok(result.stopMs < 15000);
+  assert.ok(result.manifest.tracks.every(track => track.bytes > 0));
+}));
+
+test('cancel during saved playback verification cannot publish complete', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { fixture, waitForActiveTime } = await import('/test/capture-fixture.mjs');
+    const createElement = document.createElement, value = await fixture('screen', false);
+    let parked, announce, holding = true;
+    const entered = new Promise(resolve => { announce = resolve; });
+    document.createElement = function(name, ...args) {
+      const element = Reflect.apply(createElement, this, [name, ...args]);
+      if (name === 'video') element.addEventListener('loadeddata', event => {
+        if (holding) { event.stopImmediatePropagation(); parked = element; announce(); }
+      });
+      return element;
+    };
+    try {
+      await value.session.start(); await waitForActiveTime(value.store, value.id, 1200);
+      const stopping = value.session.stop(); let deadline;
+      try { await Promise.race([entered, new Promise((_, reject) => { deadline = setTimeout(() => reject(new Error('Playback verification was not observed')), 5000); })]); }
+      finally { clearTimeout(deadline); }
+      const cancelAt = value.states.length, canceling = value.session.cancel();
+      // Let cancel claim ownership before releasing the real decode callback.
+      await Promise.resolve(); holding = false; parked.dispatchEvent(new Event('loadeddata'));
+      const manifest = await stopping; await canceling;
+      return { manifest, afterCancel: value.states.slice(cancelAt), drafts: await value.store.list(),
+        released: [...value.feeds[0].getTracks(), ...value.session.preview.getTracks()].every(track => track.readyState === 'ended') };
+    } finally { holding = false; document.createElement = createElement; await value.session.cancel(); await value.cleanup(); }
+  });
+  assert.equal(result.manifest.state, 'failed'); assert.equal(result.afterCancel.includes('complete'), false);
+  assert.deepEqual(result.drafts, []); assert.equal(result.released, true);
+}));
+
+test('an inactive recorder still owes its queued Stop acknowledgement', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const NativeRecorder = MediaRecorder, recorders = []; let acknowledged = false;
+    globalThis.MediaRecorder = class extends NativeRecorder {
+      constructor(...args) {
+        super(...args); recorders.push(this);
+        if (recorders.length === 1) {
+          let replayed = false;
+          super.addEventListener('stop', event => {
+            if (!replayed) {
+              event.stopImmediatePropagation();
+              setTimeout(() => { replayed = true; acknowledged = true; this.dispatchEvent(new Event('stop')); }, 400);
+            }
+          });
+        }
+      }
+    };
+    const { fixture, waitForActiveTime } = await import('/test/capture-fixture.mjs'); let value;
+    try {
+      value = await fixture('screen', false); await value.session.start();
+      await waitForActiveTime(value.store, value.id, 1200);
+      recorders[0].stop(); assertInactive();
+      // An error may observe inactive before the final data/Stop tasks dispatch.
+      recorders[0].dispatchEvent(new Event('error'));
+      const manifest = await value.session.stop();
+      return { manifest, acknowledged,
+        released: [...value.feeds[0].getTracks(), ...value.session.preview.getTracks()].every(track => track.readyState === 'ended') };
+    } finally { if (value) { await value.session.cancel(); await value.cleanup(); } globalThis.MediaRecorder = NativeRecorder; }
+    function assertInactive() { if (recorders[0].state !== 'inactive') throw new Error('The native recorder did not enter inactive'); }
+  });
+  assert.equal(result.manifest.state, 'interrupted'); assert.equal(result.acknowledged, true);
+  assert.equal(result.released, true); assert.ok(result.manifest.tracks.every(track => track.bytes > 0));
+}));
