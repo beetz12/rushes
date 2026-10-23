@@ -110,10 +110,10 @@ nodeTest.test('a delivered trace stream is retained and closed when its end ackn
   assert.ok(report.errors.some(error => error.includes('end acknowledgement lost')));
 });
 
-nodeTest.test('whole capture task observation adds only toplevel to the selected native categories',async context=>{
+nodeTest.test('capture task observation adds only task selection categories to the selected native categories',async context=>{
  const f=await retirementFixture(context,false);const trace=await beginColdTrace(f.browser,f.page,f.directory,{audioDiagnostics:true,videoCaptureDiagnostics:true,captureTaskDiagnostics:true});
  const categories=f.requests.find(row=>row.method==='Tracing.start').parameters.traceConfig.includedCategories;
- assert.deepEqual(categories,['media','blink.user_timing','mediastream','disabled-by-default-audio','webaudio','disabled-by-default-webaudio.audionode','disabled-by-default-mediastream','disabled-by-default-video_and_image_capture','toplevel']);
+ assert.deepEqual(categories,['media','blink.user_timing','mediastream','disabled-by-default-audio','webaudio','disabled-by-default-webaudio.audionode','disabled-by-default-mediastream','disabled-by-default-video_and_image_capture','toplevel','disabled-by-default-sequence_manager','disabled-by-default-sequence_manager.debug']);
  await assert.rejects(trace.finish({generated:true}),/metadata retirement rejected/);
 });
 nodeTest.test('streamed recorder call metadata rejects payload fields and malformed or unbounded input',()=>{

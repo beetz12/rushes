@@ -34,13 +34,16 @@ export async function directContainerControl(durationMs) {
 
 // Independent M1 instrumentation. Native Chrome fake media is supplied by the
 // runner; this page never requests a real screen or uses a timer as its video source.
-export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true, clockSeed, sourceOnly = false, sourceAudioFrames = 128, sourceAudioSink = 'none' } = {}) {
+export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true, clockSeed, sourceOnly = false, sourceAudioFrames = 128, sourceAudioSink = 'none', startupObservation = false } = {}) {
   if (typeof sourceOnly !== 'boolean' || (sourceOnly && (sourceMode !== 'native-reference' || diagnostic || !referenceWitness)))
     throw new Error('Source-only observation requires the ordinary native-reference witness');
   if (![128, 480].includes(sourceAudioFrames) || (sourceAudioFrames !== 128 && sourceMode !== 'native-reference'))
     throw new Error('Generated source audio hint must be128 or480 frames in native-reference mode');
   if (!['none', 'default'].includes(sourceAudioSink) || (sourceAudioSink === 'default' && (sourceMode !== 'native-reference' || sourceAudioFrames !== 128)))
     throw new Error('Default generated source sink requires explicit native-reference128 mode');
+  if (typeof startupObservation !== 'boolean' || (startupObservation && (sourceMode !== 'native-reference' || sourceOnly || diagnostic)))
+    throw new Error('Startup observations require an explicit generated full native-reference diagnostic');
+  let startup = () => undefined;
   const { createCaptureSession } = await import('/src/capture/index.ts');
   const { createDraftStore } = await import('/src/capture/storage.ts');
   const nativeRecorder = globalThis.MediaRecorder;
@@ -63,6 +66,8 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
     constructor(...args) {
       super(...args);
       const kind = kinds[metrics.recorderKinds.length]; metrics.recorderKinds.push(kind);
+      if (startupObservation) for (const event of ['start', 'error', 'stop'])
+        this.addEventListener(event, () => startup({ kind: 'recorder-event', id: kinds.indexOf(kind), role: kind, event, state: this.state }));
       this.addEventListener('dataavailable', event => {
         if (!event.data.size) return;
         metrics.pendingBytes += event.data.size;
@@ -174,6 +179,15 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
   const camera = new MediaStream([source.getVideoTracks()[0].clone()]);
   const microphone = new MediaStream([audio.stream.getAudioTracks()[0].clone()]);
   const id = crypto.randomUUID();
+  if (startupObservation) {
+    metrics.startupObservation = { attempted: 0, emitted: 0, dropped: 0 };
+    startup = row => {
+      const index = metrics.startupObservation.attempted++;
+      if (index >= 256) { metrics.startupObservation.dropped++; return; }
+      console.info('GENERATED_CAPTURE_STARTUP ' + JSON.stringify({ takeId: id, index, timeMs: performance.now(), ...row }));
+      metrics.startupObservation.emitted++;
+    };
+  }
   let rawStore, store;
   if (!sourceOnly) {
   const root = await navigator.storage.getDirectory();
@@ -344,7 +358,10 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
       metrics.states.push({ state, wallMs: performance.now() });
       if (state === 'stopping') void retireObservations();
     },
-    onWarning: message => metrics.warnings.push(message),
+    onWarning: message => {
+      metrics.warnings.push(message);
+      startup({ kind: 'warning', state: metrics.states.at(-1)?.state ?? 'ready', message: String(message).slice(0, 512) });
+    },
     onCheckpoint: manifest => { take.manifest = manifest; metrics.checkpoints.push({ wallMs: performance.now(),
       lastCheckpointMs: manifest.lastCheckpointMs, chunks: manifest.tracks.reduce((sum, track) => sum + track.chunks.length, 0) }); },
   });
@@ -359,7 +376,12 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
     nativeTrackStats,
     pausedAt: 0, pausedMs: 0, sources: [screen, camera, microphone],
     elapsed() { return this.startedAt ? (this.pausedAt || performance.now()) - this.startedAt - this.pausedMs : 0; },
-    async start() { await session.start(); this.manifest = await rawStore.load(id); this.startedAt = this.manifest.epochMs; },
+    async start() {
+      startup({ kind: 'phase', phase: 'session-start-entered' }); await session.start();
+      startup({ kind: 'phase', phase: 'session-start-resolved' });
+      startup({ kind: 'phase', phase: 'journal-load-entered' }); this.manifest = await rawStore.load(id);
+      startup({ kind: 'phase', phase: 'journal-load-resolved' }); this.startedAt = this.manifest.epochMs;
+    },
     async pause() { this.pausedAt = performance.now(); await session.pause(); },
     async resume() { this.pausedMs += performance.now() - this.pausedAt; this.pausedAt = 0; await session.resume(); },
     snapshot() { return structuredClone({ id, wallMs: performance.now(), elapsedMs: this.elapsed(), manifest: this.manifest, metrics,

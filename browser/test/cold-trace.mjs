@@ -149,7 +149,8 @@ export async function beginColdTrace(browser, page, directory, limits = {}) {
     if (limits.audioDiagnostics) report.categories.push('mediastream', 'disabled-by-default-audio', 'webaudio',
       'disabled-by-default-webaudio.audionode', 'disabled-by-default-mediastream');
     if (limits.videoCaptureDiagnostics) report.categories.push('disabled-by-default-video_and_image_capture');
-    if (limits.captureTaskDiagnostics) report.categories.push('toplevel');
+    if (limits.captureTaskDiagnostics) report.categories.push('toplevel',
+      'disabled-by-default-sequence_manager', 'disabled-by-default-sequence_manager.debug');
     await deadline(session.send('Tracing.start', { transferMode: 'ReturnAsStream', streamFormat: 'json',
       traceConfig: { recordMode: 'recordContinuously', traceBufferSizeInKb: 32768,
         includedCategories: report.categories, enableArgumentFilter: false } }), 5000, 'Cold trace start');

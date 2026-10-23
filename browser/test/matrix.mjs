@@ -22,6 +22,7 @@ import { inspectHistogramPayload } from './matrix-native-observation.mjs';
 import { macHostState, isVerifiedUnlockedMac, assertUnlockedMac, monitorMacLock } from './matrix-host-state.mjs';
 import { nativeClockSeed } from './native-clock-seed.mjs';
 import { beginColdTrace, requireNativeClockTrace, recorderCallMetadata } from './cold-trace.mjs';
+import { collectStartupMetadata, startupPrefix } from './startup-metadata.mjs';
 import { requestCheckpoint } from './matrix-checkpoint-action.mjs';
 
 const run = promisify(execFile), sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -90,7 +91,7 @@ evidence.fileHashes = {};
 for (const filename of ['test/matrix.mjs', 'test/matrix-browser-options.mjs', 'test/matrix-fixture.mjs', 'test/matrix-media.mjs', 'test/matrix-source.worker.mjs', 'test/matrix-native-observation.mjs', 'test/matrix-host-state.mjs', 'test/matrix-calibration.mjs', 'test/matrix-tone.worklet.mjs', 'test/media-coordinates.mjs', 'test/decoded-media.mjs', 'test/synchronized-media.mjs',
   'test/matrix-source-qualification.mjs', 'test/native-reference-clock.mjs', 'test/native-reference-witness.mjs', 'test/native-reference-analysis.mjs', 'src/capture/index.ts', 'src/capture/audio.ts', 'src/capture/audio-frame.ts', 'src/capture/audio.worker.ts', 'src/capture/pcm-mixer.ts', 'src/capture/composition.worker.ts', 'src/capture/storage.ts'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
-for (const filename of ['test/native-clock-seed.mjs', 'test/cold-trace.mjs'])
+for (const filename of ['test/native-clock-seed.mjs', 'test/cold-trace.mjs', 'test/startup-metadata.mjs'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 evidence.fileHashes['test/matrix-checkpoint-action.mjs'] = createHash('sha256').update(await readFile(join(root, 'test/matrix-checkpoint-action.mjs'))).digest('hex');
 evidence.fileHashes['src/capture/cadence.ts'] = createHash('sha256').update(await readFile(join(root, 'src/capture/cadence.ts'))).digest('hex');
@@ -189,7 +190,7 @@ async function startMatrixTake(options = {}) {
   await bounded(page.evaluate(async options => {
     const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
     window.matrixTake = await prepareMatrix(options);
-  }, { ...options, sourceMode, sourceOnly, sourceAudioFrames, sourceAudioSink, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed }), 30000, 'Matrix page preparation');
+  }, { ...options, sourceMode, sourceOnly, sourceAudioFrames, sourceAudioSink, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed, startupObservation: checkpointRequested && !evidence.recording }), 30000, 'Matrix page preparation');
   await stage('page-preparation-ready');
   await requireUnlockedHost('before-recording-start');
   await bounded(page.evaluate(() => window.matrixTake.start()), 30000, 'Matrix recording startup');
@@ -445,6 +446,15 @@ try {
       const row=recorderCallMetadata(message.text());if(!row)return;
       if(evidence.nativeRecorderCalls.length>=128){evidence.droppedNativeRecorderCallRows++;return;}
       evidence.nativeRecorderCalls.push(row);console.log('GENERATED_RECORDER_CALL '+JSON.stringify(row));
+    });
+  }
+  if (checkpointRequested) {
+    evidence.startupObservations = []; evidence.droppedStartupObservations = 0; evidence.invalidStartupObservations = 0;
+    evidence.nextStartupObservationIndex = 0; evidence.startupObservationSequenceErrors = 0;
+    page.on('console', message => {
+      const text = message.text(); if (!text.startsWith(startupPrefix)) return;
+      const row = collectStartupMetadata(evidence, text);
+      if (row) console.log(startupPrefix + JSON.stringify(row));
     });
   }
   if (nativeTraceRequested) nativeTrace = await beginColdTrace(browser, page, join(proof, 'native-trace'), { audioDiagnostics: true, videoCaptureDiagnostics: sourceVideoTrace,
