@@ -630,7 +630,7 @@ struct TrackWriterTests {
         let writer = try TrackWriter(
             configuration: config, clock: SessionClock(epochNs: epochNs), factory: factory)
 
-        // The stub encoder never accepts a frame.
+        // During the burst, the stub encoder accepts no frames.
         factory.stub.ready = false
         for index in 0..<10 {
             writer.appendVideo(makeVideoBuffer(hostNs: epochNs + Int64(index) * 33_333_333))
@@ -641,9 +641,16 @@ struct TrackWriterTests {
         #expect(status.framesDropped == 6)
         #expect(status.framesWritten == 0)
 
-        // Finalize with nothing drainable ends failed: no media was written.
+        // Once the encoder can drain, only the newest four frames may survive.
+        // A permanently unready encoder instead spends its entire finalize
+        // budget; its deadline report can win before empty-writer cleanup.
+        factory.stub.ready = true
         let finalStatus = await writer.finalize(deadline: .seconds(2))
-        #expect(finalStatus.finalizeState == .failed)
+        #expect(finalStatus.finalizeState == .finalized)
+        #expect(finalStatus.pendingDepth == 0)
+        #expect(finalStatus.framesWritten == 4)
+        #expect(finalStatus.framesDropped == 6)
+        #expect(factory.stub.videoAppends == (6..<10).map { Int64($0) * 33_333_333 })
     }
 
     // MARK: - Bounded finalize
