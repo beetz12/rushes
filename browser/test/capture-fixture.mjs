@@ -1,5 +1,6 @@
 // Synthetic calibration only: no device permission or real screen/camera input.
-export async function fixture(mode = 'screen-camera', audioEnabled = true, calibration = false, cloudRecordingId, cameraDelayMs = 0, initialSaveDelayMs = 0) {
+export async function fixture(mode = 'screen-camera', audioEnabled = true, calibration = false, cloudRecordingId, cameraDelayMs = 0, initialSaveDelayMs = 0, canvasBacking = 'default') {
+  if (!['default', 'cpu'].includes(canvasBacking)) throw new Error('Unknown synthetic Canvas backing');
   const capture = await import('/src/capture/index.ts');
   const storage = await import('/src/capture/storage.ts');
   let clock = performance.now(), calibrationPause = 0;
@@ -8,7 +9,7 @@ export async function fixture(mode = 'screen-camera', audioEnabled = true, calib
   const feeds = [];
   for (const name of ['screen', 'camera']) {
     const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 360;
-    const context = canvas.getContext('2d');
+    const context = canvas.getContext('2d', canvasBacking === 'cpu' ? { willReadFrequently: true } : undefined);
     const stream = canvas.captureStream(0), track = stream.getVideoTracks()[0];
     const tick = () => {
       context.fillStyle = name === 'screen' ? '#2040e0' : '#e02020';
@@ -17,7 +18,7 @@ export async function fixture(mode = 'screen-camera', audioEnabled = true, calib
       context.fillStyle = Math.floor(calibrationElapsed() / 500) % 2 ? '#ffffff' : '#000000';
       context.fillRect(0, 0, 64, 64); track.requestFrame();
     };
-    const source = { canvas, stream, timer: undefined, delay: undefined };
+    const source = { canvas, stream, timer: undefined, delay: undefined, contextAttributes: context.getContextAttributes() };
     const begin = () => { tick(); source.timer = setInterval(tick, 1000 / 30); };
     if (name === 'camera' && cameraDelayMs) source.delay = setTimeout(begin, cameraDelayMs);
     else begin();
@@ -65,7 +66,8 @@ export async function fixture(mode = 'screen-camera', audioEnabled = true, calib
   };
   const pauseCalibration = () => { calibrationPause = performance.now(); };
   const resumeCalibration = () => { clock += performance.now() - calibrationPause; calibrationPause = 0; };
-  return { session, store, id, feeds, states, warnings, checkpoints, cleanup, pauseCalibration, resumeCalibration, initialSaveDelays };
+  return { session, store, id, feeds, states, warnings, checkpoints, cleanup, canvasBacking,
+    sourceContextAttributes: canvases.map(source => source.contextAttributes), pauseCalibration, resumeCalibration, initialSaveDelays };
 }
 // Control this test take from its real session epoch, including time spent
 // awaiting startup persistence. Callback readiness never resets media time.

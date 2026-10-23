@@ -1,0 +1,209 @@
+name: browser-timing-controls
+on:
+  push:
+    branches: [codex/browser-production-20261022]
+    paths:
+      - '.github/workflows/browser-timing-controls.yml'
+      - 'verification/browser-retirement.mjs'
+permissions:
+  contents: read
+jobs:
+  controls:
+    name: ${{ matrix.os }} / current Chrome controlled timing
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+      - run: npm --prefix browser ci --no-audit --no-fund
+      - run: node scripts/install-test-chrome.mjs --generation current --destination "${{ runner.temp }}/rushes-test-chrome"
+      - name: Install Mac decode tools
+        if: runner.os == 'macOS'
+        run: brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+      - name: Install Windows decode tools
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+      - name: Confirm actual media tools
+        run: |
+          ffmpeg -version
+          ffprobe -version
+      - name: Build browser
+        id: build
+        run: npm --prefix browser run build
+      - name: Prepare one immutable native input
+        id: media
+        env:
+          RUSHES_CONTROL_MEDIA: ${{ runner.temp }}/rushes-control-media
+        run: |
+          node --input-type=module <<'JS'
+          import * as files from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { matrixMedia } from './browser/test/matrix-media.mjs';
+          const root = process.env.RUSHES_CONTROL_MEDIA;
+          await files.mkdir(root, { mode: 0o700 });
+          const media = await matrixMedia(root), pins = {};
+          for (const [kind, path] of Object.entries(media))
+            pins[kind] = { path, sha256: createHash('sha256').update(await files.readFile(path)).digest('hex') };
+          await files.writeFile(`${root}/pins.json`, JSON.stringify(pins, null, 2), { flag: 'wx' });
+          JS
+          echo "RUSHES_M1_SOURCE_FILE=${{ runner.temp }}/rushes-control-media/timecoded.mjpeg" >> "$GITHUB_ENV"
+      - name: Default Canvas cold control
+        id: cold_default
+        if: ${{ !cancelled() && steps.media.conclusion == 'success' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-control-cold-default
+          RUSHES_COLD_CANVAS_BACKING: default
+          RUSHES_COLD_RASTER_PROOF: '1'
+          RUSHES_COLD_TRACE_PROOF: ${{ runner.temp }}/rushes-control-cold-default/native-trace
+          RUSHES_COLD_OWNER_PROOF: ${{ runner.temp }}/rushes-control-cold-default/browser-owner.json
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node --test --test-name-pattern='screen/camera composition, separate originals' browser/test/capture.test.mjs
+          verdict=$?
+          set -e
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/browser-owner.json" "$RUSHES_M1_PROOF/retirement.json"
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: CPU Canvas cold control
+        id: cold_cpu
+        if: ${{ !cancelled() && steps.cold_default.outputs.retired == 'true' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-control-cold-cpu
+          RUSHES_COLD_CANVAS_BACKING: cpu
+          RUSHES_COLD_RASTER_PROOF: '1'
+          RUSHES_COLD_TRACE_PROOF: ${{ runner.temp }}/rushes-control-cold-cpu/native-trace
+          RUSHES_COLD_OWNER_PROOF: ${{ runner.temp }}/rushes-control-cold-cpu/browser-owner.json
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node --test --test-name-pattern='screen/camera composition, separate originals' browser/test/capture.test.mjs
+          verdict=$?
+          set -e
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/browser-owner.json" "$RUSHES_M1_PROOF/retirement.json"
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Native source-only128
+        id: source128
+        if: ${{ !cancelled() && steps.cold_cpu.outputs.retired == 'true' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-control-source128
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_BROWSER_MODE: headful
+          RUSHES_M1_VIDEO_BUFFER: ${{ runner.os == 'macOS' && 'cpu' || 'default' }}
+          RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+          RUSHES_M1_NATIVE_SOURCE_ONLY: '1'
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Full recorder128
+        id: loaded128
+        if: ${{ !cancelled() && steps.source128.outputs.retired == 'true' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-control-loaded128
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_BROWSER_MODE: headful
+          RUSHES_M1_VIDEO_BUFFER: ${{ runner.os == 'macOS' && 'cpu' || 'default' }}
+          RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Native source-only480
+        id: source480
+        if: ${{ !cancelled() && steps.loaded128.outputs.retired == 'true' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-control-source480
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_BROWSER_MODE: headful
+          RUSHES_M1_VIDEO_BUFFER: ${{ runner.os == 'macOS' && 'cpu' || 'default' }}
+          RUSHES_M1_SOURCE_AUDIO_FRAMES: '480'
+          RUSHES_M1_NATIVE_SOURCE_ONLY: '1'
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Full recorder480
+        id: loaded480
+        if: ${{ !cancelled() && steps.source480.outputs.retired == 'true' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-control-loaded480
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_BROWSER_MODE: headful
+          RUSHES_M1_VIDEO_BUFFER: ${{ runner.os == 'macOS' && 'cpu' || 'default' }}
+          RUSHES_M1_SOURCE_AUDIO_FRAMES: '480'
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Verify immutable inputs
+        if: ${{ !cancelled() && steps.media.conclusion == 'success' }}
+        env:
+          RUSHES_CONTROL_MEDIA: ${{ runner.temp }}/rushes-control-media
+        run: |
+          node --input-type=module <<'JS'
+          import * as files from 'node:fs/promises';
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          const pins = JSON.parse(await files.readFile(`${process.env.RUSHES_CONTROL_MEDIA}/pins.json`, 'utf8'));
+          for (const row of Object.values(pins))
+            assert.equal(createHash('sha256').update(await files.readFile(row.path)).digest('hex'), row.sha256);
+          console.log('Generated native inputs match their pinned hashes.');
+          JS
+      - name: Retain generated controls, including failed arms
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: controlled-timing-${{ matrix.os }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-control-media/pins.json
+            ${{ runner.temp }}/rushes-control-*/metrics.json
+            ${{ runner.temp }}/rushes-control-*/retirement.json
+            ${{ runner.temp }}/rushes-control-*/browser-owner.json
+            ${{ runner.temp }}/rushes-control-*/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-control-*/capture-cold.log
+            ${{ runner.temp }}/rushes-control-*/capture-cold-*.webm
+            ${{ runner.temp }}/rushes-control-*/native-trace/report.json
+            ${{ runner.temp }}/rushes-control-*/native-trace/trace.json
+            ${{ runner.temp }}/rushes-control-*/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-control-*/normal-stop/*.webm
+            ${{ runner.temp }}/rushes-control-*/chrome-stderr.log

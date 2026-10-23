@@ -50,6 +50,10 @@ for surface in shell cloud viewer worker browser; do
     fi
     echo "== $surface: Node $node_pin install/build/tests =="
     PATH="$node_dir:$PATH" npm --prefix "$surface" ci --no-audit --no-fund
+    # Studio UI checks use Playwright Chromium rather than the installed Chrome channel.
+    if [ "$surface" = "browser" ]; then
+      PATH="$node_dir:$PATH" npm --prefix "$surface" exec -- playwright install chromium
+    fi
     # Viewer tests launch Playwright WebKit. npm ci does not download it.
     # Chrome is the branded channel already on the runner.
     if [ "$surface" = "viewer" ]; then

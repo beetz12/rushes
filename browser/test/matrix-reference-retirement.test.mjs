@@ -4,7 +4,7 @@ import {readFile} from 'node:fs/promises';
 import vm from 'node:vm';
 import {SOURCE_PCM_GUARD_MS} from './native-reference-witness.mjs';
 const fixture=await readFile(new URL('./matrix-fixture.mjs',import.meta.url),'utf8');
-const first=fixture.indexOf('  let observationRetirement;'),last=fixture.indexOf('  const session = await createCaptureSession(',first);
+const first=fixture.indexOf('  let observationRetirement;'),last=fixture.indexOf('  // Source-only diagnostics share the actual observation retirement above.',first);
 assert.ok(first>=0&&last>first);
 const body=fixture.slice(first,last);
 

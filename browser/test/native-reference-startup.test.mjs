@@ -11,7 +11,7 @@ const end = source.indexOf("  } else throw new Error('Unknown test source mode')
 assert.ok(begin >= 0 && end > begin);
 const branch = source.slice(begin, end).replaceAll('import.meta.url', 'fixtureURL');
 const run = new (Object.getPrototypeOf(async function() {}).constructor)(
-  'navigator', 'AudioContext', 'AudioWorkletNode', 'nativeReferenceWitness', 'fixtureURL', 'observingReference',
+  'navigator', 'AudioContext', 'AudioWorkletNode', 'nativeReferenceWitness', 'fixtureURL', 'observingReference', 'sourceAudioFrames',
   `let source, toneContext, tone, audio, suppliedReference;
    const sourceMode = 'native-reference', diagnostic = false;
    const metrics = { observerErrors: [], clockCapability: { qualified: true } };
@@ -19,7 +19,7 @@ const run = new (Object.getPrototypeOf(async function() {}).constructor)(
    if (false) { ${branch} }
    return { source, suppliedReference, metrics };`);
 
-function controlled(firstPacket, { requireSilent = false, requireQuantum = false, ignoreSilent = false, observingReference = true, videoStopError } = {}) {
+function controlled(firstPacket, { requireSilent = false, requireQuantum = false, ignoreSilent = false, observingReference = true, videoStopError, sourceAudioFrames = 128 } = {}) {
   void firstPacket.catch(() => undefined);
   const calls = [], track = { stop() { calls.push('audio-stop'); } };
   const audio = { stream: { getAudioTracks() { return [track]; }, getTracks() { return [track]; } } };
@@ -27,7 +27,7 @@ function controlled(firstPacket, { requireSilent = false, requireQuantum = false
   class Context {
     constructor(options) {
       if (requireSilent && options?.sinkId?.type !== 'none') throw new Error('Generated environment has no physical audio output');
-      if (requireQuantum && options?.latencyHint !== 128 / 48000) throw new Error('Generated environment needs an explicit128-frame quantum request');
+      if (requireQuantum && options?.latencyHint !== sourceAudioFrames / 48000) throw new Error('Generated environment needs the declared callback hint');
       this.sinkId = ignoreSilent ? '' : options?.sinkId ?? '';
       this.state = 'suspended'; this.currentTime = 0; this.sampleRate = 48000;
     }
@@ -42,7 +42,7 @@ function controlled(firstPacket, { requireSilent = false, requireQuantum = false
     return { async ready() { calls.push('pcm-await'); const value = await firstPacket;
       calls.push('pcm-observed'); return value; }, async stop() { calls.push('observer-stop'); } };
   };
-  return { calls, start: () => run(navigator, Context, Worklet, observe, fixtureURL, observingReference) };
+  return { calls, start: () => run(navigator, Context, Worklet, observe, fixtureURL, observingReference, sourceAudioFrames) };
 }
 
 test('actual supplied-reference setup waits for observed PCM before creating a native video source', async () => {
@@ -76,6 +76,16 @@ test('actual generated setup works without a physical output device', async () =
   const result = await fixture.start();
   assert.ok(fixture.calls.includes('pcm-observed'));
   assert.ok(fixture.calls.includes('video-create'));
+  assert.deepEqual(result.metrics.observerErrors, []);
+});
+
+test('an explicit480-frame source profile changes only the requested latency hint', async () => {
+  const fixture = controlled(Promise.resolve({ timestampUs: 100000, observedPageMs: 101 }), {
+    requireSilent: true, requireQuantum: true, sourceAudioFrames: 480,
+  });
+  const result = await fixture.start();
+  assert.equal(result.metrics.generatedAudioOutput.requestedCallbackFrames, 480);
+  assert.ok(fixture.calls.indexOf('pcm-observed') < fixture.calls.indexOf('video-create'));
   assert.deepEqual(result.metrics.observerErrors, []);
 });
 

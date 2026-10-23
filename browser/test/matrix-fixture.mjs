@@ -34,7 +34,11 @@ export async function directContainerControl(durationMs) {
 
 // Independent M1 instrumentation. Native Chrome fake media is supplied by the
 // runner; this page never requests a real screen or uses a timer as its video source.
-export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true, clockSeed } = {}) {
+export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true, clockSeed, sourceOnly = false, sourceAudioFrames = 128 } = {}) {
+  if (typeof sourceOnly !== 'boolean' || (sourceOnly && (sourceMode !== 'native-reference' || diagnostic || !referenceWitness)))
+    throw new Error('Source-only observation requires the ordinary native-reference witness');
+  if (![128, 480].includes(sourceAudioFrames) || (sourceAudioFrames !== 128 && sourceMode !== 'native-reference'))
+    throw new Error('Generated source audio hint must be128 or480 frames in native-reference mode');
   const { createCaptureSession } = await import('/src/capture/index.ts');
   const { createDraftStore } = await import('/src/capture/storage.ts');
   const nativeRecorder = globalThis.MediaRecorder;
@@ -67,7 +71,8 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
   };
   let source, sourceElement, toneContext, tone, audio;
   metrics.calibrationInputEdges = []; metrics.calibrationAudioEdges = []; metrics.calibrationAudioArrivals = [];
-  metrics.sourceMode = sourceMode;
+  metrics.sourceMode = sourceMode; metrics.sourceOnly = sourceOnly;
+  if (sourceOnly) metrics.extraProcessorReaders = 5;
   const observingReference = sourceMode === 'native-reference' && referenceWitness;
   let suppliedReference;
   if (observingReference) {
@@ -97,13 +102,16 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
     // Begin observing actual PCM before creating the native video source. Merely
     // opening its disk sink does not prove that any head samples were received.
     try {
-      toneContext = new AudioContext({ sampleRate: 48000, latencyHint: 128 / 48000, sinkId: { type: 'none' } });
+      toneContext = new AudioContext({ sampleRate: 48000, latencyHint: sourceAudioFrames / 48000, sinkId: { type: 'none' } });
       if (toneContext.sinkId?.type !== 'none') throw new Error('Silent fixture audio output is unavailable');
-      metrics.generatedAudioOutput = { type: toneContext.sinkId.type, sampleRate: toneContext.sampleRate };
+      metrics.generatedAudioOutput = { type: toneContext.sinkId.type, sampleRate: toneContext.sampleRate,
+        requestedCallbackFrames: sourceAudioFrames };
       await toneContext.audioWorklet.addModule(new URL('./matrix-tone.worklet.mjs', import.meta.url));
       tone = new AudioWorkletNode(toneContext, 'matrix-tone', { processorOptions: { diagnostic } });
       audio = toneContext.createMediaStreamDestination();
       tone.connect(audio); await toneContext.resume();
+      Object.assign(metrics.generatedAudioOutput, { state: toneContext.state, baseLatency: toneContext.baseLatency,
+        renderQuantumSize: toneContext.renderQuantumSize ?? null });
       if (observingReference) {
         suppliedReference = await nativeReferenceWitness(audio.stream.getAudioTracks()[0], metrics.observerErrors, metrics.clockCapability);
         metrics.suppliedReferenceStartup = await suppliedReference.ready();
@@ -161,10 +169,12 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
   const camera = new MediaStream([source.getVideoTracks()[0].clone()]);
   const microphone = new MediaStream([audio.stream.getAudioTracks()[0].clone()]);
   const id = crypto.randomUUID();
+  let rawStore, store;
+  if (!sourceOnly) {
   const root = await navigator.storage.getDirectory();
   const backupDirectory = backup ? await root.getDirectoryHandle('m1-closed-backup', { create: true }) : undefined;
-  const rawStore = await createDraftStore(backupDirectory);
-  const store = { ...rawStore, append: async (...args) => {
+  rawStore = await createDraftStore(backupDirectory);
+  store = { ...rawStore, append: async (...args) => {
     const begun = performance.now(); metrics.activeAppends++;
     metrics.peakConcurrentAppends = Math.max(metrics.peakConcurrentAppends, metrics.activeAppends);
     try {
@@ -174,6 +184,7 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
       return descriptor;
     } finally { metrics.activeAppends--; metrics.pendingBytes -= args[3].size; }
   } };
+  }
   const monitors = [];
   const watch = (name, track) => {
     const clone = track.clone(), reader = new MediaStreamTrackProcessor({ track: clone, maxBufferSize: 1 }).readable.getReader();
@@ -267,6 +278,61 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
     }).catch(error => { metrics.observerErrors.push({ name: 'observation-retirement', message: String(error), wallMs: performance.now() }); });
     return observationRetirement;
   };
+  // Source-only diagnostics share the actual observation retirement above.
+  // They create no product session/store/preview and cannot satisfy product acceptance.
+  if (sourceOnly) {
+    const pauses = []; let startedAt = 0, pausedAt = 0, pausedMs = 0, stoppedAt = 0, stopping;
+    const state = value => metrics.states.push({ state: value, wallMs: performance.now() });
+    const elapsed = () => startedAt ? Math.max(0, (pausedAt || stoppedAt || performance.now()) - startedAt - pausedMs) : 0;
+    const stopObservation = () => {
+      if (stopping) return stopping;
+      const now = performance.now();
+      if (pausedAt) {
+        pauses.push({ startMs: pausedAt - startedAt, endMs: now - startedAt });
+        pausedMs += now - pausedAt; pausedAt = 0;
+      }
+      stoppedAt = now; state('stopping');
+      stopping = retireObservations().then(() => state('observed'));
+      return stopping;
+    };
+    const snapshot = () => structuredClone({ id, wallMs: performance.now(), elapsedMs: elapsed(), metrics,
+      observation: { scope: 'source-only', durationMs: elapsed(), pauses },
+      visibilityState: document.visibilityState, focused: document.hasFocus(), heap: performance.memory ? {
+        used: performance.memory.usedJSHeapSize, total: performance.memory.totalJSHeapSize, limit: performance.memory.jsHeapSizeLimit } : null });
+    const visibility = () => metrics.visibility.push({ wallMs: performance.now(), state: document.visibilityState, hasFocus: document.hasFocus() });
+    document.addEventListener('visibilitychange', visibility); visibility();
+    return { id, metrics, session: { stop: stopObservation }, snapshot,
+      start() {
+        if (startedAt || stopping) throw new Error('This source-only observation has already been used');
+        startedAt = performance.now(); state('observing');
+      }, elapsed,
+      pause() { if (!stopping) { pausedAt = performance.now(); state('paused'); } },
+      resume() {
+        if (stopping) return;
+        const now = performance.now(); pauses.push({ startMs: pausedAt - startedAt, endMs: now - startedAt });
+        pausedMs += now - pausedAt; pausedAt = 0; state('observing');
+      },
+      async finish() {
+        try { await stopObservation(); }
+        finally {
+          for (const stream of [source, screen, camera, microphone, audio.stream]) stream.getTracks().forEach(track => track.stop());
+          sourceObserverTrack?.stop(); sourceWorker?.terminate();
+          try { await toneContext?.close(); }
+          finally { document.removeEventListener('visibilitychange', visibility); globalThis.MediaRecorder = nativeRecorder; globalThis.Worker = nativeWorker; }
+        }
+        metrics.sourceOnlyStorageEntries = [];
+        for await (const [name] of (await navigator.storage.getDirectory()).entries()) metrics.sourceOnlyStorageEntries.push(name);
+        metrics.sourceOnlySourcesEnded = [source, screen, camera, microphone, audio.stream]
+          .every(stream => stream.getTracks().every(track => track.readyState === 'ended'));
+        return snapshot();
+      },
+      async downloadSourceReference() {
+        const url = URL.createObjectURL(await suppliedReference.file()), link = document.createElement('a');
+        link.href = url; link.download = 'source-reference.f32le'; link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+      },
+    };
+  }
   const session = await createCaptureSession({ id, title: 'Independent synthetic M1', mode: 'screen-camera',
     screen, camera, microphone, store, persistent: false, backupFolder: backup,
     bubble: { x: 1030, y: 490, size: 180 }, onState: state => {

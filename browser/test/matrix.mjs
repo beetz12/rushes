@@ -42,6 +42,13 @@ if (sourceControl && (sourceMode !== 'container' || long || reference)) throw ne
 const allocationDiagnostic = process.env.RUSHES_M1_ALLOCATION_DIAGNOSTIC === '1';
 const diagnostic = process.env.RUSHES_M1_DIAGNOSTIC === '1' || allocationDiagnostic;
 const nativeTraceRequested = process.env.RUSHES_M1_NATIVE_TRACE_PROOF === '1';
+const sourceOnly = process.env.RUSHES_M1_NATIVE_SOURCE_ONLY === '1';
+if (process.env.RUSHES_M1_NATIVE_SOURCE_ONLY !== undefined && !sourceOnly) throw new Error('Source-only option must be1');
+if (sourceOnly && (sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl || nativeTraceRequested))
+  throw new Error('Source-only diagnosis requires an untraced8s native-reference run');
+const sourceAudioFrames = Number(process.env.RUSHES_M1_SOURCE_AUDIO_FRAMES ?? 128);
+if (![128, 480].includes(sourceAudioFrames) || (sourceAudioFrames !== 128 && sourceMode !== 'native-reference'))
+  throw new Error('Source audio hint must be128 or480 in native-reference mode');
 if (process.env.RUSHES_M1_NATIVE_TRACE_PROOF !== undefined && !nativeTraceRequested) throw new Error('Native trace option must be1');
 if (nativeTraceRequested && (sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl))
   throw new Error('Native audio tracing is limited to the existing short supplied-reference qualification');
@@ -51,8 +58,8 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const proof = resolve(process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir(), 'rushes-m1-')));
 await mkdir(proof, { recursive: true, mode: 0o700 });
 const profile = join(proof, 'isolated-chrome-profile');
-const evidence = { schema: 'rushes.independent-m1/1', startedAt: new Date().toISOString(),
-  node: process.version, platform: process.platform, long, reference, sourceMode, sourceControl, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
+const evidence = { schema: sourceOnly ? 'rushes.source-load-control/1' : 'rushes.independent-m1/1', startedAt: new Date().toISOString(),
+  node: process.version, platform: process.platform, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
   normalBackgroundFlags: true, source: 'native Chrome fake MJPEG with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; tab activation alone is not physical minimization',
@@ -129,7 +136,7 @@ async function startMatrixTake(options = {}) {
   await bounded(page.evaluate(async options => {
     const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
     window.matrixTake = await prepareMatrix(options);
-  }, { ...options, sourceMode, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed }), 30000, 'Matrix page preparation');
+  }, { ...options, sourceMode, sourceOnly, sourceAudioFrames, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed }), 30000, 'Matrix page preparation');
   await stage('page-preparation-ready');
   await requireUnlockedHost('before-recording-start');
   await bounded(page.evaluate(() => window.matrixTake.start()), 30000, 'Matrix recording startup');
@@ -421,7 +428,7 @@ try {
   let pauseIndex = 0, offlineStarted, offlineEnded = false, switched = false, returned = false;
   for (;;) {
     const snapshot = await sample('recording'); hostMonitor?.assert(); const elapsed = snapshot.elapsedMs;
-    if (snapshot.metrics.states.at(-1).state !== 'recording') break;
+    if (snapshot.metrics.states.at(-1).state !== (sourceOnly ? 'observing' : 'recording')) break;
     if (pauseIndex < pausesAt.length && elapsed >= pausesAt[pauseIndex]) {
       await page.evaluate(() => window.matrixTake.pause()); await sleep(long ? 1000 : 100);
       await page.evaluate(() => window.matrixTake.resume()); evidence.actions.push({ kind: 'pause-resume', elapsedMs: elapsed }); pauseIndex++;
@@ -440,7 +447,7 @@ try {
       await page.bringToFront(); returned = true; evidence.actions.push({ kind: 'return-recorder-page', elapsedMs: elapsed });
     }
     if (elapsed >= targetMs) break;
-    if (evidence.samples.length % 15 === 0) { await save(); console.log(`M1 progress ${(elapsed / 1000).toFixed(1)}s; input ${snapshot.metrics.frames['input-camera'].count}, output ${snapshot.metrics.frames['output-composed'].count}.`); }
+    if (evidence.samples.length % 15 === 0) { await save(); console.log(`M1 progress ${(elapsed / 1000).toFixed(1)}s; input ${snapshot.metrics.frames['input-camera'].count}, output ${snapshot.metrics.frames['output-composed']?.count ?? 'source-only'}.`); }
     await sleep(Math.max(1, Math.min(long ? 2000 : 100, targetMs - elapsed)));
   }
   await context.setOffline(false); await page.bringToFront();
@@ -458,6 +465,33 @@ try {
     evidence.sourceObservationFile = await mediaFileEvidence(observationPath);
     await save();
   }
+  if (sourceOnly) {
+    evidence.scope = 'Canonical supplied-reference source-only control; no product recording acceptance';
+    const metrics = evidence.recording.metrics, observed = evidence.recording.observation;
+    check('source-only creates no product encoder, chunks or store', () => {
+      assert.equal(metrics.sourceOnly, true); assert.deepEqual(metrics.recorderKinds, []); assert.deepEqual(metrics.chunks, []);
+      assert.equal(metrics.extraProcessorReaders, 5); assert.equal(metrics.frames['output-composed'], undefined);
+      assert.ok(!metrics.sourceOnlyStorageEntries.includes('rushes-browser-v1') && !metrics.sourceOnlyStorageEntries.includes('m1-closed-backup'));
+      assert.equal(metrics.sourceOnlySourcesEnded, true);
+    });
+    check('source-only observation has no faults', () => assert.deepEqual(metrics.observerErrors, []));
+    check('source-only lifecycle ends as an observation', () => assert.equal(metrics.states.at(-1)?.state, 'observed'));
+    check('source-only target active duration and five pauses', () => {
+      assert.equal(observed.scope, 'source-only'); assert.ok(Math.abs(observed.durationMs - targetMs) <= 250); assert.equal(observed.pauses.length, 5);
+    });
+    check('source-only actual offline interval retained', () => assert.ok(evidence.actions.find(action => action.kind === 'offline-end')?.milliseconds >= 2000));
+    check('source-only current actual PCM guard is required', () => assert.equal(metrics.suppliedReference?.observationGuard?.schema, 'rushes.source-pcm-guard/1'));
+    check('source-only all input readers retain250ms continuity', () => {
+      for (const name of ['native-input', 'input-screen', 'input-camera']) {
+        assert.ok(metrics.frames[name].count > 0 && metrics.frames[name].maxTimestampGapUs <= 250000);
+        assert.ok(metrics.frames[name].maxWallGapMs <= 250);
+      }
+      assert.ok(evidence.samples.filter(value => value.captureState === 'observing').every(value => value.inputStaleMs <= 250));
+    });
+    const qualification = qualifyNativeCalibration(evidence.recording, await readFile(evidence.sourceObservationFile.path));
+    evidence.calibrationQualification = qualification.stimulus; evidence.sourceQualification = qualification.source;
+    check('source-only source phase and every actual transition qualify', () => assert.ok(qualification.stimulus.qualified && qualification.source.qualified));
+  } else {
   // Retain PCM first. A diagnostic qualification failure must not discard media
   // or prevent the original independent source/decode predicates from running.
   await finishNativeTrace({ stage: 'normal-stop', manifest: evidence.recording.manifest.state });
@@ -579,6 +613,7 @@ try {
     assert.ok(evidence.writeFailure.manifest.tracks.some(track => track.chunks.length > 0));
     assert.ok(evidence.writeFailure.metrics.warnings.some(value => value.includes('M1 injected write failure')));
   });
+  }
   }
 } catch (error) {
   evidence.failures.push(`Harness execution: ${error.stack || error}`); console.error(error);

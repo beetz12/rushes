@@ -11,11 +11,17 @@ import { promisify } from 'node:util';
 import { matrixMedia } from './matrix-media.mjs';
 import { beginColdTrace } from './cold-trace.mjs';
 import { ownedTestBrowser } from './owned-test-browser.mjs';
+import { ownedProfile } from '../../verification/browser-retirement.mjs';
 const runFile = promisify(execFile);
 // Startup-readiness bound for recorder start-EVENT offsets: an event-dispatch observation
 // (docs/design/browser-capture-recovery.md), never recorded-media alignment evidence.
 // Envelope bound far below the product's ten-second encoder-start deadline.
 const STARTUP_READINESS_MS = 1000;
+const coldCanvasBacking = process.env.RUSHES_COLD_CANVAS_BACKING ?? 'default';
+if (!['default', 'cpu'].includes(coldCanvasBacking)) throw new Error('Cold Canvas backing must be default or cpu');
+const coldRasterProof = process.env.RUSHES_COLD_RASTER_PROOF === '1';
+if (process.env.RUSHES_COLD_RASTER_PROOF !== undefined && (!coldRasterProof || !process.env.RUSHES_COLD_TRACE_PROOF))
+  throw new Error('Cold raster proof requires1 and an explicit trace directory');
 // Container sanity bound for muxer-rebased first packets; cross-track sync stays with decoded edges.
 const CONTAINER_MEDIA_START_MS = 100;
 let server, browser, origin;
@@ -29,6 +35,19 @@ before(async () => {
   });
   await server.listen(); origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   browser = await chromium.launch({ ...(process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE ? { executablePath: process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE } : { channel: process.env.RUSHES_CAPTURE_BROWSER || 'chrome' }), headless: true });
+  if (process.env.RUSHES_COLD_OWNER_PROOF) {
+    const session = await browser.newBrowserCDPSession();
+    try {
+      const processes = (await session.send('SystemInfo.getProcessInfo')).processInfo.filter(value => value.type === 'browser');
+      assert.equal(processes.length, 1);
+      const pid = Number(processes[0].id); assert.ok(Number.isSafeInteger(pid) && pid > 0);
+      const command = process.platform === 'win32'
+        ? await runFile('powershell.exe', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`], { timeout: 5000 })
+        : await runFile('ps', ['-p', String(pid), '-o', 'args='], { timeout: 3000 });
+      const profile = ownedProfile(command.stdout);
+      await writeFile(process.env.RUSHES_COLD_OWNER_PROOF, JSON.stringify({ pid, profile, chrome: browser.version() }), { flag: 'wx' });
+    } finally { await session.detach(); }
+  }
   console.log(`Capture runtime ${browser.version()}; isolated synthetic media only.`);
 });
 after(async () => { await browser?.close(); await server?.close(); });
@@ -48,12 +67,13 @@ async function pageFixture(callback) {
   finally { await context.close(); }
 }
 test('screen/camera composition, separate originals, mixed audio, pause timeline, moved bubble, and final chunks decode', { timeout: 45000 }, async () => pageFixture(async page => {
-  const tracing = process.env.RUSHES_COLD_TRACE_PROOF ? await beginColdTrace(browser, page, process.env.RUSHES_COLD_TRACE_PROOF) : undefined;
+  const tracing = process.env.RUSHES_COLD_TRACE_PROOF ? await beginColdTrace(browser, page, process.env.RUSHES_COLD_TRACE_PROOF,
+    { canvasDiagnostics: coldRasterProof }) : undefined;
   let result;
   try {
-  result = await page.evaluate(async () => {
+  result = await page.evaluate(async canvasBacking => {
     const { fixture, inspectVideo, inspectAudio, waitForActiveTime } = await import('/test/capture-fixture.mjs');
-    const value = await fixture('screen-camera', true, false, undefined, 0, 700);
+    const value = await fixture('screen-camera', true, false, undefined, 0, 700, canvasBacking);
     const startRequestedAt = performance.now(); await value.session.start(); const startResolvedAt = performance.now();
     await waitForActiveTime(value.store, value.id, 2200); await value.session.pause();
     await new Promise(resolve => setTimeout(resolve, 700)); value.session.setBubble({ x: 100, y: 100, size: 180 });
@@ -70,8 +90,9 @@ test('screen/camera composition, separate originals, mixed audio, pause timeline
     const mixed = await inspectAudio(await value.store.trackBlob(value.id, 'composed'));
     const released = [...value.feeds.flatMap(feed => feed.getTracks()), ...value.session.preview.getTracks()].every(track => track.readyState === 'ended');
     await value.cleanup(); return { manifest, data, mixed, released, retained, startRequestedAt, startResolvedAt,
-      states: value.states, finalCheckpoint: value.checkpoints.at(-1), initialSaveDelays: value.initialSaveDelays };
-  });
+      states: value.states, finalCheckpoint: value.checkpoints.at(-1), initialSaveDelays: value.initialSaveDelays,
+      canvasBacking: value.canvasBacking, sourceContextAttributes: value.sourceContextAttributes };
+  }, coldCanvasBacking);
   // Retain this generated case before assertions, including on a timing failure.
   // Packet probes run only after Stop; they do not consume live media.
   const coldProof = process.env.RUSHES_M1_PROOF ?? await mkdtemp(`${tmpdir()}/rushes-cold-`);
@@ -101,10 +122,13 @@ test('screen/camera composition, separate originals, mixed audio, pause timeline
     } catch (error) { packets[kind] = { probeError: String(error) }; }
   }
   await writeFile(join(coldProof, 'capture-cold.log'), JSON.stringify({ manifest: result.manifest,
-    startRequestedAt: result.startRequestedAt, startResolvedAt: result.startResolvedAt, initialSaveDelays: result.initialSaveDelays, html: result.data, packets }, null, 2));
+    startRequestedAt: result.startRequestedAt, startResolvedAt: result.startResolvedAt, initialSaveDelays: result.initialSaveDelays,
+    canvasBacking: result.canvasBacking, sourceContextAttributes: result.sourceContextAttributes, html: result.data, packets }, null, 2));
   delete result.retained;
   console.log('Calibration offsets/durations', result.manifest.tracks.map(track => [track.kind, track.startOffsetMs, result.data[track.kind].duration]), result.manifest.durationMs);
   assert.equal(result.manifest.state, 'complete'); assert.equal(result.released, true);
+  assert.equal(result.canvasBacking, coldCanvasBacking);
+  assert.ok(result.sourceContextAttributes.every(value => value.willReadFrequently === (coldCanvasBacking === 'cpu')));
   assert.equal(result.initialSaveDelays.length, 1); assert.ok(result.initialSaveDelays[0].actualMs >= 600);
   assert.deepEqual(result.manifest.tracks.map(track => track.kind), ['screen', 'camera', 'microphone', 'tab-audio', 'composed']);
   assert.deepEqual(result.states, ['recording', 'paused', 'recording', 'stopping', 'complete']);
@@ -810,7 +834,11 @@ test('matrix witnesses freeze at Stop while later product finalization is parked
     } finally { release?.(); }
   });
   await stage({ stage: 'before-assertions', result });
-  assert.deepEqual(result.first.metrics.generatedAudioOutput, { type: 'none', sampleRate: 48000 });
+  const output = result.first.metrics.generatedAudioOutput;
+  assert.deepEqual({ type: output.type, sampleRate: output.sampleRate, state: output.state,
+    requestedCallbackFrames: output.requestedCallbackFrames }, { type: 'none', sampleRate: 48000, state: 'running', requestedCallbackFrames: 128 });
+  assert.ok(Number.isFinite(output.baseLatency) && output.baseLatency >= 0);
+  assert.ok(output.renderQuantumSize === null || (Number.isSafeInteger(output.renderQuantumSize) && output.renderQuantumSize > 0));
   assert.ok(result.first.metrics.observationBoundary.finishedPageMs);
   assert.equal(result.first.metrics.states.at(-1).state, 'stopping');
   assert.deepEqual(result.first.metrics.frames, result.second.metrics.frames);
