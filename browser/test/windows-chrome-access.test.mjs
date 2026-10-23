@@ -14,17 +14,24 @@ async function ownedPayload(context) {
 }
 const readableRows = paths => paths.map(path => ({ path, rules: sandboxPrincipals.map(sid => ({ sid,
   allow: true, accessMask: sandboxReadExecuteMask, inherits: true, appliesHere: true, propagates: true })) }));
+const aclReply = rows => JSON.stringify({ rows, shell: { version: 'fixture-version', edition: 'Desktop',
+  modulePaths: ['child-native-security', 'child-native-utility'], nativeModules: true } });
 
 test('actual installer helper grants only payload RX to both sandbox principals and requires read-back', async context => {
   const { root, paths } = await ownedPayload(context), calls = []; let reads = 0;
   const result = await configureWindowsChromeAccess(root, async (command, args) => {
     calls.push({ command, args });
-    return { stdout: command === 'powershell.exe' ? JSON.stringify(++reads === 1
+    return { stdout: command === 'powershell.exe' ? aclReply(++reads === 1
       ? paths.map(path => ({ path, rules: [] })) : readableRows(paths)) : '' };
   });
   assert.deepEqual(calls.slice(1, 3), sandboxPrincipals.map(sid => ({ command: 'icacls.exe', args: [root, '/grant', `*${sid}:(OI)(CI)(RX)`] })));
   assert.equal(calls[0].command, 'powershell.exe'); assert.equal(calls[3].command, 'powershell.exe');
   assert.ok(calls[0].args.at(-1).includes("rushes-acl''s-"));
+  const script = calls[0].args.at(-1);
+  for (const name of ['Security', 'Utility']) {
+    const imported = script.indexOf(`Combine($PSHOME,'Modules','Microsoft.PowerShell.${name}','Microsoft.PowerShell.${name}.psd1')`);
+    assert.ok(imported >= 0 && imported < script.indexOf('Get-Acl -LiteralPath'));
+  }
   assert.equal(result.requestedReadExecuteRulesVerified, true);
   assert.deepEqual(result.checkedPaths, paths);
   assert.match(result.effectiveSandboxChild, /real sandboxed browser qualification/);
@@ -49,7 +56,7 @@ test('successful grant commands cannot hide missing, denied or noninheriting pay
     const rows = readableRows(paths); change(rows); let reads = 0, grants = 0;
     await assert.rejects(configureWindowsChromeAccess(root, async command => {
       if (command === 'icacls.exe') { grants++; return { stdout: '' }; }
-      return { stdout: JSON.stringify(++reads === 1 ? readableRows(paths) : rows) };
+      return { stdout: aclReply(++reads === 1 ? readableRows(paths) : rows) };
     }), /Chrome|ACL/);
     assert.equal(grants, 2);
   }
@@ -57,7 +64,7 @@ test('successful grant commands cannot hide missing, denied or noninheriting pay
 test('a failed grant never reaches read-back or reports a configured sandbox', async context => {
   const { root, paths } = await ownedPayload(context), calls = [];
   await assert.rejects(configureWindowsChromeAccess(root, async command => {
-    calls.push(command); if (command === 'powershell.exe') return { stdout: JSON.stringify(readableRows(paths)) };
+    calls.push(command); if (command === 'powershell.exe') return { stdout: aclReply(readableRows(paths)) };
     throw new Error('icacls denied');
   }), /icacls denied/);
   assert.deepEqual(calls, ['powershell.exe', 'icacls.exe']);
@@ -82,4 +89,18 @@ test('an existing receipt is preserved before any ACL tool is called', async con
   await testFiles.writeFile(path, 'existing owned data'); let calls = 0;
   await assert.rejects(configureWindowsChromeAccess(root, async () => { calls++; }), { code: 'EEXIST' });
   assert.equal(calls, 0); assert.equal(await testFiles.readFile(path, 'utf8'), 'existing owned data');
+});
+test('a failed or foreign child module read refuses all permission writes', async context => {
+  for (const failure of ['import', 'foreign']) {
+    const { parent, root, paths } = await ownedPayload(context); let grants = 0;
+    await assert.rejects(configureWindowsChromeAccess(root, async command => {
+      if (command === 'icacls.exe') grants++;
+      if (failure === 'import') throw new Error('Native module import failed');
+      const result = JSON.parse(aclReply(readableRows(paths))); result.shell.nativeModules = false;
+      return { stdout: JSON.stringify(result) };
+    }), /module/);
+    assert.equal(grants, 0);
+    const receipt = JSON.parse(await testFiles.readFile(testPaths.join(parent, 'windows-sandbox-access.json'), 'utf8'));
+    assert.equal(receipt.state, 'failed'); assert.equal(receipt.phase, 'read-before');
+  }
 });

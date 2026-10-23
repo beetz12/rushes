@@ -433,8 +433,11 @@ test('backup close failure is reported while the verified OPFS chunk remains rec
 
 test('a second tab observes a live draft without marking it interrupted or starting devices', { timeout: 30000 }, async () => {
   const context = await browser.newContext(); const first = await context.newPage(); const second = await context.newPage();
+  let tracing, ownerStop;
   try {
     await first.goto(`${origin}/capture-fixture`); await second.goto(`${origin}/capture-fixture`);
+    if (process.env.RUSHES_SECOND_TAB_TRACE_PROOF) tracing = await beginColdTrace(browser, first,
+      process.env.RUSHES_SECOND_TAB_TRACE_PROOF, { canvasDiagnostics: true });
     const id = await first.evaluate(async () => {
       const { fixture } = await import('/test/capture-fixture.mjs'); window.live = await fixture('screen', false);
       const append = window.live.store.append; let delayed = false;
@@ -461,11 +464,27 @@ test('a second tab observes a live draft without marking it interrupted or start
       try { await (await createDraftStore()).remove(id); return false; } catch (error) { return error.message.includes('another tab'); }
     }, id);
     assert.equal(refused, true);
-    const ownerStop = await first.evaluate(async () => {
+    ownerStop = await first.evaluate(async retain => {
       const manifest = await window.live.session.stop();
       const warnings = [...window.live.warnings];
-      await window.live.cleanup(); return { manifest, warnings };
-    });
+      await window.live.cleanup();
+      const retained = {};
+      if (retain) for (const track of manifest.tracks) {
+        const bytes = new Uint8Array(await (await window.live.store.trackBlob(window.live.id, track.kind)).arrayBuffer());
+        const pieces = [];
+        for (let offset = 0; offset < bytes.length; offset += 16384) pieces.push(String.fromCharCode(...bytes.subarray(offset, offset + 16384)));
+        retained[track.kind] = btoa(pieces.join(''));
+      }
+      return { manifest, warnings, retained };
+    }, Boolean(process.env.RUSHES_SECOND_TAB_PROOF));
+    if (process.env.RUSHES_SECOND_TAB_PROOF) {
+      await mkdir(process.env.RUSHES_SECOND_TAB_PROOF, { recursive: true });
+      for (const [kind, bytes] of Object.entries(ownerStop.retained))
+        await writeFile(join(process.env.RUSHES_SECOND_TAB_PROOF, `${kind}.webm`), Buffer.from(bytes, 'base64'), { flag: 'wx' });
+      await writeFile(join(process.env.RUSHES_SECOND_TAB_PROOF, 'terminal.json'), JSON.stringify({
+        manifest: ownerStop.manifest, warnings: ownerStop.warnings }, null, 2), { flag: 'wx' });
+    }
+    delete ownerStop.retained;
     const stopped = await second.evaluate(async id => {
       const { createDraftStore } = await import('/src/capture/storage.ts'); return (await createDraftStore()).load(id);
     }, id);
@@ -502,7 +521,10 @@ test('a second tab observes a live draft without marking it interrupted or start
       }
     }
     throw error;
-  } finally { await context.close(); }
+  } finally {
+    try { await tracing?.finish(ownerStop ?? { result: 'Owner Stop did not return' }); }
+    finally { await context.close(); }
+  }
 });
 
 test('a post-commit backup failure during startup releases its live draft lease and all sources', { timeout: 30000 }, async () => pageFixture(async page => {

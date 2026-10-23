@@ -41,15 +41,21 @@ const sourceControl = process.env.RUSHES_M1_SOURCE_CONTROL === '1';
 if (sourceControl && (sourceMode !== 'container' || long || reference)) throw new Error('Direct control requires bounded8s container mode');
 const allocationDiagnostic = process.env.RUSHES_M1_ALLOCATION_DIAGNOSTIC === '1';
 const diagnostic = process.env.RUSHES_M1_DIAGNOSTIC === '1' || allocationDiagnostic;
-const nativeTraceRequested = process.env.RUSHES_M1_NATIVE_TRACE_PROOF === '1';
+const fullNativeTrace = process.env.RUSHES_M1_NATIVE_TRACE_PROOF === '1';
+const sourceAudioTrace = process.env.RUSHES_M1_SOURCE_AUDIO_TRACE_PROOF === '1';
+const nativeTraceRequested = fullNativeTrace || sourceAudioTrace;
 const sourceOnly = process.env.RUSHES_M1_NATIVE_SOURCE_ONLY === '1';
 if (process.env.RUSHES_M1_NATIVE_SOURCE_ONLY !== undefined && !sourceOnly) throw new Error('Source-only option must be1');
-if (sourceOnly && (sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl || nativeTraceRequested))
+if (sourceOnly && (sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl || fullNativeTrace))
   throw new Error('Source-only diagnosis requires an untraced8s native-reference run');
+if (process.env.RUSHES_M1_SOURCE_AUDIO_TRACE_PROOF !== undefined && !sourceAudioTrace)
+  throw new Error('Source-only audio trace option must be1');
+if (sourceAudioTrace && (!sourceOnly || fullNativeTrace || sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl))
+  throw new Error('Source-only audio trace requires its explicit isolated8s source-only diagnostic');
 const sourceAudioFrames = Number(process.env.RUSHES_M1_SOURCE_AUDIO_FRAMES ?? 128);
 if (![128, 480].includes(sourceAudioFrames) || (sourceAudioFrames !== 128 && sourceMode !== 'native-reference'))
   throw new Error('Source audio hint must be128 or480 in native-reference mode');
-if (process.env.RUSHES_M1_NATIVE_TRACE_PROOF !== undefined && !nativeTraceRequested) throw new Error('Native trace option must be1');
+if (process.env.RUSHES_M1_NATIVE_TRACE_PROOF !== undefined && !fullNativeTrace) throw new Error('Native trace option must be1');
 if (nativeTraceRequested && (sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl))
   throw new Error('Native audio tracing is limited to the existing short supplied-reference qualification');
 const diagnosticDurationMs = allocationDiagnostic ? 180000 : 240000;
@@ -59,7 +65,7 @@ const proof = resolve(process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir()
 await mkdir(proof, { recursive: true, mode: 0o700 });
 const profile = join(proof, 'isolated-chrome-profile');
 const evidence = { schema: sourceOnly ? 'rushes.source-load-control/1' : 'rushes.independent-m1/1', startedAt: new Date().toISOString(),
-  node: process.version, platform: process.platform, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
+  node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceAudioTrace, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
   normalBackgroundFlags: true, source: 'native Chrome fake MJPEG with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; tab activation alone is not physical minimization',

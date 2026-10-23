@@ -42,6 +42,8 @@ export async function configureWindowsChromeAccess(root, runFile = promisify(chi
       throw new Error('Chrome ACL setup requires ordinary owned payload files');
   }
   const script = `$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false);
+    Import-Module -Name ([System.IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Security','Microsoft.PowerShell.Security.psd1')) -Force -ErrorAction Stop;
+    Import-Module -Name ([System.IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -Force -ErrorAction Stop;
     $rows=@(foreach($path in @(${paths.map(literal).join(',')})) {
       $rules=@(foreach($rule in (Get-Acl -LiteralPath $path).GetAccessRules($true,$true,[System.Security.Principal.SecurityIdentifier])) {
         [pscustomobject]@{sid=$rule.IdentityReference.Value; allow=($rule.AccessControlType -eq 'Allow');
@@ -50,12 +52,26 @@ export async function configureWindowsChromeAccess(root, runFile = promisify(chi
           appliesHere=(([int]$rule.PropagationFlags -band 2) -eq 0);
           propagates=([int]$rule.PropagationFlags -eq 0)}
       }); [pscustomobject]@{path=$path;rules=$rules}
-    }); ConvertTo-Json -InputObject $rows -Depth 5 -Compress`;
+    });
+    $security=(Get-Command -Name Get-Acl -CommandType Cmdlet).Module.Path;
+    $utility=(Get-Command -Name ConvertTo-Json -CommandType Cmdlet).Module.Path;
+    $nativeRoot=$PSHOME+[System.IO.Path]::DirectorySeparatorChar;
+    $shell=[pscustomobject]@{version=$PSVersionTable.PSVersion.ToString();edition=$PSVersionTable.PSEdition;
+      modulePaths=@($security,$utility);nativeModules=($security.StartsWith($nativeRoot,[StringComparison]::OrdinalIgnoreCase) -and $utility.StartsWith($nativeRoot,[StringComparison]::OrdinalIgnoreCase))};
+    ConvertTo-Json -InputObject ([pscustomobject]@{rows=$rows;shell=$shell}) -Depth 6 -Compress`;
   const receiptPath = payloadPaths.join(payloadPaths.dirname(root), 'windows-sandbox-access.json');
   const receipt = { root, checkedPaths: paths, state: 'preparing', grants: [] };
   await payloadFiles.writeFile(receiptPath, JSON.stringify(receipt), { flag: 'wx', mode: 0o600 });
   const save = () => payloadFiles.writeFile(receiptPath, JSON.stringify(receipt, null, 2));
-  const readRules = async () => JSON.parse((await runFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 15000 })).stdout);
+  const readRules = async () => {
+    const result = JSON.parse((await runFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 15000 })).stdout);
+    if (!Array.isArray(result?.rows) || result.shell?.nativeModules !== true
+      || typeof result.shell.version !== 'string' || typeof result.shell.edition !== 'string'
+      || !Array.isArray(result.shell.modulePaths) || result.shell.modulePaths.length !== 2
+      || result.shell.modulePaths.some(path => typeof path !== 'string' || !path))
+      throw new Error('Native Windows PowerShell module proof is unavailable');
+    receipt.shell = result.shell; return result.rows;
+  };
   try {
     receipt.phase = 'read-before'; receipt.before = await readRules(); requirePayloadRows(receipt.before, paths); await save();
     for (const sid of sandboxPrincipals) {
