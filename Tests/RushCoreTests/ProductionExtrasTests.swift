@@ -146,6 +146,28 @@ struct ProductionExtrasTests {
         #expect(result.presentationTime == .zero)
         #expect(blur.statistics().processed == 1); #expect(blur.statistics().dropped >= 1)
     }
+    @Test("A try-lock refusal counts a dropped optional frame without blocking")
+    func contendedBlurCounter() throws {
+        let blur = try CameraBackgroundBlur(), input = try extrasPixelBuffer()
+        // Hold the actual admission lock without adding a production-only test hook.
+        let admission = try #require(Mirror(reflecting: blur).children.first { $0.label == "lock" }?.value as? NSLock)
+        let ready = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0), exited = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            admission.lock(); ready.signal()
+            _ = release.wait(timeout: .now() + 1)
+            admission.unlock(); exited.signal()
+        }
+        defer { release.signal() }
+        try #require(ready.wait(timeout: .now() + 1) == .success)
+        let started = Date()
+        let accepted = blur.submit(input, at: .zero) { _ in Issue.record("Contended blur was accepted") }
+        let elapsed = Date().timeIntervalSince(started)
+        release.signal()
+        try #require(exited.wait(timeout: .now() + 1) == .success)
+        #expect(!accepted); #expect(elapsed < 0.05)
+        let snapshot = blur.statistics()
+        #expect(snapshot.dropped == 1); #expect(snapshot.processed == 0); #expect(!snapshot.busy)
+    }
     @Test("Audio overflow remains bounded and cancellation rejects subsequent samples",
           .enabled(if: ProcessInfo.processInfo.environment["RUSHES_EXTRAS_SPEECH_FIXTURE"] != nil), .timeLimit(.minutes(1)))
     func voiceBackpressure() async throws {

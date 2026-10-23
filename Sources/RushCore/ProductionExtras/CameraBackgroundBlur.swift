@@ -2,6 +2,7 @@ import CoreImage
 import CoreMedia
 import CoreVideo
 import Foundation
+import Synchronization
 import Vision
 
 public struct CameraBlurFrame: @unchecked Sendable {
@@ -28,7 +29,7 @@ public final class CameraBackgroundBlur: @unchecked Sendable {
     private var busy = false
     private var cancelled = false
     private var processed = 0
-    private var dropped = 0
+    private let dropped = Atomic<Int>(0)
     private let context: CIContext
     private var pool: CVPixelBufferPool?
     private var poolWidth = 0
@@ -60,12 +61,12 @@ public final class CameraBackgroundBlur: @unchecked Sendable {
     }
     public func cancel() { lock.withLock { cancelled = true } }
     public func statistics() -> (processed: Int, dropped: Int, busy: Bool) {
-        lock.withLock { (processed, dropped, busy) }
+        lock.withLock { (processed, dropped.load(ordering: .relaxed), busy) }
     }
     private func claimWork() -> Bool {
-        guard lock.try() else { return false }
+        guard lock.try() else { dropped.wrappingAdd(1, ordering: .relaxed); return false }
         defer { lock.unlock() }
-        guard !busy, !cancelled else { dropped += 1; return false }
+        guard !busy, !cancelled else { dropped.wrappingAdd(1, ordering: .relaxed); return false }
         busy = true; return true
     }
     private func completeWork() { lock.withLock { busy = false; processed += 1 } }
