@@ -30,3 +30,9 @@ test('native capture entries are admitted only for the failed default128 source-
     {RUSHES_M1_SOURCE_VIDEO_TRACE_PROOF:'0'},{RUSHES_M1_SOURCE_AUDIO_FRAMES:'480'},{RUSHES_M1_NATIVE_SOURCE_ONLY:undefined},
     {RUSHES_M1_LONG:'1'},{RUSHES_M1_REFERENCE:'1'}])assert.throws(()=>actualAdmission({env:{...traced,...overrides}}));
 });
+
+test('whole capture task tracing requires the same isolated native capture profile',()=>{
+ const traced={...ordinary,RUSHES_M1_SOURCE_AUDIO_TRACE_PROOF:'1',RUSHES_M1_SOURCE_VIDEO_TRACE_PROOF:'1',RUSHES_M1_SOURCE_AUDIO_SINK:'default',RUSHES_M1_SOURCE_TASK_TRACE_PROOF:'1'};
+ assert.equal(actualAdmission({env:traced}).targetMs,8000);
+ for(const overrides of [{RUSHES_M1_SOURCE_TASK_TRACE_PROOF:'0'},{RUSHES_M1_SOURCE_VIDEO_TRACE_PROOF:undefined},{RUSHES_M1_SOURCE_AUDIO_SINK:'none'},{RUSHES_M1_LONG:'1'}])assert.throws(()=>actualAdmission({env:{...traced,...overrides}}));
+});

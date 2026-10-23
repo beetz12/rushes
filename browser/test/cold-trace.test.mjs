@@ -1,7 +1,7 @@
 import * as nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import { checkPrescribedTraceMarks } from './cold-trace.mjs';
-import { beginColdTrace } from './cold-trace.mjs';
+import { beginColdTrace,recorderCallMetadata } from './cold-trace.mjs';
 import * as files from 'node:fs/promises';
 import * as paths from 'node:path';
 import * as operatingSystem from 'node:os';
@@ -108,4 +108,17 @@ nodeTest.test('a delivered trace stream is retained and closed when its end ackn
   const report = JSON.parse(await files.readFile(paths.join(f.directory, 'report.json'), 'utf8'));
   assert.equal(report.traceReceipt.stream, 'owned-stream');
   assert.ok(report.errors.some(error => error.includes('end acknowledgement lost')));
+});
+
+nodeTest.test('whole capture task observation adds only toplevel to the selected native categories',async context=>{
+ const f=await retirementFixture(context,false);const trace=await beginColdTrace(f.browser,f.page,f.directory,{audioDiagnostics:true,videoCaptureDiagnostics:true,captureTaskDiagnostics:true});
+ const categories=f.requests.find(row=>row.method==='Tracing.start').parameters.traceConfig.includedCategories;
+ assert.deepEqual(categories,['media','blink.user_timing','mediastream','disabled-by-default-audio','webaudio','disabled-by-default-webaudio.audionode','disabled-by-default-mediastream','disabled-by-default-video_and_image_capture','toplevel']);
+ await assert.rejects(trace.finish({generated:true}),/metadata retirement rejected/);
+});
+nodeTest.test('streamed recorder call metadata rejects payload fields and malformed or unbounded input',()=>{
+ const row={id:0,index:1,method:'start',edge:'before',state:'inactive',timeMs:12};const encode=value=>'GENERATED_RECORDER_CALL '+JSON.stringify(value);
+ assert.deepEqual(recorderCallMetadata(encode(row)),row);
+ for(const value of [{...row,samples:[1,2]},{...row,id:-1},{...row,timeMs:'12'},{...row,method:'other'},{...row,edge:'unknown'}])assert.equal(recorderCallMetadata(encode(value)),undefined);
+ for(const text of ['x','GENERATED_RECORDER_CALL [',encode({...row,state:'x'.repeat(2000)})])assert.equal(recorderCallMetadata(text),undefined);
 });

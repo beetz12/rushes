@@ -45,6 +45,7 @@ jobs:
           RUSHES_M1_BROWSER_MODE: headful
           RUSHES_M1_VIDEO_BUFFER: default
           RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+          RUSHES_M1_NATIVE_TRACE_PROOF: '1'
           RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-window-checkpoint
       - name: Retain final generated evidence when the step survives
         if: always()
@@ -58,6 +59,8 @@ jobs:
             ${{ runner.temp }}/rushes-test-chrome/release.json
             ${{ runner.temp }}/rushes-test-chrome/windows-sandbox-access.json
             ${{ runner.temp }}/rushes-window-checkpoint/metrics.json
+            ${{ runner.temp }}/rushes-window-checkpoint/native-trace/report.json
+            ${{ runner.temp }}/rushes-window-checkpoint/native-trace/trace.json
             ${{ runner.temp }}/rushes-window-checkpoint/chrome-stderr.log
             ${{ runner.temp }}/rushes-window-checkpoint/owned-browser-pid.json
             ${{ runner.temp }}/rushes-window-checkpoint/retirement.json

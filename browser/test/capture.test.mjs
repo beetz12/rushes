@@ -55,13 +55,23 @@ async function pageFixture(callback) {
   const context = await browser.newContext(); const page = await context.newPage();
   page.on('console',message=>{if(message.text().startsWith('GENERATED_AUDIO_FAILURE '))console.log(message.text());});
   await page.addInitScript(()=>{
-    const NativeWorker=Worker;
+    const NativeWorker=Worker;let audioWorkerId=0;
+    globalThis.generatedAudioInputMetadata={rows:[],dropped:0};
     globalThis.Worker=class extends NativeWorker{
       constructor(url,options){
         super(url,options);
-        if(String(url).includes('/audio.worker'))this.addEventListener('message',event=>{
+        this.generatedAudioWorker=String(url).includes('/audio.worker')?audioWorkerId++:undefined;
+        if(this.generatedAudioWorker!==undefined)this.addEventListener('message',event=>{
           if(event.data.kind==='error')console.log('GENERATED_AUDIO_FAILURE '+JSON.stringify(event.data));
         });
+      }
+      postMessage(message,...rest){
+        if(this.generatedAudioWorker!==undefined&&message?.kind==='input'){
+          const ledger=globalThis.generatedAudioInputMetadata;
+          if(ledger.rows.length<2048)ledger.rows.push({worker:this.generatedAudioWorker,source:message.source,rate:message.rate,timestampUs:message.timestamp,frames:message.left.length});
+          else ledger.dropped++;
+        }
+        return super.postMessage(message,...rest);
       }
     };
   });
@@ -103,7 +113,7 @@ test('screen/camera composition, separate originals, mixed audio, pause timeline
     const released = [...value.feeds.flatMap(feed => feed.getTracks()), ...value.session.preview.getTracks()].every(track => track.readyState === 'ended');
     await value.cleanup(); return { manifest, data, mixed, released, retained, startRequestedAt, startResolvedAt,
       states: value.states, finalCheckpoint: value.checkpoints.at(-1), initialSaveDelays: value.initialSaveDelays,
-      canvasBacking: value.canvasBacking, sourceContextAttributes: value.sourceContextAttributes };
+      canvasBacking: value.canvasBacking, sourceContextAttributes: value.sourceContextAttributes,audioInputMetadata:globalThis.generatedAudioInputMetadata };
   }, coldCanvasBacking);
   // Retain this generated case before assertions, including on a timing failure.
   // Packet probes run only after Stop; they do not consume live media.
@@ -135,7 +145,7 @@ test('screen/camera composition, separate originals, mixed audio, pause timeline
   }
   await writeFile(join(coldProof, 'capture-cold.log'), JSON.stringify({ manifest: result.manifest,
     startRequestedAt: result.startRequestedAt, startResolvedAt: result.startResolvedAt, initialSaveDelays: result.initialSaveDelays,
-    canvasBacking: result.canvasBacking, sourceContextAttributes: result.sourceContextAttributes, html: result.data, packets }, null, 2));
+    canvasBacking: result.canvasBacking, sourceContextAttributes: result.sourceContextAttributes, html: result.data,mixed:result.mixed,audioInputMetadata:result.audioInputMetadata, packets }, null, 2));
   delete result.retained;
   console.log('Calibration offsets/durations', result.manifest.tracks.map(track => [track.kind, track.startOffsetMs, result.data[track.kind].duration]), result.manifest.durationMs);
   assert.equal(result.manifest.state, 'complete'); assert.equal(result.released, true);
@@ -175,6 +185,7 @@ test('screen/camera composition, separate originals, mixed audio, pause timeline
   assert.ok(result.data.composed.samples[0][1][0] > 160 && result.data.composed.samples[0][1][2] < 100);
   assert.ok(result.data.composed.samples.at(-1)[2][0] > 160 && result.data.composed.samples.at(-1)[2][2] < 100);
   assert.ok(result.data.composed.samples.at(-1)[1][2] > 160);
+  assert.ok(result.audioInputMetadata.rows.length>0&&result.audioInputMetadata.rows.length<=2048);
   assert.ok(result.mixed.powers.every(power => power > 0.025));
   assert.ok(result.data.microphone.powers[0] > 0.08 && result.data.microphone.powers[1] < 0.01);
   assert.ok(result.data['tab-audio'].powers[1] > 0.08 && result.data['tab-audio'].powers[0] < 0.01);
@@ -277,24 +288,57 @@ test('active-time deadline stays under the hard ceiling across pause; delayed co
 test('screen without audio and camera-only captures produce playable originals; rapid Stop waits for final data', { timeout: 30000 }, async () => pageFixture(async page => {
   const results = await page.evaluate(async () => {
     const { fixture, inspectVideo } = await import('/test/capture-fixture.mjs');
-    const results = [];
-    for (const mode of ['screen', 'camera']) {
-      const value = await fixture(mode, false, false, `private-reservation-${mode}`); await value.session.start();
-      await new Promise(resolve => setTimeout(resolve, 350));
-      const [one, two] = await Promise.all([value.session.stop(), value.session.stop()]);
-      const info = await inspectVideo(await value.store.trackBlob(value.id, 'composed'));
-      const saved = await value.store.load(value.id);
-      results.push({ manifest: one, savedCloudId: saved.cloudRecordingId, checkpointCloudIds: value.checkpoints.map(point => point.cloudRecordingId), same: JSON.stringify(one) === JSON.stringify(two), info }); await value.cleanup();
+    const results = [],NativeRecorder=MediaRecorder;
+    for (const {mode,split} of [{mode:'screen',split:false},{mode:'camera',split:false},{mode:'screen',split:true}]) {
+      const observed=[];let dropped=0,value;
+      globalThis.MediaRecorder=class extends NativeRecorder{
+        constructor(...args){super(...args);const blobs=[];observed.push({recorder:this,blobs});this.addEventListener('dataavailable',event=>{
+          if(!event.data.size)return;if(blobs.length<64)blobs.push(event.data);else dropped++;
+        });}
+      };
+      try{
+        value = await fixture(mode, false, false, `private-reservation-${mode}`); await value.session.start();
+        if(split){
+          await new Promise(resolve=>setTimeout(resolve,150));
+          for(const {recorder} of observed)recorder.requestData();
+          await new Promise(resolve=>setTimeout(resolve,200));
+        }else await new Promise(resolve => setTimeout(resolve, 350));
+        const [one, two] = await Promise.all([value.session.stop(), value.session.stop()]);
+        const info = await inspectVideo(await value.store.trackBlob(value.id, 'composed'));
+        const saved = await value.store.load(value.id),nativeChunks=[];
+        // Hash existing event Blobs only after Stop; no extra live source reader.
+        for(const {blobs} of observed){const rows=[];for(const blob of blobs){
+          const sha256=[...new Uint8Array(await crypto.subtle.digest('SHA-256',await blob.arrayBuffer()))].map(value=>value.toString(16).padStart(2,'0')).join('');
+          rows.push({sequence:rows.length,bytes:blob.size,sha256});
+        }nativeChunks.push(rows);}
+        results.push({manifest:one,nativeChunks,dropped,split,savedCloudId:saved.cloudRecordingId,checkpointCloudIds:value.checkpoints.map(point=>point.cloudRecordingId),same:JSON.stringify(one)===JSON.stringify(two),info});
+      }finally{globalThis.MediaRecorder=NativeRecorder;await value?.cleanup();}
     }
     return results;
   });
+  const exactChunks=(tracks,observed)=>{
+    assert.equal(tracks.length,observed.length);
+    tracks.forEach((track,index)=>{
+      assert.ok(track.bytes>0&&observed[index].length>0);
+      assert.deepEqual(track.chunks.map(({sequence,bytes,sha256})=>({sequence,bytes,sha256})),observed[index]);
+      assert.equal(track.bytes,observed[index].reduce((total,row)=>total+row.bytes,0));
+    });
+  };
+  console.log('Rapid Stop native/saved chunks',JSON.stringify(results.map(result=>({mode:result.manifest.mode,split:result.split,native:result.nativeChunks.map(rows=>rows.length),saved:result.manifest.tracks.map(track=>track.chunks.length)}))));
   for (const result of results) {
     assert.equal(result.manifest.state, 'complete'); assert.equal(result.same, true);
     assert.equal(result.manifest.cloudRecordingId, `private-reservation-${result.manifest.mode}`);
     assert.equal(result.savedCloudId, result.manifest.cloudRecordingId);
     assert.ok(result.checkpointCloudIds.every(id => id === result.manifest.cloudRecordingId));
     assert.ok(result.info.duration > 0.2 && result.info.duration < 0.7);
-    assert.equal(result.manifest.tracks.length, 2); assert.ok(result.manifest.tracks.every(track => track.chunks.length === 1 && track.bytes > 0));
+    assert.equal(result.manifest.tracks.length, 2);assert.equal(result.dropped,0);
+    exactChunks(result.manifest.tracks,result.nativeChunks);
+    if(result.split){
+      assert.ok(result.nativeChunks.every(rows=>rows.length>=2),'The forced native boundary must actually produce multiple nonempty chunks');
+      for(const change of [track=>track.chunks.pop(),track=>track.chunks.push({...track.chunks[0]}),track=>track.chunks.reverse(),track=>{track.chunks[0].sha256='0'.repeat(64);},track=>{track.chunks[0].bytes++;}]){
+        const changed=structuredClone(result.manifest.tracks);change(changed[0]);assert.throws(()=>exactChunks(changed,result.nativeChunks));
+      }
+    }
   }
 }));
 test('cancel releases all streams and removes its draft; ended camera safely finalizes saved screen and audio', { timeout: 30000 }, async () => pageFixture(async page => {

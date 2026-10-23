@@ -61,10 +61,22 @@ export function requireNativeClockTrace(report, capability) {
   return { qualified: true, scope: 'Native scalar coordinate conversion only; no media phase correction', originMs };
 }
 
+export function recorderCallMetadata(text) {
+  const prefix='GENERATED_RECORDER_CALL ';
+  if(typeof text!=='string'||text.length>1024||!text.startsWith(prefix))return;
+  let row;try{row=JSON.parse(text.slice(prefix.length));}catch{return;}
+  if(!row||Object.keys(row).sort().join(',')!=='edge,id,index,method,state,timeMs'
+    ||!Number.isSafeInteger(row.id)||row.id<0||!Number.isSafeInteger(row.index)||row.index<0
+    ||!['start','pause','resume','stop'].includes(row.method)||!['before','after'].includes(row.edge)
+    ||!['inactive','recording','paused'].includes(row.state)||!Number.isFinite(row.timeMs)||row.timeMs<0)return;
+  return row;
+}
+
 export async function beginColdTrace(browser, page, directory, limits = {}) {
   if (limits.audioDiagnostics !== undefined && typeof limits.audioDiagnostics !== 'boolean') throw new Error('Audio trace option must be boolean');
   if (limits.canvasDiagnostics !== undefined && typeof limits.canvasDiagnostics !== 'boolean') throw new Error('Canvas trace option must be boolean');
   if (limits.videoCaptureDiagnostics !== undefined && typeof limits.videoCaptureDiagnostics !== 'boolean') throw new Error('Video capture trace option must be boolean');
+  for(const name of ['captureTaskDiagnostics','streamRecorderCalls'])if(limits[name]!==undefined&&typeof limits[name]!=='boolean')throw new Error('Trace observation options must be boolean');
   const finalizationMs = limits.finalizationMs ?? 15000, metadataMs = limits.metadataMs ?? 2000;
   if (!Number.isSafeInteger(finalizationMs) || finalizationMs < 1 || finalizationMs > 15000
     || !Number.isSafeInteger(metadataMs) || metadataMs < 1 || metadataMs > Math.min(2000, finalizationMs))
@@ -137,12 +149,18 @@ export async function beginColdTrace(browser, page, directory, limits = {}) {
     if (limits.audioDiagnostics) report.categories.push('mediastream', 'disabled-by-default-audio', 'webaudio',
       'disabled-by-default-webaudio.audionode', 'disabled-by-default-mediastream');
     if (limits.videoCaptureDiagnostics) report.categories.push('disabled-by-default-video_and_image_capture');
+    if (limits.captureTaskDiagnostics) report.categories.push('toplevel');
     await deadline(session.send('Tracing.start', { transferMode: 'ReturnAsStream', streamFormat: 'json',
       traceConfig: { recordMode: 'recordContinuously', traceBufferSizeInKb: 32768,
         includedCategories: report.categories, enableArgumentFilter: false } }), 5000, 'Cold trace start');
-    await deadline(page.evaluate(token => {
+    await deadline(page.evaluate(({token,streamRecorderCalls}) => {
       const calls = [], observations = [], originals = new Map(), ids = new WeakMap();
-      let nextId = 0;
+      let nextId = 0, streamedCallRows=0, droppedCallRows=0;
+      const streamCall=(row,edge,timeMs,state)=>{
+        if(!streamRecorderCalls)return;
+        if(streamedCallRows>=128){droppedCallRows++;return;}
+        streamedCallRows++;console.log('GENERATED_RECORDER_CALL '+JSON.stringify({id:row.id,index:row.index,method:row.method,edge,timeMs,state}));
+      };
       const prescribed = (batch, coordinates) => coordinates.forEach((coordinateMs, index) => {
         const name = `${token}/clock-${batch}-${index}`;
         const calledBeforePageMs = performance.now();
@@ -153,7 +171,7 @@ export async function beginColdTrace(browser, page, directory, limits = {}) {
         finish() {
           try { prescribed('later', [1.25, 1002.75, 3003.5]); prescribed('held-out', [5004.125]); }
           finally { for (const [method, original] of originals) MediaRecorder.prototype[method] = original; }
-          return { token, calls, observations, timeOrigin: performance.timeOrigin };
+          return { token, calls, observations, timeOrigin: performance.timeOrigin,streamedCallRows,droppedCallRows };
         } };
       prescribed('first', [1.25, 1002.75, 3003.5]);
       for (const method of ['start', 'pause', 'resume', 'stop']) {
@@ -163,15 +181,17 @@ export async function beginColdTrace(browser, page, directory, limits = {}) {
           const id = ids.get(this), index = calls.length;
           const row = { id, index, method, before: performance.now(), beforeState: this.state };
           calls.push(row); performance.mark(`${token}/recorder-${id}/${index}-${method}-before`, { startTime: row.before });
+          streamCall(row,'before',row.before,row.beforeState);
           try { return Reflect.apply(original, this, args); }
           catch (error) { row.error = String(error); throw error; }
           finally {
             row.after = performance.now(); row.afterState = this.state;
+            streamCall(row,'after',row.after,row.afterState);
             performance.mark(`${token}/recorder-${id}/${index}-${method}-after`, { startTime: row.after });
           }
         };
       }
-    }, token), 5000, 'Cold call observation setup');
+    }, {token,streamRecorderCalls:limits.streamRecorderCalls===true}), 5000, 'Cold call observation setup');
   } catch (error) {
     report.errors.push(`Setup: ${error.stack || error}`);
     try { await finish({ result: 'Cold trace setup failed before recording' }); }

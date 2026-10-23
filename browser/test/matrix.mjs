@@ -21,7 +21,7 @@ import { productSyncSourceVerdict, requireProductSyncSource } from './matrix-sou
 import { inspectHistogramPayload } from './matrix-native-observation.mjs';
 import { macHostState, isVerifiedUnlockedMac, assertUnlockedMac, monitorMacLock } from './matrix-host-state.mjs';
 import { nativeClockSeed } from './native-clock-seed.mjs';
-import { beginColdTrace, requireNativeClockTrace } from './cold-trace.mjs';
+import { beginColdTrace, requireNativeClockTrace, recorderCallMetadata } from './cold-trace.mjs';
 import { requestCheckpoint } from './matrix-checkpoint-action.mjs';
 
 const run = promisify(execFile), sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -64,6 +64,9 @@ if (process.env.RUSHES_M1_SOURCE_VIDEO_TRACE_PROOF !== undefined && !sourceVideo
   throw new Error('Native source video trace option must be1');
 if (sourceVideoTrace && (!sourceAudioTrace || sourceAudioSink !== 'default'))
   throw new Error('Native source video tracing requires the isolated8s default128 source audio trace');
+const sourceTaskTrace=process.env.RUSHES_M1_SOURCE_TASK_TRACE_PROOF==='1';
+if(process.env.RUSHES_M1_SOURCE_TASK_TRACE_PROOF!==undefined&&!sourceTaskTrace)throw new Error('Native source task trace option must be1');
+if(sourceTaskTrace&&!sourceVideoTrace)throw new Error('Whole capture task tracing requires the isolated native video trace');
 if (process.env.RUSHES_M1_NATIVE_TRACE_PROOF !== undefined && !fullNativeTrace) throw new Error('Native trace option must be1');
 if (nativeTraceRequested && (sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl))
   throw new Error('Native audio tracing is limited to the existing short supplied-reference qualification');
@@ -78,7 +81,7 @@ const proof = resolve(process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir()
 await mkdir(proof, { recursive: true, mode: 0o700 });
 const profile = join(proof, 'isolated-chrome-profile');
 const evidence = { schema: sourceOnly ? 'rushes.source-load-control/1' : 'rushes.independent-m1/1', startedAt: new Date().toISOString(),
-  node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceAudioSink, sourceAudioTrace, sourceVideoTrace, checkpointRequested, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
+  node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceAudioSink, sourceAudioTrace, sourceVideoTrace, sourceTaskTrace, checkpointRequested, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
   normalBackgroundFlags: true, source: 'native Chrome fake MJPEG with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; tab activation alone is not physical minimization',
@@ -436,7 +439,16 @@ try {
   await stage('browser-launch-start');
   const context = await launch(media);
   await stage('browser-launch-ready');
-  if (nativeTraceRequested) nativeTrace = await beginColdTrace(browser, page, join(proof, 'native-trace'), { audioDiagnostics: true, videoCaptureDiagnostics: sourceVideoTrace });
+  if(fullNativeTrace){
+    evidence.nativeRecorderCalls=[];evidence.droppedNativeRecorderCallRows=0;
+    page.on('console',message=>{
+      const row=recorderCallMetadata(message.text());if(!row)return;
+      if(evidence.nativeRecorderCalls.length>=128){evidence.droppedNativeRecorderCallRows++;return;}
+      evidence.nativeRecorderCalls.push(row);console.log('GENERATED_RECORDER_CALL '+JSON.stringify(row));
+    });
+  }
+  if (nativeTraceRequested) nativeTrace = await beginColdTrace(browser, page, join(proof, 'native-trace'), { audioDiagnostics: true, videoCaptureDiagnostics: sourceVideoTrace,
+    captureTaskDiagnostics:sourceTaskTrace,streamRecorderCalls:fullNativeTrace });
   if (long && !diagnostic && process.platform === 'darwin') {
     evidence.hostObservationCoverage = 'Independent approximately2s lock metadata monitor, with fresh reads before each launch/start; unobserved intervals are not proven unlocked';
     hostMonitor = monitorMacLock({ read: macHostState,

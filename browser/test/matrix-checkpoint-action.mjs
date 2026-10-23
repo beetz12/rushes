@@ -284,15 +284,18 @@ export async function main() {
       const outcome=await until(ended,performance.now()+5000);termination.childClose=outcome;return outcome;
     }});
   if(!checkpoints)checkpoints=lifetime.supervisorDeadlineExceeded?{receipts:[],errors:[{name:'CheckpointSettlementUnconfirmed'}]}:await until(settle(),performance.now()+50000);
-  const outcome=lifetime.outcome??{actualExit:null,signal:null,processError:matrixProcessError,closeObserved:false};let retirementActualExit;
+  const outcome=lifetime.outcome??{actualExit:null,signal:null,processError:matrixProcessError,closeObserved:false};let retirementActualExit,retirementFailure;
   try { await runFile(node, [checkpointPaths.join(workspace, 'verification/browser-retirement.mjs'), checkpointPaths.join(proof, 'owned-browser-pid.json'),
     checkpointPaths.join(proof, 'retirement.json')], { cwd: workspace, env: matrixEnvironment, timeout: 15000 }); retirementActualExit = 0; }
-  catch { retirementActualExit = 1; }
+  catch(error) { retirementActualExit = 1;retirementFailure={name:error.name,code:typeof error.code==='string'?error.code.slice(0,80):Number.isInteger(error.code)?error.code:undefined,
+    signal:typeof error.signal==='string'?error.signal.slice(0,32):undefined,killed:typeof error.killed==='boolean'?error.killed:undefined,
+    assertionCode:typeof error.stderr==='string'&&error.stderr.includes('ERR_ASSERTION')?'ERR_ASSERTION':undefined,
+    scope:'Failure classification; not the original command exit unless code is a numeric exit'}; }
   const ids=[startup.artifact.id,...checkpoints.receipts.map(row=>row.artifact.id)];
   const complete = !lifetime.supervisorDeadlineExceeded && outcome.closeObserved && outcome.actualExit === 0 && !outcome.signal && !outcome.processError && !checkpoints.errors.length && retirementActualExit === 0
     && new Set(ids).size===ids.length
     && ['normal-before-recovery','final-before-close'].every(stage => checkpoints.receipts.some(receipt => receipt.stage === stage));
-  await until(checkpointFiles.writeFile(checkpointPaths.join(proof, 'supervisor-result.json'), JSON.stringify({ ...outcome, ...checkpoints, retirementActualExit,startup,lifetime,termination,
+  await until(checkpointFiles.writeFile(checkpointPaths.join(proof, 'supervisor-result.json'), JSON.stringify({ ...outcome, ...checkpoints, retirementActualExit,retirementFailure,startup,lifetime,termination,
     scope: 'Original matrix verdict and independent retirement remain required', accepted: complete }, null, 2), { flag: 'wx', mode: 0o600 }),performance.now()+5000);
   return complete ? 0 : 1;
 }
