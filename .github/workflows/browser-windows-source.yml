@@ -12,13 +12,16 @@ permissions:
 jobs:
   source-and-untraced:
     if: github.event.repository.private == false
-    name: Windows source delivery and untraced recorder / Chrome ${{ matrix.chrome }}
+    name: Windows source delivery and untraced recorder / Chrome ${{ matrix.chrome }} / ${{ matrix.encoder }}
     runs-on: windows-latest
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         chrome: [current, previous]
+        # Each encoder variant uses a fresh VM; this is a cross-host contrast.
+        # Software launch success cannot qualify the normal browser profile.
+        encoder: [default, software-diagnostic]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -104,7 +107,7 @@ jobs:
         if: ${{ !cancelled() && steps.input.conclusion == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: windows-source-before-full-${{ matrix.chrome }}
+          name: windows-source-before-full-${{ matrix.chrome }}-${{ matrix.encoder }}
           retention-days: 1
           if-no-files-found: error
           path: |
@@ -158,7 +161,7 @@ jobs:
         if: ${{ !cancelled() && steps.raw_native.outcome != 'skipped' && steps.source.conclusion == 'success' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: windows-raw-before-full-${{ matrix.chrome }}
+          name: windows-raw-before-full-${{ matrix.chrome }}-${{ matrix.encoder }}
           retention-days: 1
           if-no-files-found: error
           path: |
@@ -185,12 +188,13 @@ jobs:
           RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
           RUSHES_M1_BROWSER_MODE: headful
           RUSHES_M1_VIDEO_BUFFER: default
+          RUSHES_M1_VIDEO_ENCODER: ${{ matrix.encoder }}
           RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-windows-untraced-full
       - name: Retain each actual diagnostic outcome and generated evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: windows-source-and-untraced-${{ matrix.chrome }}
+          name: windows-source-and-untraced-${{ matrix.chrome }}-${{ matrix.encoder }}
           retention-days: 1
           if-no-files-found: warn
           path: |
@@ -220,4 +224,5 @@ jobs:
             ${{ runner.temp }}/rushes-windows-untraced-full/retirement.json
             ${{ runner.temp }}/rushes-windows-untraced-full/owned-browser-pid.json
             ${{ runner.temp }}/rushes-windows-untraced-full/chrome-stderr.log
+            ${{ runner.temp }}/rushes-windows-untraced-full/supplied-reference.f32le
             ${{ runner.temp }}/rushes-windows-untraced-full/normal-stop/*.webm

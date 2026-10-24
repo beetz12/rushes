@@ -67,6 +67,6 @@ test('bounded raw diagnostic parser preserves only scoped scalar rows', () => {
   for (const change of [{ schema: 'rushes.independent-m1/1' }, { phase: 'arbitrary' }, { bytes: -1 }, { commandLine: 'private' }])
     assert.equal(parse({ ...row, ...change }), undefined);
   const schema = runner.match(/const evidence = \{ schema: (.*), startedAt:/)[1];
-  assert.equal(new Function('nativeEncoderControl', 'sourceOnly', 'return '+schema)(true, true), 'rushes.native-encoder-control/1');
-  assert.equal(new Function('nativeEncoderControl', 'sourceOnly', 'return '+schema)(false, true), 'rushes.source-load-control/1');
+  assert.equal(new Function('nativeEncoderControl', 'sourceOnly', 'softwareEncoderDiagnostic = false', 'return '+schema)(true, true), 'rushes.native-encoder-control/1');
+  assert.equal(new Function('nativeEncoderControl', 'sourceOnly', 'softwareEncoderDiagnostic = false', 'return '+schema)(false, true), 'rushes.source-load-control/1');
 });

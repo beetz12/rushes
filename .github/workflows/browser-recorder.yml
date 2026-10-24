@@ -32,7 +32,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [macos-latest, macos-26-intel, windows-latest]
         chrome: [current, previous]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -127,6 +127,7 @@ jobs:
             ${{ runner.temp }}/rushes-browser-proof/capture-cold-*.webm
             ${{ runner.temp }}/rushes-browser-proof/paused-sync-*.webm
             ${{ runner.temp }}/rushes-browser-proof/audio-retirement-*.webm
+            ${{ runner.temp }}/rushes-browser-proof/witness-stop-failure-*.webm
             ${{ runner.temp }}/rushes-browser-proof/normal-stop/*.webm
             ${{ runner.temp }}/rushes-browser-proof/*.log
             ${{ runner.temp }}/rushes-browser-proof/normal-stop/*.log

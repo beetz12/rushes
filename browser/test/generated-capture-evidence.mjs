@@ -4,17 +4,23 @@ import * as evidenceOS from 'node:os';
 import * as evidenceHash from 'node:crypto';
 
 // Called only by the isolated generated fixtures, before their decode assertions.
-export async function retainGeneratedCapture(directory, prefix, value) {
+export async function retainGeneratedCapture(directory, prefix, value, { signal, expiresAt } = {}) {
+  const current = () => { signal?.throwIfAborted(); if (expiresAt !== undefined && Date.now() >= expiresAt) throw new Error("Failure evidence deadline expired"); };
+  current();
   const location = directory ?? await evidenceFiles.mkdtemp(evidenceNames.join(evidenceOS.tmpdir(), 'rushes-generated-proof-'));
   await evidenceFiles.mkdir(location, { recursive: true });
+  current();
   const { retained, ...observations } = value, files = {};
   for (const [kind, encoded] of Object.entries(retained)) {
+    current();
     const bytes = Buffer.from(encoded, 'base64');
     const name = `${prefix}-${kind}.webm`;
-    await evidenceFiles.writeFile(evidenceNames.join(location, name), bytes);
+    await evidenceFiles.writeFile(evidenceNames.join(location, name), bytes, { signal });
+    current();
     files[kind] = { name, bytes: bytes.length, sha256: evidenceHash.createHash('sha256').update(bytes).digest('hex') };
   }
-  await evidenceFiles.writeFile(evidenceNames.join(location, `${prefix}.log`), JSON.stringify({ ...observations, files }, null, 2));
+  await evidenceFiles.writeFile(evidenceNames.join(location, `${prefix}.log`), JSON.stringify({ ...observations, files }, null, 2), { signal });
+  current();
   return location;
 }
 

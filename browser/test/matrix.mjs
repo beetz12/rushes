@@ -84,6 +84,14 @@ const nativeEncoderControl = process.env.RUSHES_M1_NATIVE_ENCODER_CONTROL === '1
 if (process.env.RUSHES_M1_NATIVE_ENCODER_CONTROL !== undefined && !nativeEncoderControl) throw new Error('Native encoder control option must be1');
 if (nativeEncoderControl && (!sourceOnly || sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl || nativeTraceRequested || checkpointRequested || sourceAudioFrames !== 128 || sourceAudioSink !== 'none'))
   throw new Error('Raw native encoder control requires the untraced8s native-reference128 source-only diagnostic');
+const videoEncoder = process.env.RUSHES_M1_VIDEO_ENCODER ?? 'default';
+if (!['default', 'software-diagnostic'].includes(videoEncoder)) throw new Error('Unknown matrix video encoder policy');
+const softwareEncoderDiagnostic = videoEncoder === 'software-diagnostic';
+if (softwareEncoderDiagnostic && (process.platform !== 'win32' || sourceMode !== 'native-reference' || long || reference
+  || sourceOnly || sourceControl || diagnostic || nativeEncoderControl || nativeTraceRequested || !checkpointRequested
+  || sourceAudioFrames !== 128 || sourceAudioSink !== 'none' || process.env.RUSHES_M1_BROWSER_MODE !== 'headful'
+  || (process.env.RUSHES_M1_VIDEO_BUFFER ?? 'default') !== 'default'))
+  throw new Error('Software encoder diagnosis requires the untraced supervised8s Windows full graph with None128/default buffers');
 const diagnosticDurationMs = allocationDiagnostic ? 180000 : 240000;
 const macLockRequired = allocationDiagnostic || (long && process.platform === 'darwin');
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -92,8 +100,9 @@ const startupObservationRequested = shouldObserveStartup({ checkpointRequested, 
 const proof = resolve(process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir(), 'rushes-m1-')));
 await mkdir(proof, { recursive: true, mode: 0o700 });
 const profile = join(proof, 'isolated-chrome-profile');
-const evidence = { schema: nativeEncoderControl ? 'rushes.native-encoder-control/1' : sourceOnly ? 'rushes.source-load-control/1' : 'rushes.independent-m1/1', startedAt: new Date().toISOString(),
+const evidence = { schema: softwareEncoderDiagnostic ? 'rushes.software-encoder-control/1' : nativeEncoderControl ? 'rushes.native-encoder-control/1' : sourceOnly ? 'rushes.source-load-control/1' : 'rushes.independent-m1/1', startedAt: new Date().toISOString(),
   node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, nativeEncoderControl, sourceAudioFrames, sourceAudioSink, sourceAudioTrace, sourceVideoTrace, sourceTaskTrace, sourceTaskWindowMs, checkpointRequested, startupObservationRequested, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
+  ...(softwareEncoderDiagnostic ? { softwareEncoderDiagnostic: true, videoEncoder, scope: 'Explicit software-encode full-graph diagnostic; default-product and physical-device acceptance excluded' } : {}),
   normalBackgroundFlags: true, source: 'native Chrome fake MJPEG with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; tab activation alone is not physical minimization',
@@ -255,7 +264,7 @@ async function launch(media) {
     options.delete('use-file-for-fake-video-capture'); options.delete('use-file-for-fake-audio-capture');
   }
   evidence.browserConfiguration = configureMatrixBrowser(options, { platform:process.platform, sourceMode,
-    browserMode:process.env.RUSHES_M1_BROWSER_MODE ?? 'headless', videoBuffer:process.env.RUSHES_M1_VIDEO_BUFFER ?? 'default' });
+    browserMode:process.env.RUSHES_M1_BROWSER_MODE ?? 'headless', videoBuffer:process.env.RUSHES_M1_VIDEO_BUFFER ?? 'default', videoEncoder });
   const args = [...options].map(([name, value]) => value === true ? `--${name}` : `--${name}=${value}`);
   args.push('about:blank');
   if (process.platform === 'linux' && process.getuid?.() === 0) args.push('--no-sandbox');

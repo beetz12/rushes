@@ -882,11 +882,23 @@ test('native-reference preparation retains the actual clock failure before a tak
 }));
 
 test('matrix witnesses freeze at Stop while later product finalization is parked', { timeout: 45000 }, async context => {
+  const testExpiresAt = Date.now() + 45000;
   const proof = await mkdtemp(`${tmpdir()}/rushes-witness-stop-`);
   const evidenceDirectory = process.env.RUSHES_M1_PROOF ?? proof; await mkdir(evidenceDirectory, { recursive: true });
   const events = [], reportFile = join(evidenceDirectory, 'witness-stop.log');
   await writeFile(reportFile, '[]', { flag: 'wx' });
-  const stage = async value => { events.push({ at: new Date().toISOString(), ...value }); await writeFile(reportFile, JSON.stringify(events, null, 2)); };
+  const stage = async value => {
+    if (value.retained) {
+      const { retained, expiresAt, ...metadata } = value;
+      const remaining = Math.min(2000, expiresAt - Date.now(), testExpiresAt - 6000 - Date.now());
+      if (remaining <= 0) throw new Error('Failure evidence has no remaining budget');
+      const deadline = AbortSignal.timeout(remaining);
+      await retainGeneratedCapture(evidenceDirectory, 'witness-stop-failure', { ...metadata, retentionExpiresAt: expiresAt, retained },
+        { signal: AbortSignal.any([context.signal, deadline]), expiresAt });
+      value = { ...metadata, stage: 'failure-capture-written' };
+    }
+    events.push({ at: new Date().toISOString(), ...value }); await writeFile(reportFile, JSON.stringify(events, null, 2));
+  };
   const media = await matrixMedia(proof, { signal: context.signal, onStage: (name, details) => stage({ stage: name, ...details }) });
   const witnessAudioSink = process.platform === 'darwin' ? 'default' : 'none';
   const argumentsForFakeSource = [`--use-file-for-fake-video-capture=${media.video}`];
@@ -901,7 +913,7 @@ test('matrix witnesses freeze at Stop while later product finalization is parked
   await stage({ stage: 'native-launched', pid: owned.process.pid });
   const page = await nativeBrowser.newPage(); await page.goto(`${origin}/capture-fixture`);
   await page.exposeFunction('witnessStage', stage);
-  const result = await page.evaluate(async sourceAudioSink => {
+  const result = await page.evaluate(async ({ sourceAudioSink, testExpiresAt }) => {
     const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
     let take, release, previewEndedAtBarrier = false;
     try {
@@ -933,11 +945,49 @@ test('matrix witnesses freeze at Stop while later product finalization is parked
       release(); const final = await finishing;
       return { first, second, final, previewEndedAtBarrier };
     } catch (error) {
-      try { await window.witnessStage({ stage: 'browser-failure', error: String(error), snapshot: take?.snapshot() ?? null }); }
+      // Preserve the original failure when its snapshot observation refuses.
+      let snapshot = null, snapshotAvailability = 'missing';
+      try { snapshot = take?.snapshot() ?? null; if (snapshot !== null) snapshotAvailability = 'available'; }
+      catch { snapshotAvailability = 'unavailable'; }
+      try { await window.witnessStage({ stage: 'browser-failure', error: String(error), snapshot, snapshotAvailability,
+        retention: { availability: 'pending', sourcePCM: 'missing; inline failure path does not export PCM' } }); }
       catch { /* Node owns abort/exit evidence when this page is already gone. */ }
+      // Terminal generated failure retention; no recorder/source operation.
+      try {
+        const state = snapshot?.manifest?.state ?? snapshot?.metrics?.states.at(-1)?.state;
+        if (take && ['complete', 'interrupted', 'failed'].includes(state)) {
+          const expiresAt = Math.min(Date.now() + 2000, testExpiresAt - 6000), retained = {};
+          const within = async operation => {
+            const remaining = expiresAt - Date.now();
+            if (remaining <= 0) throw new Error('Failure evidence deadline expired');
+            let timer;
+            try {
+              const value = await Promise.race([operation(), new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error('Failure evidence deadline expired')), remaining);
+              })]);
+              if (Date.now() >= expiresAt) throw new Error('Failure evidence deadline expired');
+              return value;
+            } finally { clearTimeout(timer); }
+          };
+          let bytes = 0;
+          for (const kind of ['screen', 'camera', 'microphone', 'tab-audio', 'composed']) {
+            const blob = await within(() => take.store.trackBlob(take.id, kind)); bytes += blob.size;
+            if (bytes > 32 * 1024 ** 2) throw new Error('Failure evidence exceeds32MiB');
+            const data = new Uint8Array(await within(() => blob.arrayBuffer())), pieces = [];
+            for (let offset = 0; offset < data.length; offset += 16384) pieces.push(String.fromCharCode(...data.subarray(offset, offset + 16384)));
+            retained[kind] = btoa(pieces.join(''));
+          }
+          await within(() => window.witnessStage({ stage: 'failure-capture', originalError: String(error), snapshot,
+            sourcePCM: { availability: 'missing', reason: 'Existing PCM export requires a separately coordinated download; not attempted in this bounded path.' },
+            expiresAt, retained }));
+        }
+      } catch {
+        // The original failure/pending-retention marker is already recorded.
+        // A missing completed capture log means retention was not acknowledged.
+      }
       throw error;
     } finally { release?.(); }
-  }, witnessAudioSink);
+  }, { sourceAudioSink: witnessAudioSink, testExpiresAt });
   await stage({ stage: 'before-assertions', result });
   assert.equal(result.previewEndedAtBarrier, true);
   const output = result.first.metrics.generatedAudioOutput;
