@@ -10,6 +10,31 @@ interface PartReceipt { partNumber: number; bytes: number; sha256: string }
 const ASSET_LIMIT = 2 * 1024 ** 3;
 const UPLOAD_MILLIS = 30 * 60 * 1000;
 const REQUEST_MILLIS = 30000;
+// The maximum declared chapter/summary metadata fits inside this response budget.
+const JSON_BYTES = 1024 * 1024;
+async function responseJSON(response: Response): Promise<unknown> {
+    if (!response.body) throw new ShareError('INVALID_RESPONSE', 'Hosted response is empty.');
+    const reader = response.body.getReader();
+    try {
+        const declared = response.headers.get('Content-Length');
+        if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > JSON_BYTES))
+            throw new ShareError('INVALID_RESPONSE', 'Hosted response exceeds the JSON byte limit.');
+        const blocks: Uint8Array[] = [];
+        let bytes = 0;
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            bytes += value.byteLength;
+            if (bytes > JSON_BYTES) throw new ShareError('INVALID_RESPONSE', 'Hosted response exceeds the JSON byte limit.');
+            blocks.push(value);
+        }
+        try { return JSON.parse(Buffer.concat(blocks, bytes).toString('utf8')) as unknown; }
+        catch { throw new ShareError('INVALID_RESPONSE', 'Hosted response is not valid JSON.'); }
+    } finally {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+    }
+}
 
 /** Main-process SDK for a linked account. Credentials never enter the upload store. */
 export class HostedProvider implements ShareProvider {
@@ -41,7 +66,7 @@ export class HostedProvider implements ShareProvider {
             }, body: body === undefined ? undefined : binary ? body as BodyInit : JSON.stringify(body), redirect: 'error', signal: bounded });
             this.cancelled(signal);
             if (!response.ok) throw new ShareError('HOSTED_HTTP', `Hosted request failed with HTTP ${response.status}.`, response.status);
-            const value: unknown = await response.json();
+            const value = await responseJSON(response);
             this.cancelled(signal);
             return value as T;
         } catch (error) {

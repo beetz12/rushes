@@ -119,3 +119,33 @@ test('lost reservation acknowledgement reuses a stable native take identity afte
   assert.deepEqual(f.state.calls.filter(value=>value.path==='/api/native/recordings').map(value=>value.body),[input,input]);
   await assert.rejects(()=>f.provider().reserve({...input,title:'Different immutable claim'}),error=>error.status===409);assert.equal(f.state.reservations.size,1);
 });
+
+const boundedSession = {user:{id:'bounded-user',tenantId:'bounded-tenant',email:'bounded@example.test',name:'Bounded Fixture'},deviceId:'bounded-device',expiresAt:'2099-01-01T00:00:00Z',canUpload:false,usage:{}};
+function responseStream(bytes, contentLength) {
+  let delivered=0,cancelled=false;
+  const stream=new ReadableStream({pull(controller){if(delivered===bytes.length){controller.close();return;}const end=Math.min(bytes.length,delivered+16384);controller.enqueue(bytes.slice(delivered,end));delivered=end;},cancel(){cancelled=true;}});
+  const response=new Response(stream,{headers:{'Content-Type':'application/json',...(contentLength===undefined?{}:{'Content-Length':String(contentLength)})}});
+  return {response,get delivered(){return delivered;},get cancelled(){return cancelled;}};
+}
+function boundedProvider(response) {return new HostedProvider({serviceURL:'https://bounded.example.test',credential},{fetch:async()=>response});}
+test('bounded JSON accepts a legitimate300KB response with or without declared length',async()=>{
+  const bytes=new TextEncoder().encode(' '.repeat(300000)+JSON.stringify(boundedSession));
+  for(const length of [undefined,bytes.length]){const f=responseStream(bytes,length);assert.equal((await boundedProvider(f.response).setupCheck()).ok,true);assert.equal(f.delivered,bytes.length);}
+});
+test('bounded JSON refuses2MiB chunked content and cancels before consuming the entire body',async()=>{
+  const bytes=new TextEncoder().encode(' '.repeat(2*1024**2)+JSON.stringify(boundedSession)),f=responseStream(bytes);
+  await assert.rejects(()=>boundedProvider(f.response).setupCheck(),error=>error.code==='INVALID_RESPONSE');assert.equal(f.cancelled,true);assert.ok(f.delivered<bytes.length,{delivered:f.delivered,total:bytes.length});
+});
+test('bounded JSON rejects declared oversize before reading its small body and cancels it',async()=>{
+  const bytes=new TextEncoder().encode(JSON.stringify(boundedSession)),f=responseStream(bytes,2*1024**2);
+  await assert.rejects(()=>boundedProvider(f.response).setupCheck(),error=>error.code==='INVALID_RESPONSE');assert.equal(f.cancelled,true);
+});
+test('bounded JSON measures actual bytes even when the declared length understates2MiB content',async()=>{
+  const bytes=new TextEncoder().encode(' '.repeat(2*1024**2)+JSON.stringify(boundedSession)),f=responseStream(bytes,100);
+  await assert.rejects(()=>boundedProvider(f.response).setupCheck(),error=>error.code==='INVALID_RESPONSE');assert.equal(f.cancelled,true);assert.ok(f.delivered<bytes.length);
+});
+test('bounded JSON accepts the maximum declared chapter and summary metadata even with JSON escaping',async()=>{
+  const sha256='a'.repeat(64),file=`video-${sha256.slice(0,8)}.mp4`,manifest={schema:'rushes.share/1',id:SHARE,status:'ready',createdAt:'2026-10-24T00:00:00Z',title:'\u0001'.repeat(160),summary:'\u0001'.repeat(5000),durationMs:600000,chapters:Array.from({length:500},()=>({startMs:0,title:'\u0001'.repeat(300)})),video:{file,bytes:1,width:1920,height:1080}};
+  const detail={id:ID,url:`https://bounded.example.test/s/${SHARE}`,state:'ready',manifest,video:{kind:'video',file,bytes:1,sha256}},bytes=new TextEncoder().encode(JSON.stringify(detail));assert.ok(bytes.length>900000&&bytes.length<1024**2);
+  const value=await boundedProvider(responseStream(bytes,bytes.length).response).get(ID);assert.equal(value.manifest.chapters.length,500);assert.equal(value.manifest.summary.length,5000);
+});
