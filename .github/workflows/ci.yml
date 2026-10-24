@@ -75,6 +75,8 @@ jobs:
             ${{ runner.temp }}/rushes-browser-proof/witness-stop.log
             ${{ runner.temp }}/rushes-browser-proof/paused-sync.log
             ${{ runner.temp }}/rushes-browser-proof/paused-sync-*.webm
+            ${{ runner.temp }}/rushes-browser-proof/audio-retirement-*.webm
+            ${{ runner.temp }}/rushes-browser-proof/audio-retirement-*.log
             ${{ runner.temp }}/rushes-browser-ui/*.webm
             ${{ runner.temp }}/rushes-browser-ui/*.json
       - name: Collect only owned engine crash stack metadata

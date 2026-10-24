@@ -4,13 +4,22 @@ import assert from 'node:assert/strict';
 import { prepareMatrix } from './matrix-fixture.mjs';
 
 const fixture = await sourceFiles.readFile(new URL('./matrix-fixture.mjs', import.meta.url), 'utf8');
-const begin = fixture.indexOf('  if (sourceOnly) {\n    const pauses = []');
-const end = fixture.indexOf('  const session = await createCaptureSession(', begin);
-assert.ok(begin >= 0 && end > begin);
+function sourceOnlyBody(text) {
+  text = text.replace(/\r\n/g, '\n');
+  const begin = text.indexOf('  if (sourceOnly) {\n    const pauses = []');
+  const end = text.indexOf('  const session = await createCaptureSession(', begin);
+  assert.ok(begin >= 0 && end > begin);
+  return text.slice(begin, end);
+}
 const actualControl = new (Object.getPrototypeOf(async function() {}).constructor)('environment',
   `const { sourceOnly, metrics, performance, id, document, navigator, source, screen, camera, microphone,
     audio, sourceObserverTrack, sourceWorker, toneContext, nativeRecorder, nativeWorker, suppliedReference,
-    retireObservations } = environment; ${fixture.slice(begin, end)} throw new Error('Entered product admission');`);
+    retireObservations } = environment; ${sourceOnlyBody(fixture)} throw new Error('Entered product admission');`);
+
+test('source-only extraction keeps the same actual body for LF and Windows CRLF inputs', () => {
+  const lf = fixture.replace(/\r\n/g, '\n');
+  assert.equal(sourceOnlyBody(lf.replace(/\n/g, '\r\n')), sourceOnlyBody(lf));
+});
 
 async function control({ retirement = Promise.resolve() } = {}) {
   let now = 100, retired = 0, ended = 0, contextClosed = 0;

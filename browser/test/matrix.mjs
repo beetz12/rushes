@@ -92,7 +92,7 @@ const evidence = { schema: sourceOnly ? 'rushes.source-load-control/1' : 'rushes
   diagnostic, allocationDiagnostic, samples: [], actions: [], checks: [], failures: [], browserStderr: [], lifecycle: [], hostTimeline: [], nativeAllocationSamples: [], fixturePages: [], appRequests: [] };
 evidence.fileHashes = {};
 for (const filename of ['test/matrix.mjs', 'test/matrix-browser-options.mjs', 'test/matrix-fixture.mjs', 'test/matrix-media.mjs', 'test/matrix-source.worker.mjs', 'test/matrix-native-observation.mjs', 'test/matrix-host-state.mjs', 'test/matrix-calibration.mjs', 'test/matrix-tone.worklet.mjs', 'test/media-coordinates.mjs', 'test/decoded-media.mjs', 'test/synchronized-media.mjs',
-  'test/matrix-source-qualification.mjs', 'test/native-reference-clock.mjs', 'test/native-reference-witness.mjs', 'test/native-reference-analysis.mjs', 'src/capture/index.ts', 'src/capture/audio.ts', 'src/capture/audio-frame.ts', 'src/capture/audio.worker.ts', 'src/capture/pcm-mixer.ts', 'src/capture/composition.worker.ts', 'src/capture/storage.ts'])
+  'test/matrix-source-qualification.mjs', 'test/native-reference-clock.mjs', 'test/native-reference-witness.mjs', 'test/native-reference-analysis.mjs', 'src/capture/index.ts', 'src/capture/audio.ts', 'src/capture/audio-frame.ts', 'src/capture/audio.worker.ts', 'src/capture/audio-mixer.ts', 'src/capture/pcm-mixer.ts', 'src/capture/composition.worker.ts', 'src/capture/storage.ts'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 for (const filename of ['test/native-clock-seed.mjs', 'test/cold-trace.mjs', 'test/startup-metadata.mjs'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
@@ -251,6 +251,9 @@ async function launch(media) {
     : arg.startsWith('--use-file-') ? arg.split('=')[0] + '=<synthetic file>' : arg);
   assert.ok(args.every(arg => !/disable-(background|renderer-backgrounding|hang-monitor)/.test(arg)));
   processHandle = spawn(executable, args, { detached: process.platform !== 'win32', stdio: ['ignore', 'ignore', 'pipe'] });
+  const ownedChild = processHandle, ownedPid = ownedChild.pid;
+  ownedChild.once('exit', (code, signal) => evidence.lifecycle.push({ name: 'owned-browser-exit',
+    pid: ownedPid, code, signal, at: new Date().toISOString() }));
   const stderr = [];
   await writeFile(join(proof, 'owned-browser-pid.json'), JSON.stringify({ pid: processHandle.pid, profile }));
   processHandle.stderr.on('data', data => {
@@ -266,12 +269,14 @@ async function launch(media) {
   }
   if (!endpoint) throw new Error('Isolated Chrome did not start its headless test endpoint.');
   browser = await chromium.connectOverCDP(endpoint, { timeout: 15000 }); evidence.chrome = browser.version();
+  browser.once('disconnected', () => evidence.lifecycle.push({ name: 'browser-disconnected', pid: ownedPid, at: new Date().toISOString() }));
   const context = browser.contexts()[0]; await context.setOffline(false);
   context.on('request', request => {
     const pathname = new URL(request.url()).pathname;
     if (pathname === '/src/main.tsx' || pathname.startsWith('/api/')) evidence.appRequests.push(pathname);
   });
   page = context.pages()[0] || await context.newPage();
+  page.once('close', () => evidence.lifecycle.push({ name: 'page-close', pid: ownedPid, at: new Date().toISOString() }));
   const lifecycle = await context.newCDPSession(page);
   lifecycle.on('Page.lifecycleEvent', event => evidence.lifecycle.push({ at: new Date().toISOString(), ...event }));
   await lifecycle.send('Page.enable'); await lifecycle.send('Page.setLifecycleEventsEnabled', { enabled: true });

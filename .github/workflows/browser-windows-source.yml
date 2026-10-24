@@ -1,0 +1,128 @@
+name: browser-windows-source
+on:
+  push:
+    branches: [codex/browser-production-20261022]
+    paths:
+      - '.github/workflows/browser-windows-source.yml'
+      - 'browser/test/matrix.mjs'
+      - 'browser/test/matrix-fixture.mjs'
+      - 'scripts/install-test-chrome.mjs'
+permissions:
+  contents: read
+jobs:
+  source-and-untraced:
+    if: github.event.repository.private == false
+    name: Windows source delivery and untraced recorder / Chrome ${{ matrix.chrome }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        chrome: [current, previous]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+      - run: npm --prefix browser ci --no-audit --no-fund
+      - run: node scripts/install-test-chrome.mjs --generation ${{ matrix.chrome }} --destination "${{ runner.temp }}/rushes-test-chrome"
+      - run: choco install ffmpeg --no-progress -y
+      - run: |
+          ffmpeg -version
+          ffprobe -version
+      - name: Build the shared browser
+        id: build
+        run: npm --prefix browser run build
+      - name: Prepare identical generated input and preserve the existing supervisor runtime
+        id: input
+        run: |
+          @'
+          import * as files from 'node:fs/promises';
+          import { join } from 'node:path';
+          import { createHash } from 'node:crypto';
+          import assert from 'node:assert/strict';
+          import { matrixMedia } from './browser/test/matrix-media.mjs';
+          const root = join(process.env.RUNNER_TEMP, 'rushes-windows-source-input');
+          await files.mkdir(root, {recursive:true});
+          const media = await matrixMedia(root), pins = {};
+          for (const [kind, path] of Object.entries(media))
+            pins[kind] = {path, sha256:createHash('sha256').update(await files.readFile(path)).digest('hex')};
+          assert.equal(pins.video.sha256, 'd22a5584ff810ab9483cc69e93f7b7f63812a497ca01ffeb5902bb9d22d239dc');
+          assert.equal(pins.audio.sha256, '5631af0475cc31f063c9500f65bb085ea8f75158d12609ba737490acc6aecee7');
+          await files.writeFile(join(root, 'pins.json'), JSON.stringify(pins, null, 2), {flag:'wx'});
+          await files.appendFile(process.env.GITHUB_ENV,
+            'RUSHES_M1_SOURCE_FILE='+media.video+'\nRUSHES_MATRIX_NODE='+process.execPath+
+            '\nRUSHES_MATRIX_PS_MODULE_PATH='+(process.env.PSModulePath ?? '')+'\n');
+          '@ | node --input-type=module
+      - name: Prepare the existing byte-pinned artifact uploader
+        run: node .github/actions/matrix-checkpoint/prepare-upload.mjs
+      - name: Source-only eight-second observation and independent retirement
+        id: source
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_NATIVE_SOURCE_ONLY: '1'
+          RUSHES_M1_SOURCE_AUDIO_SINK: none
+          RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+          RUSHES_M1_BROWSER_MODE: headful
+          RUSHES_M1_VIDEO_BUFFER: default
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-windows-source-only
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          node browser/test/matrix.mjs
+          $rushesSourceExit = $LASTEXITCODE
+          if ($null -eq $rushesSourceExit) { throw 'Source command exit is unknown' }
+          Set-Content -Path "$env:RUSHES_M1_PROOF/command.exit" -Value $rushesSourceExit
+          $rushesRetirementExit = 1
+          if (Test-Path "$env:RUSHES_M1_PROOF/owned-browser-pid.json") {
+            node verification/browser-retirement.mjs "$env:RUSHES_M1_PROOF/owned-browser-pid.json" "$env:RUSHES_M1_PROOF/retirement.json"
+            $rushesRetirementExit = $LASTEXITCODE
+            if ($null -eq $rushesRetirementExit) { throw 'Source retirement exit is unknown' }
+          }
+          if ($rushesRetirementExit -eq 0) {
+            $rushesRetired = Get-Content -Raw "$env:RUSHES_M1_PROOF/retirement.json" | ConvertFrom-Json
+            if (!$rushesRetired.processAbsent -or !$rushesRetired.profileAbsent -or $rushesRetired.positiveControl -le 0) {
+              $rushesRetirementExit = 1
+            }
+          }
+          Set-Content -Path "$env:RUSHES_M1_PROOF/retirement.exit" -Value $rushesRetirementExit
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "retired=$rushesRetirementExit"
+          if ($rushesSourceExit -ne 0) { exit $rushesSourceExit }
+          exit $rushesRetirementExit
+      # No trace: its removal and the source-first order remain diagnostic confounds.
+      # A failed source observation may be followed only after actual browser retirement.
+      - name: Full untraced short recorder with the existing supervised first-error collector
+        if: ${{ !cancelled() && steps.input.conclusion == 'success' && steps.source.outputs.retired == '0' }}
+        timeout-minutes: 8
+        uses: ./.github/actions/matrix-checkpoint
+        env:
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_SOURCE_AUDIO_SINK: none
+          RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+          RUSHES_M1_BROWSER_MODE: headful
+          RUSHES_M1_VIDEO_BUFFER: default
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-windows-untraced-full
+      - name: Retain each actual diagnostic outcome and generated evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-source-and-untraced-${{ matrix.chrome }}
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/rushes-windows-source-input/pins.json
+            ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-test-chrome/windows-sandbox-access.json
+            ${{ runner.temp }}/rushes-windows-source-only/metrics.json
+            ${{ runner.temp }}/rushes-windows-source-only/command.exit
+            ${{ runner.temp }}/rushes-windows-source-only/retirement.exit
+            ${{ runner.temp }}/rushes-windows-source-only/retirement.json
+            ${{ runner.temp }}/rushes-windows-source-only/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-windows-source-only/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-windows-source-only/chrome-stderr.log
+            ${{ runner.temp }}/rushes-windows-untraced-full/metrics.json
+            ${{ runner.temp }}/rushes-windows-untraced-full/supervisor-*.json
+            ${{ runner.temp }}/rushes-windows-untraced-full/retirement.json
+            ${{ runner.temp }}/rushes-windows-untraced-full/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-windows-untraced-full/chrome-stderr.log
+            ${{ runner.temp }}/rushes-windows-untraced-full/normal-stop/*.webm

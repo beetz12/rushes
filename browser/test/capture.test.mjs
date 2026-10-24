@@ -1059,9 +1059,17 @@ for (const phase of ['after-stop', 'before-stop']) test(`audio source retirement
       if (heldError) { replaying = true; for (const data of heldTerminal) audioPort.dispatchEvent(new MessageEvent('message', { data })); }
       const manifest = await finishing;
       const decoded = phase === 'after-stop' ? await inspectAudio(await value.store.trackBlob(value.id, 'composed')) : undefined;
-      return { manifest, terminal, injected, outputWasLive, decoded, delayedPreStopError: !!heldError };
+      const retained = {};
+      if (phase === 'after-stop') for (const kind of ['composed', 'microphone', 'tab-audio']) {
+        const bytes = new Uint8Array(await (await value.store.trackBlob(value.id, kind)).arrayBuffer()), pieces = [];
+        for (let offset = 0; offset < bytes.length; offset += 16384) pieces.push(String.fromCharCode(...bytes.subarray(offset, offset + 16384)));
+        retained[kind] = btoa(pieces.join(''));
+      }
+      return { manifest, terminal, injected, outputWasLive, decoded, retained, delayedPreStopError: !!heldError };
     } finally { if (value) { await value.session.cancel(); await value.cleanup(); } globalThis.MessageChannel = NativeChannel; globalThis.MediaRecorder = NativeRecorder; }
   }, phase);
+  if (phase === 'after-stop') await retainGeneratedCapture(process.env.RUSHES_M1_PROOF, `audio-retirement-${phase}`, result);
+  delete result.retained;
   console.log('Audio Stop boundary', JSON.stringify({ phase, state: result.manifest.state, terminal: result.terminal, injected: result.injected, outputWasLive: result.outputWasLive }));
   if (phase === 'after-stop') {
     assert.equal(result.manifest.state, 'complete'); assert.equal(result.terminal, 'stopped'); assert.equal(result.injected, 0); assert.equal(result.outputWasLive, true);

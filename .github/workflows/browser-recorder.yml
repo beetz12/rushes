@@ -124,6 +124,7 @@ jobs:
             ${{ runner.temp }}/rushes-browser-proof/metrics.json
             ${{ runner.temp }}/rushes-browser-proof/capture-cold-*.webm
             ${{ runner.temp }}/rushes-browser-proof/paused-sync-*.webm
+            ${{ runner.temp }}/rushes-browser-proof/audio-retirement-*.webm
             ${{ runner.temp }}/rushes-browser-proof/normal-stop/*.webm
             ${{ runner.temp }}/rushes-browser-proof/*.log
             ${{ runner.temp }}/rushes-browser-proof/normal-stop/*.log
