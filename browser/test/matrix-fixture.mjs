@@ -413,6 +413,11 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
       throw error;
     }
   }
+  if (startupObservation) {
+    const { cameraSourceAlreadyBounded } = await import('/src/capture/camera-source-limits.ts');
+    startup({ kind: 'source-limits-proof', screenEligible: cameraSourceAlreadyBounded(screen.getVideoTracks()[0]),
+      cameraEligible: cameraSourceAlreadyBounded(camera.getVideoTracks()[0]) });
+  }
   const session = await createCaptureSession({ id, title: 'Independent synthetic M1', mode: 'screen-camera',
     screen, camera, microphone, store, persistent: false, backupFolder: backup,
     bubble: { x: 1030, y: 490, size: 180 }, onState: state => {

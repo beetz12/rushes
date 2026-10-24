@@ -2,6 +2,7 @@ import { BROWSER_LIMITS, type BubblePlacement, type CaptureInputs, type CaptureS
   type DraftManifest, type DraftSnapshot, type TrackKind, type WarningDetails, type EncoderStartFailureDetails } from '../contracts';
 
 import { composedAudio } from './audio';
+import { cameraSourceAlreadyBounded } from './camera-source-limits';
 
 type FrameProcessor = { readable: ReadableStream<VideoFrame> };
 type FrameGenerator = MediaStreamTrack & { writable: WritableStream<VideoFrame> };
@@ -102,6 +103,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
   try {
     initialBubble = boundedBubble(inputs.bubble ?? { x: 1040, y: 500, size: 180 });
     for (const track of [screen, camera]) if (track) {
+      if (cameraSourceAlreadyBounded(track)) continue;
       await track.applyConstraints({ width: { max: BROWSER_LIMITS.width }, height: { max: BROWSER_LIMITS.height },
         frameRate: { max: BROWSER_LIMITS.fps } });
     }

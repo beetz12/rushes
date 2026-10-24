@@ -1,4 +1,6 @@
 import { fixtureDocument } from './fixture-document.mjs';
+import { macForegroundConfiguration, ownedForegroundBeforeMedia } from './mac-foreground.mjs';
+import { withoutCredentials } from './matrix-checkpoint-action.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -85,6 +87,7 @@ if (nativeEncoderControl && (!sourceOnly || sourceMode !== 'native-reference' ||
 const diagnosticDurationMs = allocationDiagnostic ? 180000 : 240000;
 const macLockRequired = allocationDiagnostic || (long && process.platform === 'darwin');
 const root = fileURLToPath(new URL('..', import.meta.url));
+const macForeground = macForegroundConfiguration(process.env);
 const startupObservationRequested = shouldObserveStartup({ checkpointRequested, fullNativeTrace, platform: process.platform, sourceMode, sourceOnly, sourceControl, diagnostic, long, reference });
 const proof = resolve(process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir(), 'rushes-m1-')));
 await mkdir(proof, { recursive: true, mode: 0o700 });
@@ -102,10 +105,12 @@ for (const filename of ['test/matrix.mjs', 'test/matrix-browser-options.mjs', 't
 for (const filename of ['test/native-clock-seed.mjs', 'test/cold-trace.mjs', 'test/startup-metadata.mjs'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 evidence.fileHashes['test/matrix-checkpoint-action.mjs'] = createHash('sha256').update(await readFile(join(root, 'test/matrix-checkpoint-action.mjs'))).digest('hex');
-for (const filename of ['test/matrix-native-encoder-control.mjs', 'test/fixture-document.mjs'])
+for (const filename of ['test/matrix-native-encoder-control.mjs', 'test/fixture-document.mjs', 'src/capture/camera-source-limits.ts'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 evidence.fileHashes['src/capture/cadence.ts'] = createHash('sha256').update(await readFile(join(root, 'src/capture/cadence.ts'))).digest('hex');
 evidence.fileHashes['test/native-optical-roi.mjs'] = createHash('sha256').update(await readFile(join(root, 'test/native-optical-roi.mjs'))).digest('hex');
+for (const file of ['test/mac-foreground.mjs', 'test/OwnedMacApplication.swift'])
+  evidence.fileHashes[file] = createHash('sha256').update(await readFile(join(root, file))).digest('hex');
 evidence.lifecycle.push({ name: 'decode-tool-identity-start', at: new Date().toISOString() });
 await writeFile(join(proof, 'metrics.json'), JSON.stringify(evidence, null, 2));
 evidence.ffmpeg = (await run(process.env.RUSHES_FFMPEG || 'ffmpeg', ['-version'], { timeout: 5000 })).stdout.split('\n')[0];
@@ -257,7 +262,8 @@ async function launch(media) {
   evidence.launchArguments = args.map(arg => arg.startsWith('--user-data-dir=') ? '--user-data-dir=<isolated proof>'
     : arg.startsWith('--use-file-') ? arg.split('=')[0] + '=<synthetic file>' : arg);
   assert.ok(args.every(arg => !/disable-(background|renderer-backgrounding|hang-monitor)/.test(arg)));
-  processHandle = spawn(executable, args, { detached: process.platform !== 'win32', stdio: ['ignore', 'ignore', 'pipe'] });
+  processHandle = spawn(executable, args, { detached: process.platform !== 'win32', stdio: ['ignore', 'ignore', 'pipe'],
+    ...(macForeground ? { env: withoutCredentials(process.env) } : {}) });
   const ownedChild = processHandle, ownedPid = ownedChild.pid;
   ownedChild.once('exit', (code, signal) => evidence.lifecycle.push({ name: 'owned-browser-exit',
     pid: ownedPid, code, signal, at: new Date().toISOString() }));
@@ -292,6 +298,24 @@ async function launch(media) {
   const fixturePage = { title: await page.title(), appRootCount: await page.locator('#root').count() };
   evidence.fixturePages.push(fixturePage);
   assert.equal(fixturePage.title, 'Independent Rushes synthetic M1'); assert.equal(fixturePage.appRootCount, 0);
+  if (macForeground) {
+    const expiresAt = Date.now() + 18000;
+    const timely = () => assert.ok(Date.now() < expiresAt, 'Mac foreground absolute deadline expired');
+    const geometry = async () => bounded((async () => {
+      timely(); const { windowId } = await lifecycle.send('Browser.getWindowForTarget');
+      timely(); const { bounds } = await lifecycle.send('Browser.getWindowBounds', { windowId });
+      timely(); const viewport = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, scale: devicePixelRatio }));
+      timely(); return { bounds, viewport };
+    })(), Math.max(1, Math.min(2000, expiresAt - Date.now())), 'Owned Mac window geometry');
+    const receipt = await bounded(ownedForegroundBeforeMedia({ ...macForeground, expiresAt, child: ownedChild,
+      owner: { pid: ownedPid, parentPID: process.pid, executable, profile },
+      pinnedExecutable: executable, pinnedExecutableSHA256: evidence.browserExecutable.sha256,
+      pinnedProfile: profile, geometry, persist: async value => {
+        evidence.macForeground = value;
+        await writeFile(join(proof, 'mac-foreground.json'), JSON.stringify(value, null, 2)); await save();
+      } }), 20000, 'Mac pre-media foreground control');
+    if (Date.now() >= expiresAt || !receipt.admitted) throw new Error(`Mac foreground control unpowered or unavailable: ${receipt.reason}`);
+  }
   return context;
 }
 async function killAbruptly() {

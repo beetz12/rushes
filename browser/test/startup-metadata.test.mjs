@@ -175,3 +175,21 @@ test('first-frame startup rows reject unknown roles, unbounded format strings an
   for (const change of [{ role: 'arbitrary' }, { format: '/private/path' }, { pixelBytes: [1, 2, 3] }])
     assert.equal(startupMetadata(startupPrefix + JSON.stringify({ ...row, ...change })), undefined);
 });
+
+test('source-limit eligibility evidence accepts booleans only and cannot contain identities or settings', () => {
+  const proof = { ...base, kind: 'source-limits-proof', screenEligible: true, cameraEligible: false };
+  assert.deepEqual(startupMetadata(line(proof)), proof);
+  for (const change of [{ screenEligible: 'true' }, { cameraEligible: undefined }, { cameraEligible: null },
+    { deviceId: 'private' }, { settings: { width: 1280 } }, { track: {} }])
+    assert.equal(startupMetadata(line({ ...proof, ...change })), undefined);
+});
+test('source-limit evidence shares the bounded sequence without replacing the first warning', () => {
+  const evidence = { startupObservations: [], invalidStartupObservations: 0, droppedStartupObservations: 0,
+    nextStartupObservationIndex: 0, startupObservationSequenceErrors: 0 };
+  const proof = { ...base, kind: 'source-limits-proof', screenEligible: true, cameraEligible: true };
+  const first = { ...warning, index: 1 }, later = { ...warning, index: 2, message: 'later failure' };
+  for (const row of [proof, first, later]) collectStartupMetadata(evidence, line(row));
+  assert.deepEqual(evidence.startupObservations, [proof, first, later]);
+  assert.deepEqual(evidence.firstStartupWarning, first); assert.equal(evidence.nextStartupObservationIndex, 3);
+  assert.equal(evidence.startupObservationSequenceErrors, 0); assert.equal(evidence.invalidStartupObservations, 0);
+});

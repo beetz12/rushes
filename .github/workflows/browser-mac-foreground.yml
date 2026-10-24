@@ -1,0 +1,162 @@
+name: browser-mac-foreground-source
+on:
+  push:
+    branches: [codex/browser-production-20261022]
+    paths:
+      - '.github/workflows/browser-mac-foreground.yml'
+      - 'browser/test/mac-foreground*'
+      - 'browser/test/OwnedMacApplication.swift'
+      - 'browser/test/matrix.mjs'
+      - 'browser/test/matrix-checkpoint-action.mjs'
+      - 'scripts/build-mac-app-helper.mjs'
+permissions:
+  contents: read
+jobs:
+  source-pair:
+    if: ${{ github.repository == 'beetz12/rushes' && github.event.repository.private == false }}
+    runs-on: macos-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        shell: bash
+    env:
+      RUSHES_M1_SOURCE_MODE: native-reference
+      RUSHES_M1_NATIVE_SOURCE_ONLY: '1'
+      RUSHES_M1_SOURCE_AUDIO_SINK: default
+      RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+      RUSHES_M1_BROWSER_MODE: headful
+      RUSHES_M1_VIDEO_BUFFER: cpu
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.0
+      - run: npm --prefix browser ci --no-audit --no-fund
+      - run: node scripts/install-test-chrome.mjs --generation current --destination "${{ runner.temp }}/rushes-foreground-chrome"
+      - run: brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+      - run: node scripts/build-mac-app-helper.mjs "${{ runner.temp }}/rushes-foreground-helper"
+      - name: Prepare one immutable generated input
+        id: media
+        env:
+          RUSHES_INPUT: ${{ runner.temp }}/rushes-foreground-input
+        run: |
+          node --input-type=module <<'JS'
+          import * as fs from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { matrixMedia } from './browser/test/matrix-media.mjs';
+          await fs.mkdir(process.env.RUSHES_INPUT, { mode: 0o700 });
+          const input = await matrixMedia(process.env.RUSHES_INPUT), pins = {};
+          for (const [kind, path] of Object.entries(input))
+            pins[kind] = { path, sha256: createHash('sha256').update(await fs.readFile(path)).digest('hex') };
+          await fs.writeFile(`${process.env.RUSHES_INPUT}/pins.json`, JSON.stringify(pins), { flag: 'wx' });
+          if (pins.video.sha256 !== 'd22a5584ff810ab9483cc69e93f7b7f63812a497ca01ffeb5902bb9d22d239dc'
+            || pins.audio.sha256 !== '5631af0475cc31f063c9500f65bb085ea8f75158d12609ba737490acc6aecee7') throw new Error('Generated input differs');
+          JS
+          echo "RUSHES_M1_SOURCE_FILE=${{ runner.temp }}/rushes-foreground-input/timecoded.mjpeg" >> "$GITHUB_ENV"
+      - name: Actual inactive baseline source-only8s
+        id: baseline
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_MAC_FOREGROUND_HELPER: ${{ runner.temp }}/rushes-foreground-helper/manifest.json
+          RUSHES_M1_MAC_FOREGROUND: baseline
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-foreground-baseline
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node --input-type=module > "$RUSHES_M1_PROOF/command.log" 2>&1 <<'JS'
+          import { withoutCredentials } from './browser/test/matrix-checkpoint-action.mjs';
+          const clean = withoutCredentials(process.env);
+          for (const key of Object.keys(process.env)) if (!(key in clean)) delete process.env[key];
+          await import('./browser/test/matrix.mjs');
+          JS
+          verdict=$?
+          set -e
+          echo "$verdict" > "$RUSHES_M1_PROOF/command.exit"
+          set +e
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          retirement=$?
+          set -e
+          echo "$retirement" > "$RUSHES_M1_PROOF/retirement.exit"
+          if [ "$retirement" -ne 0 ]; then exit "$retirement"; fi
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          node --input-type=module <<'JS'
+          import { readFile, appendFile } from 'node:fs/promises';
+          const r = JSON.parse(await readFile(`${process.env.RUSHES_M1_PROOF}/mac-foreground.json`, 'utf8'));
+          await appendFile(process.env.GITHUB_OUTPUT, `inactive=${r.admitted === true && r.baselineInactive === true && r.mode === 'baseline'}\n`);
+          JS
+          exit "$verdict"
+      - name: Finalize baseline evidence before foreground admission
+        id: baseline_proof
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mac-foreground-inactive-baseline
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/rushes-foreground-chrome/release.json
+            ${{ runner.temp }}/rushes-foreground-helper/manifest.json
+            ${{ runner.temp }}/rushes-foreground-input/pins.json
+            ${{ runner.temp }}/rushes-foreground-baseline/metrics.json
+            ${{ runner.temp }}/rushes-foreground-baseline/mac-foreground.json
+            ${{ runner.temp }}/rushes-foreground-baseline/command.*
+            ${{ runner.temp }}/rushes-foreground-baseline/retirement.*
+            ${{ runner.temp }}/rushes-foreground-baseline/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-foreground-baseline/supplied-reference.f32le
+      # Same-host serial order and warm state remain confounders. No full take
+      # follows this source-only contrast, and the baseline verdict is retained.
+      - name: One measured foreground transition source-only8s
+        if: ${{ !cancelled() && steps.baseline.outputs.retired == 'true' && steps.baseline.outputs.inactive == 'true' && steps.baseline_proof.conclusion == 'success' && steps.baseline_proof.outputs.artifact-id != '' && steps.baseline_proof.outputs.artifact-digest != '' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_MAC_FOREGROUND_HELPER: ${{ runner.temp }}/rushes-foreground-helper/manifest.json
+          RUSHES_M1_MAC_FOREGROUND: foreground
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-foreground-active
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node --input-type=module > "$RUSHES_M1_PROOF/command.log" 2>&1 <<'JS'
+          import { withoutCredentials } from './browser/test/matrix-checkpoint-action.mjs';
+          const clean = withoutCredentials(process.env);
+          for (const key of Object.keys(process.env)) if (!(key in clean)) delete process.env[key];
+          await import('./browser/test/matrix.mjs');
+          JS
+          verdict=$?
+          set -e
+          echo "$verdict" > "$RUSHES_M1_PROOF/command.exit"
+          set +e
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          retirement=$?
+          set -e
+          echo "$retirement" > "$RUSHES_M1_PROOF/retirement.exit"
+          if [ "$retirement" -ne 0 ]; then exit "$retirement"; fi
+          exit "$verdict"
+      - name: Confirm immutable inputs
+        if: ${{ !cancelled() && steps.media.conclusion == 'success' }}
+        env:
+          RUSHES_INPUT: ${{ runner.temp }}/rushes-foreground-input
+        run: |
+          node --input-type=module <<'JS'
+          import * as fs from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import assert from 'node:assert/strict';
+          const pins = JSON.parse(await fs.readFile(`${process.env.RUSHES_INPUT}/pins.json`, 'utf8'));
+          for (const r of Object.values(pins)) assert.equal(createHash('sha256').update(await fs.readFile(r.path)).digest('hex'), r.sha256);
+          JS
+      - name: Retain both source-only arms including refusal receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mac-foreground-source-pair
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/rushes-foreground-chrome/release.json
+            ${{ runner.temp }}/rushes-foreground-helper/manifest.json
+            ${{ runner.temp }}/rushes-foreground-input/pins.json
+            ${{ runner.temp }}/rushes-foreground-*/metrics.json
+            ${{ runner.temp }}/rushes-foreground-*/mac-foreground.json
+            ${{ runner.temp }}/rushes-foreground-*/command.*
+            ${{ runner.temp }}/rushes-foreground-*/retirement.*
+            ${{ runner.temp }}/rushes-foreground-*/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-foreground-*/supplied-reference.f32le

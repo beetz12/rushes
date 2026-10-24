@@ -61,6 +61,8 @@ export function startupMetadata(text) {
     && ['ready', 'recording', 'paused', 'stopping', 'complete', 'interrupted', 'failed'].includes(row.state)
     && typeof row.message === 'string' && row.message.length <= 512
     && (!Object.hasOwn(row, 'audio') || audioFailureMetadata(row.audio))) return row;
+  if (row.kind === 'source-limits-proof' && keys === 'cameraEligible,index,kind,screenEligible,takeId,timeMs'
+    && typeof row.screenEligible === 'boolean' && typeof row.cameraEligible === 'boolean') return row;
   if (row.kind === 'encoder-timeout' && keys === 'detail,index,kind,takeId,timeMs' && encoderStartMetadata(row.detail)) return row;
   if (row.kind === 'frame-format' && keys === 'format,index,kind,role,takeId,timeMs'
     && ['native-input', 'input-screen', 'input-camera', 'output-composed'].includes(row.role) && frameFormats.includes(row.format)) return row;
