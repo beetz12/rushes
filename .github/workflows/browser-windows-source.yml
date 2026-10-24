@@ -99,10 +99,29 @@ jobs:
           Add-Content -Path $env:GITHUB_OUTPUT -Value "retired=$rushesRetirementExit"
           if ($rushesSourceExit -ne 0) { exit $rushesSourceExit }
           exit $rushesRetirementExit
+      - name: Finalize source evidence before entering the full recorder
+        id: source_evidence
+        if: ${{ !cancelled() && steps.input.conclusion == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-source-before-full-${{ matrix.chrome }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/rushes-windows-source-input/pins.json
+            ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-test-chrome/windows-sandbox-access.json
+            ${{ runner.temp }}/rushes-windows-source-only/metrics.json
+            ${{ runner.temp }}/rushes-windows-source-only/command.exit
+            ${{ runner.temp }}/rushes-windows-source-only/retirement.exit
+            ${{ runner.temp }}/rushes-windows-source-only/retirement.json
+            ${{ runner.temp }}/rushes-windows-source-only/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-windows-source-only/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-windows-source-only/chrome-stderr.log
       # No trace: its removal and the source-first order remain diagnostic confounds.
       # A failed source observation may be followed only after actual browser retirement.
       - name: Full untraced short recorder with the existing supervised first-error collector
-        if: ${{ !cancelled() && steps.input.conclusion == 'success' && steps.source.outputs.retired == '0' }}
+        if: ${{ !cancelled() && steps.input.conclusion == 'success' && steps.source.outputs.retired == '0' && steps.source_evidence.conclusion == 'success' }}
         timeout-minutes: 8
         uses: ./.github/actions/matrix-checkpoint
         env:
