@@ -1,0 +1,104 @@
+name: browser-container-alternative
+on:
+  push:
+    branches: [codex/browser-production-20261022]
+    paths:
+      - '.github/workflows/browser-container-alternative.yml'
+permissions:
+  contents: read
+jobs:
+  container:
+    if: ${{ github.repository == 'beetz12/rushes' && github.event.repository.private == false }}
+    name: ${{ matrix.os }} / current Chrome / container alternative
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+      - name: Require the public shared repository
+        run: |
+          node --input-type=module <<'JS'
+          import { readFileSync } from 'node:fs';
+          const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
+          if (event.repository?.private !== false || event.repository?.full_name !== 'beetz12/rushes')
+            throw new Error('This generated diagnostic requires public beetz12/rushes');
+          console.log('Public shared source verified; container alternative only');
+          JS
+      - name: Install browser test dependencies
+        run: npm --prefix browser ci --no-audit --no-fund
+      - name: Isolated official current Chrome
+        run: node scripts/install-test-chrome.mjs --generation current --destination "${{ runner.temp }}/rushes-container-chrome"
+      - name: Install Mac decode tools
+        if: runner.os == 'macOS'
+        run: brew list ffmpeg >/dev/null 2>&1 || brew install ffmpeg
+      - name: Install Windows decode tools
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+      - name: Build browser
+        id: build
+        run: npm --prefix browser run build
+      - name: Existing full8s container alternative
+        id: full
+        timeout-minutes: 8
+        env:
+          RUSHES_M1_SOURCE_MODE: container
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-container-alternative
+        run: |
+          mkdir "$RUSHES_M1_PROOF"
+          node --input-type=module <<'JS'
+          import { writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          writeFileSync(join(process.env.RUSHES_M1_PROOF, 'diagnostic-scope.json'), JSON.stringify({
+            scope: 'Existing full container alternative; native and physical qualification excluded',
+            sourceRevision: process.env.GITHUB_SHA, expectedGeneration: 'current', expectedTargetMs: 8000,
+            guards: 'All existing matrix completion/byte/source/Stop/decoded/recovery predicates remain required',
+            nativeGateReplacement: false
+          }), { flag: 'wx' });
+          JS
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          printf '%s\n' "$verdict" > "$RUSHES_M1_PROOF/command.exit"
+          exit "$verdict"
+      - name: Independent owned-browser retirement
+        if: ${{ !cancelled() && steps.build.conclusion == 'success' }}
+        timeout-minutes: 1
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-container-alternative
+        run: |
+          set +e
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          retirement=$?
+          set -e
+          printf '%s\n' "$retirement" > "$RUSHES_M1_PROOF/retirement.exit"
+          exit "$retirement"
+      - name: Preserve exact alternative-path evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: container-alternative-${{ matrix.os }}-current
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/rushes-container-chrome/release.json
+            ${{ runner.temp }}/rushes-container-chrome/windows-sandbox-access.json
+            ${{ runner.temp }}/rushes-container-alternative/diagnostic-scope.json
+            ${{ runner.temp }}/rushes-container-alternative/command.exit
+            ${{ runner.temp }}/rushes-container-alternative/retirement.exit
+            ${{ runner.temp }}/rushes-container-alternative/retirement.json
+            ${{ runner.temp }}/rushes-container-alternative/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-container-alternative/metrics.json
+            ${{ runner.temp }}/rushes-container-alternative/synchronized.webm
+            ${{ runner.temp }}/rushes-container-alternative/*.log
+            ${{ runner.temp }}/rushes-container-alternative/normal-stop/*.webm
+            ${{ runner.temp }}/rushes-container-alternative/normal-stop/*.log
