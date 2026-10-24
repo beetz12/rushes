@@ -18,3 +18,22 @@ receipt remain required. A partial trace describes only its actual retained
 interval. It does not qualify an unobserved native interval, the whole source,
 product recording, another duration or another platform. The whole eight-second
 source experiment still runs its original checks and retains its actual result.
+
+The fixed window also starts collection after media preparation, immediately
+before the source-only observation starts. Keep ordinary recorder tracing at
+its earlier entry point. The late diagnostic does not resample the native
+clock: preparation has already consumed and validated that seed. All existing
+source readers and calibration arrays remain intact. Tracing adds real source
+pre-roll and observes only the later interval; it cannot describe a cold
+allocation or setup that it deliberately excludes. Record actual boundaries.
+
+If late trace setup fails, the prepared source is already live. Retire that
+fixture with its existing bounded finish operation, then preserve the setup
+error and any retirement error before normal owned-browser cleanup. A failed
+setup must not start the observation or silently replace the original failure.
+
+The isolated Mac workflow may retain safe scalar host snapshots before and
+after the experiment using its existing bounded metadata helper. Keep those
+queries outside capture and preserve missing values and command-error names.
+They report sampled endpoint state, not continuous lock, sleep, display, AppNap
+or scheduler proof. Never publish raw OS command output from those snapshots.

@@ -181,7 +181,7 @@ async function requireUnlockedHost(stage) {
   assertUnlockedMac(host, stage);
   hostMonitor?.assert();
 }
-async function startMatrixTake(options = {}) {
+async function startMatrixTake(options = {}, beforeStart) {
   await requireUnlockedHost('before-media-preparation');
   await stage('page-preparation-start');
   // Cold module compilation belongs to setup, before the finite clock-admission window.
@@ -194,6 +194,15 @@ async function startMatrixTake(options = {}) {
     window.matrixTake = await prepareMatrix(options);
   }, { ...options, sourceMode, sourceOnly, sourceAudioFrames, sourceAudioSink, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed, startupObservation: checkpointRequested && !evidence.recording }), 30000, 'Matrix page preparation');
   await stage('page-preparation-ready');
+  if (beforeStart) {
+    try { await beforeStart(); }
+    catch (error) {
+      // The source-only fixture already owns live readers and PCM here.
+      try { await bounded(page.evaluate(() => window.matrixTake.finish()), 15000, 'Prepared source retirement'); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], 'Late trace setup and prepared-source retirement failed'); }
+      throw error;
+    }
+  }
   await requireUnlockedHost('before-recording-start');
   await bounded(page.evaluate(() => window.matrixTake.start()), 30000, 'Matrix recording startup');
   await stage('recording-started');
@@ -459,8 +468,14 @@ try {
       if (row) console.log(startupPrefix + JSON.stringify(row));
     });
   }
-  if (nativeTraceRequested) nativeTrace = await beginColdTrace(browser, page, join(proof, 'native-trace'), { audioDiagnostics: true, videoCaptureDiagnostics: sourceVideoTrace,
-    captureTaskDiagnostics:sourceTaskTrace,streamRecorderCalls:fullNativeTrace });
+  const beginNativeTrace = async () => {
+    if (sourceTaskWindowMs) evidence.nativeTracePreparation = { requestedAtNodeMs: performance.now(),
+      scope: 'After existing source preparation; includes real source pre-roll and excludes cold allocation' };
+    nativeTrace = await beginColdTrace(browser, page, join(proof, 'native-trace'), { audioDiagnostics: true, videoCaptureDiagnostics: sourceVideoTrace,
+      captureTaskDiagnostics:sourceTaskTrace,streamRecorderCalls:fullNativeTrace });
+    if (sourceTaskWindowMs) evidence.nativeTracePreparation.readyAtNodeMs = performance.now();
+  };
+  if (nativeTraceRequested && !sourceTaskWindowMs) await beginNativeTrace();
   if (long && !diagnostic && process.platform === 'darwin') {
     evidence.hostObservationCoverage = 'Independent approximately2s lock metadata monitor, with fresh reads before each launch/start; unobserved intervals are not proven unlocked';
     hostMonitor = monitorMacLock({ read: macHostState,
@@ -487,7 +502,7 @@ try {
   }
   else if (diagnostic) await runDiagnostic();
   else {
-  await startMatrixTake();
+  await startMatrixTake({}, sourceTaskWindowMs ? beginNativeTrace : undefined);
   if (sourceTaskWindowMs) {
     assert.ok(nativeTrace, 'The source task window requires an owned native trace');
     const readAfter = new Promise(resolve => {
@@ -498,7 +513,7 @@ try {
       };
     });
     evidence.nativeTraceWindow = { requestedAfterStartMs: sourceTaskWindowMs, armedAtNodeMs: performance.now(),
-      scope: 'Partial native task collection plus setup only; whole8s source checks remain authoritative' };
+      scope: 'Partial native task collection after source preparation, with trace-setup pre-roll; whole8s source checks remain authoritative' };
     traceWindowTimer = setTimeout(() => {
       evidence.nativeTraceWindow.closeRequestedAtNodeMs = performance.now();
       // The final retirement joins this same promise and records any error.

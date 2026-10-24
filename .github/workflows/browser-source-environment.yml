@@ -60,6 +60,25 @@ jobs:
           RUSHES_M1_NATIVE_SOURCE_ONLY: '1'
           RUSHES_ENVIRONMENT_PROOF: ${{ runner.temp }}/rushes-source-audio
         run: |
+          write_host_state() {
+            RUSHES_HOST_PHASE="$1" node --input-type=module <<'JS'
+          import * as hostFiles from 'node:fs/promises';
+          import { macHostState } from './browser/test/matrix-host-state.mjs';
+          const phase = process.env.RUSHES_HOST_PHASE;
+          if (!['before', 'after'].includes(phase)) throw new Error('Invalid host snapshot phase');
+          const sample = await macHostState();
+          const snapshot = { scope: 'Sampled endpoint metadata only; no continuous state or scheduler proof',
+            phase, startedAt: sample.startedAt, endedAt: sample.endedAt, platform: sample.platform,
+            availability: sample.availability, IOConsoleLocked: sample.IOConsoleLocked,
+            displayCurrentPowerState: sample.displayCurrentPowerState,
+            framebufferPowerStates: sample.framebufferPowerStates?.map(({ driver, current, max }) => ({ driver, current, max })) ?? null,
+            powerAssertions: sample.powerAssertions, commandErrorNames: sample.errors?.map(({ name }) => name) ?? [] };
+          await hostFiles.mkdir(process.env.RUSHES_ENVIRONMENT_PROOF, { recursive: true, mode: 0o700 });
+          await hostFiles.writeFile(`${process.env.RUSHES_ENVIRONMENT_PROOF}/host-${phase}.json`,
+            JSON.stringify(snapshot, null, 2), { flag: 'wx' });
+          JS
+          }
+          write_host_state before
           export RUSHES_M1_PROOF="$RUSHES_ENVIRONMENT_PROOF/default-video-traced"
           mkdir -p "$RUSHES_M1_PROOF"
           export RUSHES_M1_SOURCE_AUDIO_SINK=default
@@ -73,7 +92,11 @@ jobs:
           set -e
           echo "$verdict" > "$RUSHES_M1_PROOF/command.exit"
           node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
-          exit "$verdict"
+          host_verdict=0
+          write_host_state after || host_verdict=$?
+          echo "$host_verdict" > "$RUSHES_ENVIRONMENT_PROOF/host-after.exit"
+          if [ "$verdict" -ne 0 ]; then exit "$verdict"; fi
+          exit "$host_verdict"
       - name: Confirm immutable input after observation
         if: ${{ !cancelled() && steps.media.conclusion == 'success' }}
         env:
@@ -97,6 +120,9 @@ jobs:
           path: |
             ${{ runner.temp }}/rushes-environment-chrome/release.json
             ${{ runner.temp }}/rushes-environment-input/pins.json
+            ${{ runner.temp }}/rushes-source-audio/host-before.json
+            ${{ runner.temp }}/rushes-source-audio/host-after.json
+            ${{ runner.temp }}/rushes-source-audio/host-after.exit
             ${{ runner.temp }}/rushes-source-audio/*/metrics.json
             ${{ runner.temp }}/rushes-source-audio/*/command.exit
             ${{ runner.temp }}/rushes-source-audio/*/retirement.json

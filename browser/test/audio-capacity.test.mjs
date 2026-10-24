@@ -21,17 +21,22 @@ const bounded = async promise => {
   })]); } finally { clearTimeout(timer); }
 };
 
-function transport({ hold = false, now, stopReceipt = true } = {}) {
+function transport({ hold = false, now, stopReceipt = true, onFailure, writeGate } = {}) {
   const keys = ['AudioData', 'MediaStreamTrackProcessor', 'MediaStreamTrackGenerator', 'Worker', ...(now ? ['performance'] : [])];
   const original = new Map(keys.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  const records = [], failures = [], frames = [[], []], clones = [], unacknowledged = [0, 0], peak = [0, 0];
+  const records = [], failures = [], frames = [[], []], outputs = [], clones = [], unacknowledged = [0, 0], peak = [0, 0];
   let worker, receiptCount = 0, allResolve, fullResolve, failureResolve;
   const all = new Promise(resolve => { allResolve = resolve; });
   const full = new Promise(resolve => { fullResolve = resolve; });
   const failed = new Promise(resolve => { failureResolve = resolve; });
   class Frame {
     numberOfChannels = 1; numberOfFrames = 800; sampleRate = 48000; closed = false; copied = false;
-    constructor(source, index) { this.source = source; this.timestamp = 100000 + Math.round(index * 800 * 1e6 / 48000); }
+    constructor(source, index) {
+      if (typeof source === 'object') {
+        Object.assign(this, { numberOfChannels: source.numberOfChannels, numberOfFrames: source.numberOfFrames,
+          sampleRate: source.sampleRate, timestamp: source.timestamp }); outputs.push(this);
+      } else { this.source = source; this.timestamp = 100000 + Math.round(index * 800 * 1e6 / 48000); }
+    }
     copyTo(target, options) { assert.equal(this.closed, false); assert.equal(options.planeIndex, 0); this.copied = true; target.fill((this.source + 1) / 4); }
     close() { assert.equal(this.closed, false); this.closed = true; }
   }
@@ -46,7 +51,7 @@ function transport({ hold = false, now, stopReceipt = true } = {}) {
   class Processor {
     constructor(options) { assert.equal(options.maxBufferSize, 25); this.readable = options.track.readable; }
   }
-  class Generator extends Track { constructor() { super(); this.writable = new WritableStream(); } }
+  class Generator extends Track { constructor() { super(); this.writable = new WritableStream({ write: () => writeGate }); } }
   class ControlledWorker {
     constructor() { worker = this; }
     emit(data) { this.onmessage({ data }); }
@@ -71,8 +76,8 @@ function transport({ hold = false, now, stopReceipt = true } = {}) {
   for (const [key, value] of Object.entries({ AudioData: Frame, MediaStreamTrackProcessor: Processor,
     MediaStreamTrackGenerator: Generator, Worker: ControlledWorker, ...(now ? { performance: { now } } : {}) }))
     Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
-  const mix = composedAudio(sources, message => { failures.push(message); failureResolve(); });
-  return { mix, sources, clones, records, failures, frames, peak, all, full, failed,
+  const mix = composedAudio(sources, message => { failures.push(message); failureResolve(); onFailure?.(message); });
+  return { mix, sources, clones, records, failures, frames, outputs, peak, all, full, failed,
     emit: data => worker.emit(data),
     burst() {
       for (let index = 0; index < 16; index++) for (const source of [0, 1]) {
@@ -110,10 +115,21 @@ test('buffered reads wait for task receipts without losing input bytes or exceed
 test('a missing capacity receipt fails instead of holding a native input indefinitely', async () => {
   const f = transport({ hold: true });
   try {
-    await f.mix.start(); f.burst(); await bounded(f.failed); await task();
+    await f.mix.start(); const waitingAt = performance.now(); f.burst(); await bounded(f.failed); await task();
     assert.equal(f.failures.length, 1); assert.match(f.failures[0], /capacity receipt timed out/);
     assert.equal(f.records.length, 30); assert.ok(f.frames.every(rows => rows[15].closed));
     assert.equal(f.mix.track.readyState, 'ended');
+    const detail = f.mix.diagnostics.parentFailure;
+    assert.equal(detail.schema, 1); assert.equal(detail.edge, 'timer');
+    assert.deepEqual(detail.pending, [12000, 12000]); assert.deepEqual(detail.posted, [15, 15]);
+    assert.deepEqual(detail.consumed, [0, 0]); assert.deepEqual(detail.input.slice(1), [800, 48000]);
+    assert.ok([0, 1].includes(detail.input[0]));
+    assert.ok(Number.isSafeInteger(detail.waitMs) && detail.waitMs >= 0 && detail.waitMs <= Math.ceil(performance.now() - waitingAt));
+    assert.equal(detail.closed, false); assert.equal(detail.quiesced, false); assert.equal(detail.readied, true);
+    assert.deepEqual(detail.output, [0, null, 0, 0]); assert.equal(detail.writing, false);
+    assert.ok(Object.isFrozen(detail) && Object.isFrozen(detail.pending) && Object.isFrozen(detail.input));
+    f.emit({ kind: 'timing', diagnostics: { late: true } });
+    assert.equal(f.mix.diagnostics.parentFailure, detail);
   } finally { await f.close(); }
 });
 
@@ -126,6 +142,8 @@ test('a late receipt cannot win a delayed timeout callback', async () => {
     assert.equal(f.failures.length, 1);
     assert.match(f.failures[0], /capacity receipt timed out/); assert.equal(f.records.length, 30);
     assert.ok(f.frames.every(rows => rows[15].closed));
+    assert.equal(f.mix.diagnostics.parentFailure.edge, 'late-wake');
+    assert.equal(f.mix.diagnostics.parentFailure.waitMs, 251);
   } finally { await f.close(); }
 });
 
@@ -209,4 +227,72 @@ test('Stop after the receipt deadline cannot hide the earlier capacity failure',
     await bounded(f.failed); await ending; await task();
     assert.match(f.failures[0], /capacity receipt timed out/); assert.equal(f.records.length, 30);
   } finally { await f.close(); }
+});
+
+
+test('fatal audio ownership is closed before a synchronous failure consumer is notified', async () => {
+  let observed;
+  const f = transport({ onFailure: message => {
+    observed = { message, clones: f.clones.map(track => track.readyState), output: f.mix.track.readyState,
+      originals: f.sources.map(track => track.readyState) };
+    f.mix.close(); // A reentrant consumer cannot reclaim or duplicate ownership.
+  } });
+  try {
+    await f.mix.start(); f.emit({ kind: 'error', message: 'Controlled fatal worker failure', diagnostics: {} });
+    assert.deepEqual(observed, { message: 'Audio composition failed: Controlled fatal worker failure', clones: ['ended', 'ended'],
+      output: 'ended', originals: ['live', 'live'] });
+    assert.deepEqual(f.failures, ['Audio composition failed: Controlled fatal worker failure']);
+  } finally { await f.close(); }
+});
+test('a throwing audio failure consumer still observes already-closed ownership', async () => {
+  const refused = new Error('Controlled consumer refusal'); let observed;
+  const f = transport({ onFailure: () => {
+    observed = [...f.clones.map(track => track.readyState), f.mix.track.readyState]; throw refused;
+  } });
+  try {
+    await f.mix.start();
+    assert.throws(() => f.emit({ kind: 'error', message: 'Controlled fatal worker failure', diagnostics: {} }), error => error === refused);
+    assert.deepEqual(observed, ['ended', 'ended', 'ended']);
+    assert.deepEqual(f.failures, ['Audio composition failed: Controlled fatal worker failure']);
+  } finally { await f.close(); }
+});
+
+test('cleanup refusal cannot suppress the original audio failure notification', async () => {
+  const f = transport(), refused = new Error('Controlled output close refusal');
+  const stop = f.mix.track.stop;
+  try {
+    await f.mix.start(); f.mix.track.stop = () => { throw refused; };
+    assert.throws(() => f.emit({ kind: 'error', message: 'Original controlled audio failure', diagnostics: {} }), error => error === refused);
+    assert.deepEqual(f.failures, ['Audio composition failed: Original controlled audio failure']);
+  } finally { f.mix.track.stop = stop; stop.call(f.mix.track); await f.close(); }
+});
+
+test('expiry before waiting captures the actual held packet without posting it', async () => {
+  let f, calls = 0;
+  f = transport({ hold: true, now: () => f?.records.length === 30 ? (calls++ ? 251 : 0) : 0 });
+  try {
+    await f.mix.start(); f.burst(); await bounded(f.failed); await task();
+    assert.equal(f.mix.diagnostics.parentFailure.edge, 'before-wait');
+    assert.equal(f.mix.diagnostics.parentFailure.waitMs, 251);
+    assert.equal(f.records.length, 30); assert.ok(f.frames.every(rows => rows[15].closed));
+  } finally { await f.close(); }
+});
+
+test('capacity failure snapshots a pending output write before its separate one-second limit', async () => {
+  let release; const writeGate = new Promise(resolve => { release = resolve; });
+  const f = transport({ hold: true, writeGate });
+  try {
+    await f.mix.start();
+    f.emit({ kind: 'packet', sequence: 0, timestamp: 100000, data: new Float32Array(960) }); await task();
+    f.burst(); await bounded(f.failed); await task();
+    const detail = f.mix.diagnostics.parentFailure;
+    assert.equal(detail.edge, 'timer'); assert.equal(detail.writing, true);
+    assert.deepEqual(detail.output, [1, 0, 0, 0]);
+    assert.ok(Number.isSafeInteger(detail.writeAgeMs) && detail.writeAgeMs >= 0);
+    assert.equal(detail.closed, false); assert.equal(f.mix.track.readyState, 'ended');
+    release(); await task(); await task();
+    assert.equal(f.outputs.length, 1); assert.ok(f.outputs.every(frame => frame.closed));
+    assert.equal(f.mix.diagnostics.parentFailure, detail); assert.equal(detail.writing, true);
+    assert.ok(f.sources.every(track => track.readyState === 'live'));
+  } finally { release(); await f.close(); }
 });

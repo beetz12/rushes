@@ -145,7 +145,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
     manifest.events.push({ timeMs: startedAt ? performance.now() - startedAt : 0, kind, ...(message ? { message } : {}) });
   };
   const notify = (next: CaptureState) => { state = next; manifest.state = next; inputs.onState?.(next); };
-  const warn = (message: string) => inputs.onWarning?.(message);
+  const warn = (message: string) => inputs.onWarning?.(message, audio?.diagnostics?.parentFailure);
   function release() {
     if (released) return; released = true;
     if (timer) clearInterval(timer);

@@ -8,9 +8,9 @@ const end = runner.indexOf('\nasync function nativeAllocationProbe()', begin);
 assert.ok(begin >= 0 && end > begin);
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const actualStart = new AsyncFunction('requireUnlockedHost', 'stage', 'sourceMode', 'evidence', 'nativeClockSeed', 'page',
-  'bounded', 'sourceOnly', 'sourceAudioFrames', 'sourceAudioSink', 'checkpointRequested', `${runner.slice(begin, end)}\nreturn startMatrixTake();`);
+  'bounded', 'sourceOnly', 'sourceAudioFrames', 'sourceAudioSink', 'checkpointRequested', 'beforeStart', `${runner.slice(begin, end)}\nreturn startMatrixTake({}, beforeStart);`);
 
-function coldImportControl(seedRetirementMs = 0, importFailure = false) {
+function coldImportControl(seedRetirementMs = 0, importFailure = false, cleanupFailure) {
   let pageMs = 0;
   const modules = ['/test/matrix-fixture.mjs', '/src/capture/index.ts', '/src/capture/storage.ts'];
   const pending = new Map(), loaded = new Set();
@@ -27,6 +27,7 @@ function coldImportControl(seedRetirementMs = 0, importFailure = false) {
   const page = { async evaluate(operation, options) {
     const text = operation.toString();
     if (text.includes('window.matrixTake.start()')) { events.push('start'); return; }
+    if (text.includes('window.matrixTake.finish()')) { events.push('finish'); if (cleanupFailure) throw cleanupFailure; return; }
     if (options) {
       await Promise.all(modules.map(load));
       if (pageMs - options.clockSeed.beforePageMs > 1500) throw new Error('Invalid, stale or cross-document native clock seed');
@@ -41,8 +42,8 @@ function coldImportControl(seedRetirementMs = 0, importFailure = false) {
     events.push('clock'); const seed = { beforePageMs: pageMs };
     pageMs += seedRetirementMs; return seed;
   };
-  return { events, run: () => actualStart(async () => {}, async () => {}, 'native-reference', {}, clock, page,
-    async operation => operation, false, 128, 'none', false) };
+  return { events, run: beforeStart => actualStart(async () => {}, async () => {}, 'native-reference', {}, clock, page,
+    async operation => operation, false, 128, 'none', false, beforeStart) };
 }
 
 test('actual matrix admission loads cold modules before sampling its1500ms clock seed', async () => {
@@ -59,4 +60,33 @@ test('an asynchronous module refusal prevents clock sampling and media preparati
   const control = coldImportControl(0, true);
   await assert.rejects(control.run(), /Cold module import refused/);
   assert.deepEqual(control.events, []);
+});
+
+
+test('late trace waits after prepared media and before observation without resampling the seed', async () => {
+  const control = coldImportControl(); let release;
+  const ready = new Promise(resolve => { release = resolve; });
+  const take = control.run(async () => { control.events.push('trace'); await ready; });
+  await new Promise(resolve => setImmediate(() => setImmediate(resolve)));
+  assert.deepEqual(control.events, ['modules', 'clock', 'prepare', 'trace']);
+  release(); await take;
+  assert.deepEqual(control.events, ['modules', 'clock', 'prepare', 'trace', 'start']);
+});
+test('late trace refusal retires the live prepared source and preserves its original error', async () => {
+  const control = coldImportControl(), refused = new Error('Trace setup refused');
+  await assert.rejects(control.run(async () => { control.events.push('trace'); throw refused; }), error => error === refused);
+  assert.deepEqual(control.events, ['modules', 'clock', 'prepare', 'trace', 'finish']);
+});
+test('late trace and prepared-source retirement errors are retained together', async () => {
+  const cleanup = new Error('Prepared source retirement refused'), refused = new Error('Trace setup refused');
+  const control = coldImportControl(0, false, cleanup);
+  await assert.rejects(control.run(async () => { control.events.push('trace'); throw refused; }), error => {
+    assert.ok(error instanceof AggregateError); assert.deepEqual(error.errors, [refused, cleanup]); return true;
+  });
+  assert.deepEqual(control.events, ['modules', 'clock', 'prepare', 'trace', 'finish']);
+});
+test('late trace is never entered when the unchanged seed admission rejects preparation', async () => {
+  const control = coldImportControl(1501);
+  await assert.rejects(control.run(async () => { control.events.push('trace'); }), /stale or cross-document/);
+  assert.deepEqual(control.events, ['modules', 'clock']);
 });

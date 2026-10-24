@@ -1,9 +1,10 @@
+import type { AudioFailureDetails } from '../contracts';
 import type { AudioTransformAPIs, PCMFrame } from './audio-frame';
 import { MIX_FRAMES, MIX_RATE, stereoPlanes } from './pcm-mixer';
 // Endpoints stay in this Window: Chrome changes reference origins on stream transfer.
 // Only copied PCM crosses the worker boundary. Originals belong to the coordinator.
 export function composedAudio(tracks: MediaStreamTrack[], failed: (message: string) => void = () => undefined): {
-  track?: MediaStreamTrack; readonly diagnostics?: unknown; start(): Promise<void>; quiesce(): Promise<void>; close(): void;
+  track?: MediaStreamTrack; readonly diagnostics?: { [key: string]: unknown; parentFailure?: AudioFailureDetails }; start(): Promise<void>; quiesce(): Promise<void>; close(): void;
 } {
   if (!tracks.length) return { async start() {}, async quiesce() {}, close() {} };
   if (tracks.length === 1) {
@@ -15,11 +16,15 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
   if (!apis.AudioData || !apis.MediaStreamTrackProcessor || !apis.MediaStreamTrackGenerator)
     throw new Error('This Chrome version cannot preserve composed audio references');
   const owned: MediaStreamTrack[] = [], readers: ReadableStreamDefaultReader<PCMFrame>[] = [];
-  const pendingFrames = [0, 0];
+  const pendingFrames = [0, 0], posted = [0, 0], consumed = [0, 0];
+  let messages = 0, lastMessageAt: number | undefined, lastKind: AudioFailureDetails['lastKind'] = null;
+  let outputPackets = 0, outputSequence: number | null = null, writes = 0, receipts = 0, writeAt: number | undefined;
+  let parentFailure: AudioFailureDetails | undefined;
+  let capacityFailure: Pick<AudioFailureDetails, 'edge' | 'input' | 'waitMs'> | undefined;
   const capacityWake: Array<(() => void) | undefined> = [undefined, undefined];
   let output: InstanceType<AudioTransformAPIs['MediaStreamTrackGenerator']> | undefined, worker: Worker | undefined;
   let writer: WritableStreamDefaultWriter<PCMFrame> | undefined;
-  let closed = false, quiesced = false, writing = false, readied = false, hasFailureDiagnostics = false, diagnostics: unknown, deadline: ReturnType<typeof setTimeout> | undefined;
+  let closed = false, quiesced = false, writing = false, readied = false, hasFailureDiagnostics = false, diagnostics: { [key: string]: unknown; parentFailure?: AudioFailureDetails } | undefined, deadline: ReturnType<typeof setTimeout> | undefined;
   let quiescedAt: number | undefined;
   let readyResolve: () => void, readyReject: (error: Error) => void;
   const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
@@ -47,21 +52,40 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
     if (writer) void writer.abort().finally(() => writer?.releaseLock()).catch(() => undefined);
     if (worker) deadline = setTimeout(() => worker?.terminate(), 500);
   }
-  function failure(message: string) { if (!closed) { readyReject(new Error(message)); try { failed(message); } finally { close(); } } }
+  function failure(message: string) {
+    if (!closed) {
+      const at = performance.now();
+      parentFailure ??= Object.freeze({ schema: 1, edge: capacityFailure?.edge ?? 'other', input: capacityFailure?.input ?? null,
+        pending: Object.freeze([pendingFrames[0], pendingFrames[1]] as const),
+        posted: Object.freeze([posted[0], posted[1]] as const), consumed: Object.freeze([consumed[0], consumed[1]] as const),
+        waitMs: capacityFailure?.waitMs ?? null, messages, lastKind,
+        lastAgeMs: lastMessageAt === undefined ? null : Math.ceil(at - lastMessageAt),
+        output: Object.freeze([outputPackets, outputSequence, writes, receipts] as const), writing,
+        writeAgeMs: writeAt === undefined ? null : Math.ceil(at - writeAt), readied, quiesced, closed });
+      hasFailureDiagnostics = true;
+      readyReject(new Error(message));
+      // A consumer may enter synchronous native Stop. Retire owned audio first.
+      try { close(); } finally { failed(message); }
+    }
+  }
   async function waitForCapacity(source: number, frames: number, rate: number) {
-    const expires = performance.now() + 250;
+    const begun = performance.now(), expires = begun + 250;
+    const timeout = (edge: 'before-wait' | 'timer' | 'late-wake') => {
+      capacityFailure ??= { edge, input: Object.freeze([source, frames, rate] as const), waitMs: Math.ceil(performance.now() - begun) };
+      return new Error('Audio worker capacity receipt timed out');
+    };
     while (!quiesced && pendingFrames[source] + frames > rate / 4) {
       const remaining = expires - performance.now();
-      if (remaining <= 0) throw new Error('Audio worker capacity receipt timed out');
+      if (remaining <= 0) throw timeout('before-wait');
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await new Promise<void>((resolve, reject) => {
           capacityWake[source] = resolve;
-          timer = setTimeout(() => reject(new Error('Audio worker capacity receipt timed out')), remaining);
+          timer = setTimeout(() => reject(timeout('timer')), remaining);
         });
         // A queued receipt cannot beat an already-expired deadline. A prior
         // Stop still retires its held packet at the time quiescence began.
-        if ((quiescedAt ?? performance.now()) >= expires) throw new Error('Audio worker capacity receipt timed out');
+        if ((quiescedAt ?? performance.now()) >= expires) throw timeout('late-wake');
       } finally { clearTimeout(timer); capacityWake[source] = undefined; }
     }
   }
@@ -86,7 +110,7 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
           if (left === right) right = right.slice();
           pendingFrames[source] += frame.numberOfFrames;
           if (pendingFrames[source] > frame.sampleRate / 4) throw new Error('Audio worker queue exceeded250ms');
-          worker!.postMessage({ kind: 'input', source, rate: frame.sampleRate, timestamp: frame.timestamp, left, right }, [left.buffer, right.buffer]);
+          worker!.postMessage({ kind: 'input', source, rate: frame.sampleRate, timestamp: frame.timestamp, left, right }, [left.buffer, right.buffer]); posted[source]++;
         } finally { frame.close(); }
       }
     } catch (error) { failure(`Audio composition failed: ${String(error)}`); }
@@ -95,15 +119,16 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
   async function write(sequence: number, timestamp: number, data: Float32Array) {
     let frame: PCMFrame | undefined, writeDeadline: ReturnType<typeof setTimeout> | undefined;
     try {
-      if (writing) throw new Error('Audio output exceeded one pending packet'); writing = true;
+      if (writing) throw new Error('Audio output exceeded one pending packet'); writing = true; writeAt = performance.now();
       frame = new apis.AudioData({ format: 'f32-planar', sampleRate: MIX_RATE, numberOfChannels: 2,
         numberOfFrames: MIX_FRAMES, timestamp, data });
       await Promise.race([writer!.write(frame), new Promise<never>((_, reject) => {
         writeDeadline = setTimeout(() => { if (!quiesced) reject(new Error('Composed audio sink timed out')); }, 1000);
       })]);
-      if (!quiesced) worker!.postMessage({ kind: 'written', sequence });
+      writes++;
+      if (!quiesced) { worker!.postMessage({ kind: 'written', sequence }); receipts++; }
     } catch (error) { failure(`Audio composition failed: ${String(error)}`); }
-    finally { clearTimeout(writeDeadline); frame?.close(); writing = false; }
+    finally { clearTimeout(writeDeadline); frame?.close(); writing = false; writeAt = undefined; }
   }
   try {
     for (const track of tracks) {
@@ -113,6 +138,8 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
     output = new apis.MediaStreamTrackGenerator({ kind: 'audio' }); writer = output.writable.getWriter();
     worker = new Worker(new URL('./audio.worker.ts', import.meta.url), { type: 'module' });
     worker.onmessage = event => {
+      messages++; lastMessageAt = performance.now();
+      lastKind = ['consumed', 'packet', 'ready', 'timing', 'error', 'stopped'].includes(event.data.kind) ? event.data.kind : 'unknown';
       if (event.data.kind === 'stopped') { clearTimeout(deadline); stoppedResolve(); worker?.terminate(); }
       else if (event.data.kind === 'timing') { if (!hasFailureDiagnostics) diagnostics = event.data.diagnostics; }
       else if (closed) return;
@@ -120,9 +147,12 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
         const { source, frames } = event.data;
         if (![0, 1].includes(source) || !Number.isSafeInteger(frames) || frames <= 0 || frames > pendingFrames[source])
           failure('Invalid audio input receipt');
-        else { pendingFrames[source] -= frames; capacityWake[source]?.(); }
+        else { pendingFrames[source] -= frames; consumed[source]++; capacityWake[source]?.(); }
       }
-      else if (event.data.kind === 'packet') { if (!quiesced) void write(event.data.sequence, event.data.timestamp, event.data.data); }
+      else if (event.data.kind === 'packet') {
+        outputPackets++; outputSequence = event.data.sequence;
+        if (!quiesced) void write(event.data.sequence, event.data.timestamp, event.data.data);
+      }
       else if (event.data.kind === 'ready') { readied = true; clearTimeout(deadline); readyResolve(); }
       else if (event.data.kind === 'error') {
         hasFailureDiagnostics = true;
@@ -134,6 +164,6 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
     deadline = setTimeout(() => failure('Composed audio did not become ready'), 10000);
     worker.postMessage({ kind: 'setup' });
     for (const [source, reader] of readers.entries()) void consume(reader, source);
-    return { track: output, get diagnostics() { return diagnostics; }, async start() { await ready; }, quiesce, close };
+    return { track: output, get diagnostics() { return parentFailure ? { ...diagnostics, parentFailure } : diagnostics; }, async start() { await ready; }, quiesce, close };
   } catch (error) { close(); throw error; }
 }

@@ -45,12 +45,22 @@ export type DraftStore = {
   readSnapshot(id: string): Promise<DraftSnapshot>;
   remove(id: string): Promise<void>;
 };
+export type AudioFailureDetails = Readonly<{
+  schema: 1; edge: 'before-wait' | 'timer' | 'late-wake' | 'other';
+  input: readonly [number, number, number] | null;
+  pending: readonly [number, number]; posted: readonly [number, number]; consumed: readonly [number, number];
+  waitMs: number | null; messages: number;
+  lastKind: 'consumed' | 'packet' | 'ready' | 'timing' | 'error' | 'stopped' | 'unknown' | null;
+  lastAgeMs: number | null;
+  output: readonly [number, number | null, number, number];
+  writing: boolean; writeAgeMs: number | null; readied: boolean; quiesced: boolean; closed: boolean;
+}>;
 export type CaptureInputs = {
   id: string; title: string; mode: CaptureMode; screen?: MediaStream; camera?: MediaStream;
   microphone?: MediaStream; store: DraftStore; persistent: boolean; backupFolder: boolean;
   cloudRecordingId?: string;
   bubble?: BubblePlacement; onState?: (state: CaptureState) => void;
-  onWarning?: (message: string) => void; onCheckpoint?: (manifest: DraftManifest) => void;
+  onWarning?: (message: string, details?: AudioFailureDetails) => void; onCheckpoint?: (manifest: DraftManifest) => void;
 };
 export type CaptureSession = {
   readonly preview: MediaStream;

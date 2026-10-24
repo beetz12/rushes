@@ -1,3 +1,4 @@
+import { audioFailureMetadata, lateAudioMetadata } from './startup-metadata.mjs';
 import { nativeReferenceClock } from './native-reference-clock.mjs';
 import { nativeReferenceWitness, SOURCE_PCM_GUARD_MS } from './native-reference-witness.mjs';
 export async function directContainerControl(durationMs) {
@@ -43,7 +44,8 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
     throw new Error('Default generated source sink requires explicit native-reference128 mode');
   if (typeof startupObservation !== 'boolean' || (startupObservation && (sourceMode !== 'native-reference' || sourceOnly || diagnostic)))
     throw new Error('Startup observations require an explicit generated full native-reference diagnostic');
-  let startup = () => undefined;
+  let startup = () => undefined, audioFailureAt, observedAudioWorker;
+  const audioLateKinds = new Set();
   const { createCaptureSession } = await import('/src/capture/index.ts');
   const { createDraftStore } = await import('/src/capture/storage.ts');
   const nativeRecorder = globalThis.MediaRecorder;
@@ -61,6 +63,27 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
       this.addEventListener('error', event => metrics.observerErrors.push({ name: 'production-worker-event', message: event.message, wallMs: performance.now() }));
     }
   };
+  if (startupObservation) {
+    metrics.audioLateDropped = 0; metrics.audioLateInvalid = 0; metrics.audioFailureDetailsInvalid = 0;
+    globalThis.Worker = class extends nativeWorker {
+      constructor(...args) {
+        super(...args);
+        if (new URL(args[0], location.href).pathname !== '/src/capture/audio.worker.ts') return;
+        if (observedAudioWorker) { metrics.observerErrors.push({ name: 'audio-worker-identity', message: 'Multiple generated audio workers' }); return; }
+        observedAudioWorker = this; metrics.audioWorkerIdentity = { id: 0, pathname: '/src/capture/audio.worker.ts' };
+        this.addEventListener('message', event => {
+          if (audioFailureAt === undefined || !['consumed', 'error', 'stopped'].includes(event.data?.kind)) return;
+          if (audioLateKinds.has(event.data.kind)) { metrics.audioLateDropped++; return; }
+          const candidate = { event: event.data.kind, afterMs: Math.ceil(performance.now() - audioFailureAt),
+            ...(event.data.kind === 'consumed' ? { source: event.data.source, frames: event.data.frames } : {}),
+            ...(event.data.kind === 'error' ? { message: typeof event.data.message === 'string' ? event.data.message.slice(0, 512) : event.data.message } : {}) };
+          const detail = lateAudioMetadata(candidate);
+          if (!detail) { metrics.audioLateInvalid++; return; }
+          audioLateKinds.add(detail.event); startup({ kind: 'audio-late', workerId: 0, ...detail });
+        });
+      }
+    };
+  }
   const kinds = ['screen', 'camera', 'microphone', 'tab-audio', 'composed'];
   globalThis.MediaRecorder = class extends nativeRecorder {
     constructor(...args) {
@@ -358,9 +381,13 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
       metrics.states.push({ state, wallMs: performance.now() });
       if (state === 'stopping') void retireObservations();
     },
-    onWarning: message => {
+    onWarning: (message, details) => {
       metrics.warnings.push(message);
-      startup({ kind: 'warning', state: metrics.states.at(-1)?.state ?? 'ready', message: String(message).slice(0, 512) });
+      const audio = startupObservation ? audioFailureMetadata(details) : undefined;
+      if (startupObservation && details !== undefined && !audio) metrics.audioFailureDetailsInvalid++;
+      if (audio && audioFailureAt === undefined) audioFailureAt = performance.now();
+      startup({ kind: 'warning', state: metrics.states.at(-1)?.state ?? 'ready', message: String(message).slice(0, 512),
+        ...(audio ? { audio } : {}) });
     },
     onCheckpoint: manifest => { take.manifest = manifest; metrics.checkpoints.push({ wallMs: performance.now(),
       lastCheckpointMs: manifest.lastCheckpointMs, chunks: manifest.tracks.reduce((sum, track) => sum + track.chunks.length, 0) }); },
