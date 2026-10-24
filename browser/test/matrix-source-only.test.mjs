@@ -12,9 +12,9 @@ function sourceOnlyBody(text) {
   return text.slice(begin, end);
 }
 const actualControl = new (Object.getPrototypeOf(async function() {}).constructor)('environment',
-  `const { sourceOnly, metrics, performance, id, document, navigator, source, screen, camera, microphone,
+  `const { sourceOnly, nativeEncoderControl = false, metrics, performance, id, document, navigator, source, screen, camera, microphone,
     audio, sourceObserverTrack, sourceWorker, toneContext, nativeRecorder, nativeWorker, suppliedReference,
-    retireObservations } = environment; ${sourceOnlyBody(fixture)} throw new Error('Entered product admission');`);
+    retireObservations, withNativeEncoderControl } = environment; ${sourceOnlyBody(fixture)} throw new Error('Entered product admission');`);
 
 test('source-only extraction keeps the same actual body for LF and Windows CRLF inputs', () => {
   const lf = fixture.replace(/\r\n/g, '\n');
@@ -65,4 +65,32 @@ test('source-only options reject incompatible modes before browser or product ad
   await assert.rejects(prepareMatrix({ sourceOnly: 'yes' }), /ordinary native-reference/);
   await assert.rejects(prepareMatrix({ sourceOnly: true, sourceMode: 'native-reference', referenceWitness: false }), /ordinary native-reference/);
   await assert.rejects(prepareMatrix({ sourceMode: 'native-reference', sourceAudioFrames: 512 }), /128 or480/);
+});
+
+test('a failed raw attachment retires the already-prepared source and preserves setup plus cleanup failures', async () => {
+  const saved = { MediaRecorder: globalThis.MediaRecorder, Worker: globalThis.Worker };
+  try { for (const cleanupFails of [false, true]) {
+    const original = new Error('raw native constructor refused'), cleanup = new Error('source context retirement refused');
+    const counts = { readers: 0, observerTrack: 0, worker: 0, context: 0, visibility: 0 };
+    const track = { readyState: 'live', stop() { this.readyState = 'ended'; } };
+    const stream = { getTracks: () => [track], getVideoTracks: () => [track] };
+    const nativeRecorder = function HeldNativeRecorder() {}, nativeWorker = function HeldNativeWorker() {};
+    const pending = actualControl({ sourceOnly: true, nativeEncoderControl: true, metrics: { states: [], visibility: [] },
+      performance: { now: () => 100 }, id: 'failed-raw-attachment',
+      document: { visibilityState: 'visible', hasFocus: () => true, addEventListener() {}, removeEventListener() { counts.visibility++; } },
+      navigator: { storage: { async getDirectory() { return { async *entries() {} }; } } },
+      source: stream, screen: stream, camera: stream, microphone: stream, audio: { stream },
+      sourceObserverTrack: { stop() { counts.observerTrack++; } }, sourceWorker: { terminate() { counts.worker++; } },
+      toneContext: { async close() { counts.context++; if (cleanupFails) throw cleanup; } }, nativeRecorder, nativeWorker,
+      retireObservations: async () => { counts.readers++; },
+      withNativeEncoderControl() { throw original; } });
+    await assert.rejects(pending, error => {
+      if (cleanupFails) { assert.ok(error instanceof AggregateError); assert.deepEqual(error.errors, [original, cleanup]); }
+      else assert.equal(error, original);
+      return true;
+    });
+    assert.equal(track.readyState, 'ended');
+    assert.deepEqual(counts, { readers: 1, observerTrack: 1, worker: 1, context: 1, visibility: 1 });
+    assert.equal(globalThis.MediaRecorder, nativeRecorder); assert.equal(globalThis.Worker, nativeWorker);
+  } } finally { globalThis.MediaRecorder = saved.MediaRecorder; globalThis.Worker = saved.Worker; }
 });

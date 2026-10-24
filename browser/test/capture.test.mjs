@@ -1,3 +1,4 @@
+import { fixtureDocument } from './fixture-document.mjs';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'vite';
@@ -30,7 +31,7 @@ before(async () => {
   server = await createServer({ root: fileURLToPath(new URL('..', import.meta.url)), server: { host: '127.0.0.1', port: 0 }, logLevel: 'error',
     plugins: [{ name: 'rushes-capture-test-fixture', configureServer(value) {
       value.middlewares.use('/capture-fixture', (_request, response) => {
-        response.setHeader('Content-Type', 'text/html'); response.end('<!doctype html><title>Rushes synthetic capture test</title>');
+        response.setHeader('Content-Type', 'text/html'); response.end(fixtureDocument('Rushes synthetic capture test'));
       });
     } }],
   });
@@ -1016,20 +1017,29 @@ for (const phase of ['after-stop', 'before-stop']) test(`audio source retirement
   const result = await page.evaluate(async phase => {
     const NativeChannel = MessageChannel, NativeRecorder = MediaRecorder, recorders = [];
     let inject = false, injected = 0, terminal, signalTerminal, audioPort, heldError, replaying = false;
-    const heldTerminal = [];
+    const heldTerminal = [], terminalObservations = [];
+    let terminalObservationsDropped = 0, plannedInjectionPageMs, firstInjectedPageMs;
     const retired = new Promise(resolve => { signalTerminal = resolve; });
     globalThis.MessageChannel = class extends NativeChannel {
       constructor() {
         super(); const port = this.port1, post = port.postMessage.bind(port);
         port.addEventListener('message', event => {
-          if (['error', 'stopped'].includes(event.data.kind)) { terminal ??= event.data.kind; signalTerminal(); }
+          if (['error', 'stopped'].includes(event.data.kind)) {
+            if (terminalObservations.length < 16) terminalObservations.push({ pageMs: performance.now(),
+              injectionEnabled: inject, injected, replaying, data: structuredClone(event.data) });
+            else terminalObservationsDropped++;
+            terminal ??= event.data.kind; signalTerminal();
+          }
           if (phase === 'before-stop' && ['error', 'stopped'].includes(event.data.kind) && !replaying) {
             if (event.data.kind === 'error') heldError = event.data;
             heldTerminal.push(event.data); audioPort = port; event.stopImmediatePropagation();
           }
         });
         port.postMessage = (message, ...args) => {
-          if (inject && message.kind === 'input') { message = { ...message, timestamp: message.timestamp + 500000 }; injected++; }
+          if (inject && message.kind === 'input') {
+            firstInjectedPageMs ??= performance.now();
+            message = { ...message, timestamp: message.timestamp + 500000 }; injected++;
+          }
           return post(message, ...args);
         };
       }
@@ -1053,7 +1063,7 @@ for (const phase of ['after-stop', 'before-stop']) test(`audio source retirement
         }
         return readSnapshot(...args);
       };
-      inject = true;
+      plannedInjectionPageMs = performance.now(); inject = true;
       if (phase === 'before-stop') await boundedRetirement();
       const finishing = value.session.stop();
       if (heldError) { replaying = true; for (const data of heldTerminal) audioPort.dispatchEvent(new MessageEvent('message', { data })); }
@@ -1065,12 +1075,19 @@ for (const phase of ['after-stop', 'before-stop']) test(`audio source retirement
         for (let offset = 0; offset < bytes.length; offset += 16384) pieces.push(String.fromCharCode(...bytes.subarray(offset, offset + 16384)));
         retained[kind] = btoa(pieces.join(''));
       }
-      return { manifest, terminal, injected, outputWasLive, decoded, retained, delayedPreStopError: !!heldError };
+      return { manifest, terminal, injected, outputWasLive, decoded, retained, delayedPreStopError: !!heldError,
+        plannedInjectionPageMs, firstInjectedPageMs, terminalObservations, terminalObservationsDropped,
+        inputDeliveryMetadata: structuredClone(globalThis.generatedAudioInputMetadata) };
     } finally { if (value) { await value.session.cancel(); await value.cleanup(); } globalThis.MessageChannel = NativeChannel; globalThis.MediaRecorder = NativeRecorder; }
   }, phase);
-  if (phase === 'after-stop') await retainGeneratedCapture(process.env.RUSHES_M1_PROOF, `audio-retirement-${phase}`, result);
+  // Retain metadata for both arms before assertions, including a natural mixer
+  // failure that occurs before the planned discontinuity injection.
+  await retainGeneratedCapture(process.env.RUSHES_M1_PROOF, `audio-retirement-${phase}`, result);
   delete result.retained;
-  console.log('Audio Stop boundary', JSON.stringify({ phase, state: result.manifest.state, terminal: result.terminal, injected: result.injected, outputWasLive: result.outputWasLive }));
+  console.log('Audio Stop boundary', JSON.stringify({ phase, state: result.manifest.state, terminal: result.terminal,
+    injected: result.injected, outputWasLive: result.outputWasLive, plannedInjectionPageMs: result.plannedInjectionPageMs,
+    firstInjectedPageMs: result.firstInjectedPageMs, firstTerminal: result.terminalObservations[0],
+    terminalObservationsDropped: result.terminalObservationsDropped }));
   if (phase === 'after-stop') {
     assert.equal(result.manifest.state, 'complete'); assert.equal(result.terminal, 'stopped'); assert.equal(result.injected, 0); assert.equal(result.outputWasLive, true);
     assert.ok(Math.abs(result.decoded.duration * 1000 - result.manifest.durationMs) <= 250);
@@ -1338,10 +1355,14 @@ test('native startup timeout freezes before cleanup and reports after release ev
       }
       globalThis.MediaRecorder = HeldRecorder;
       const canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720;
-      const context = canvas.getContext('2d'); context.fillRect(0, 0, 1280, 720);
+      const context = canvas.getContext('2d');
       const screen = canvas.captureStream(30), store = await createDraftStore(), id = crypto.randomUUID();
-      let session, detail, releasedAtWarning;
+      let session, detail, releasedAtWarning, paintTimer;
+      const paint = () => context.fillRect(0, 0, 1280, 720);
       try {
+        // captureStream samples newly painted content; keep this mock's source
+        // live while the compositor attaches, independent of the held encoder.
+        paint(); paintTimer = setInterval(paint, 1000 / 30);
         session = await createCaptureSession({ id, title: 'Controlled missing native start event', mode: 'screen', screen,
           store, persistent: false, backupFolder: false, onWarning(message, value) {
             if (value?.type !== 'encoder-start') return;
@@ -1355,7 +1376,11 @@ test('native startup timeout freezes before cleanup and reports after release ev
           refusalRetained: saved.events.some(event => event.kind === 'startup-warning-refused'),
           frozen: Object.isFrozen(detail) && Object.isFrozen(detail.encoders) && detail.encoders.every(Object.isFrozen),
           allInactive: encoders.every(value => value.state === 'inactive') });
-      } finally { await session?.cancel(); screen.getTracks().forEach(track => track.stop()); globalThis.MediaRecorder = NativeRecorder; }
+      } finally {
+        clearInterval(paintTimer);
+        try { await session?.cancel(); }
+        finally { screen.getTracks().forEach(track => track.stop()); globalThis.MediaRecorder = NativeRecorder; }
+      }
     }
     return result;
   });

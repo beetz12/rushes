@@ -1,3 +1,4 @@
+import { fixtureDocument } from './fixture-document.mjs';
 import assert from 'node:assert/strict';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -77,6 +78,10 @@ const checkpointRequested = process.env.RUSHES_M1_DURABLE_CHECKPOINT === '1';
 if (process.env.RUSHES_M1_DURABLE_CHECKPOINT !== undefined && !checkpointRequested) throw new Error('Durable checkpoint option must be1');
 if (checkpointRequested && (process.platform !== 'win32' || typeof process.send !== 'function' || sourceOnly || sourceControl || diagnostic || long || reference || sourceMode !== 'native-reference'))
   throw new Error('Durable checkpoints require the supervised short Windows native-reference diagnostic');
+const nativeEncoderControl = process.env.RUSHES_M1_NATIVE_ENCODER_CONTROL === '1';
+if (process.env.RUSHES_M1_NATIVE_ENCODER_CONTROL !== undefined && !nativeEncoderControl) throw new Error('Native encoder control option must be1');
+if (nativeEncoderControl && (!sourceOnly || sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl || nativeTraceRequested || checkpointRequested || sourceAudioFrames !== 128 || sourceAudioSink !== 'none'))
+  throw new Error('Raw native encoder control requires the untraced8s native-reference128 source-only diagnostic');
 const diagnosticDurationMs = allocationDiagnostic ? 180000 : 240000;
 const macLockRequired = allocationDiagnostic || (long && process.platform === 'darwin');
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -84,8 +89,8 @@ const startupObservationRequested = shouldObserveStartup({ checkpointRequested, 
 const proof = resolve(process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir(), 'rushes-m1-')));
 await mkdir(proof, { recursive: true, mode: 0o700 });
 const profile = join(proof, 'isolated-chrome-profile');
-const evidence = { schema: sourceOnly ? 'rushes.source-load-control/1' : 'rushes.independent-m1/1', startedAt: new Date().toISOString(),
-  node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceAudioSink, sourceAudioTrace, sourceVideoTrace, sourceTaskTrace, sourceTaskWindowMs, checkpointRequested, startupObservationRequested, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
+const evidence = { schema: nativeEncoderControl ? 'rushes.native-encoder-control/1' : sourceOnly ? 'rushes.source-load-control/1' : 'rushes.independent-m1/1', startedAt: new Date().toISOString(),
+  node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, nativeEncoderControl, sourceAudioFrames, sourceAudioSink, sourceAudioTrace, sourceVideoTrace, sourceTaskTrace, sourceTaskWindowMs, checkpointRequested, startupObservationRequested, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
   normalBackgroundFlags: true, source: 'native Chrome fake MJPEG with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; tab activation alone is not physical minimization',
@@ -97,6 +102,8 @@ for (const filename of ['test/matrix.mjs', 'test/matrix-browser-options.mjs', 't
 for (const filename of ['test/native-clock-seed.mjs', 'test/cold-trace.mjs', 'test/startup-metadata.mjs'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 evidence.fileHashes['test/matrix-checkpoint-action.mjs'] = createHash('sha256').update(await readFile(join(root, 'test/matrix-checkpoint-action.mjs'))).digest('hex');
+for (const filename of ['test/matrix-native-encoder-control.mjs', 'test/fixture-document.mjs'])
+  evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 evidence.fileHashes['src/capture/cadence.ts'] = createHash('sha256').update(await readFile(join(root, 'src/capture/cadence.ts'))).digest('hex');
 evidence.fileHashes['test/native-optical-roi.mjs'] = createHash('sha256').update(await readFile(join(root, 'test/native-optical-roi.mjs'))).digest('hex');
 evidence.lifecycle.push({ name: 'decode-tool-identity-start', at: new Date().toISOString() });
@@ -194,7 +201,7 @@ async function startMatrixTake(options = {}, beforeStart) {
   await bounded(page.evaluate(async options => {
     const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
     window.matrixTake = await prepareMatrix(options);
-  }, { ...options, sourceMode, sourceOnly, sourceAudioFrames, sourceAudioSink, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed, startupObservation: startupObservationRequested && !evidence.recording, audioTimingObservation: checkpointRequested && !evidence.recording }), 30000, 'Matrix page preparation');
+  }, { ...options, sourceMode, sourceOnly, nativeEncoderControl: evidence.nativeEncoderControl === true, sourceAudioFrames, sourceAudioSink, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed, startupObservation: startupObservationRequested && !evidence.recording, audioTimingObservation: checkpointRequested && !evidence.recording }), 30000, 'Matrix page preparation');
   await stage('page-preparation-ready');
   if (beforeStart) {
     try { await beforeStart(); }
@@ -341,6 +348,24 @@ async function downloadTracks(manifest, directory) {
   }
   return saved;
 }
+const nativeEncoderPrefix = 'GENERATED_NATIVE_ENCODER_CONTROL ';
+function nativeEncoderRow(value) {
+  if (!value || Object.keys(value).sort().join(',') !== 'atMs,bytes,failures,firstStartMs,phase,schema,startCalls,startEvents,startReturns,stopCalls,stopEvents,stopReturns,takeId'
+    || value.schema !== 'rushes.raw-native-vp8-row/1' || typeof value.takeId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value.takeId)
+    || !['after-start-call', 'startup-settled', 'before-stop', 'stop-settled'].includes(value.phase)
+    || !Number.isFinite(value.atMs) || value.atMs < 0 || (value.firstStartMs !== null && (!Number.isFinite(value.firstStartMs) || value.firstStartMs < 0))
+    || !['bytes', 'failures', 'startCalls', 'startReturns', 'startEvents', 'stopCalls', 'stopReturns', 'stopEvents'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)) return;
+  return value;
+}
+async function retainNativeEncoder() {
+  if (evidence.nativeEncoderFile) return;
+  try {
+    const pending = page.waitForEvent('download', { timeout: 10000 }); void pending.catch(() => undefined);
+    await bounded(page.evaluate(() => window.matrixTake.downloadNativeEncoder()), 10000, 'Raw native encoder download');
+    const file = join(proof, 'raw-native.webm'); await (await pending).saveAs(file);
+    evidence.nativeEncoderFile = await mediaFileEvidence(file); await save();
+  } catch (error) { evidence.nativeEncoderDownloadError = String(error); evidence.failures.push('Raw native encoded bytes were not retained'); }
+}
 async function probeFrames(file) {
   const { stdout } = await run(process.env.RUSHES_FFPROBE || 'ffprobe', ['-v', 'error', '-select_streams', 'v:0',
     '-show_frames', '-show_entries', 'frame=best_effort_timestamp_time,width,height', '-of', 'json', file], { maxBuffer: 32 * 1024 ** 2 });
@@ -459,13 +484,24 @@ try {
         else nativeFiles.createReadStream(media.container, { start: first, end: last }).pipe(response);
       });
       value.middlewares.use('/matrix-fixture', (_request, response) => { response.setHeader('Content-Type', 'text/html');
-        response.end('<!doctype html><title>Independent Rushes synthetic M1</title>'); });
+        response.end(fixtureDocument('Independent Rushes synthetic M1')); });
     } }],
   });
   await server.listen(); origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   await stage('browser-launch-start');
   const context = await launch(media);
   await stage('browser-launch-ready');
+  if (nativeEncoderControl) {
+    evidence.nativeEncoderRows = []; evidence.nativeEncoderRowsInvalid = 0; evidence.nativeEncoderRowsDropped = 0;
+    page.on('console', message => {
+      const text = message.text(); if (!text.startsWith(nativeEncoderPrefix)) return;
+      if (text.length > 2048) { evidence.nativeEncoderRowsInvalid++; return; }
+      let value; try { value = JSON.parse(text.slice(nativeEncoderPrefix.length)); } catch { evidence.nativeEncoderRowsInvalid++; return; }
+      const row = nativeEncoderRow(value); if (!row) { evidence.nativeEncoderRowsInvalid++; return; }
+      if (evidence.nativeEncoderRows.length >= 16) { evidence.nativeEncoderRowsDropped++; return; }
+      evidence.nativeEncoderRows.push(row); console.log(nativeEncoderPrefix + JSON.stringify(row));
+    });
+  }
   if(fullNativeTrace){
     evidence.nativeRecorderCalls=[];evidence.droppedNativeRecorderCallRows=0;
     page.on('console',message=>{
@@ -592,6 +628,7 @@ try {
   finally { finishing = false; await monitor; }
   evidence.finalizationMs = Date.now() - finalizationStarted;
   hostMonitor?.assert();
+  if (nativeEncoderControl) await retainNativeEncoder();
   // Keep the actual PCM even if a later shape/decode/phase guard rejects the run.
   if (sourceMode === 'native-reference') {
     await checkpointPhase('source-reference-download');
@@ -603,7 +640,7 @@ try {
     releaseTraceRead?.('whole-source-and-PCM-retired');
   }
   if (sourceOnly) {
-    evidence.scope = 'Canonical supplied-reference source-only control; no product recording acceptance';
+    evidence.scope = nativeEncoderControl ? 'Raw native VP8 control with source qualification; no product recording acceptance' : 'Canonical supplied-reference source-only control; no product recording acceptance';
     const metrics = evidence.recording.metrics, observed = evidence.recording.observation;
     check('source-only creates no product encoder, chunks or store', () => {
       assert.equal(metrics.sourceOnly, true); assert.deepEqual(metrics.recorderKinds, []); assert.deepEqual(metrics.chunks, []);
@@ -628,6 +665,24 @@ try {
     const qualification = qualifyNativeCalibration(evidence.recording, await readFile(evidence.sourceObservationFile.path));
     evidence.calibrationQualification = qualification.stimulus; evidence.sourceQualification = qualification.source;
     check('source-only source phase and every actual transition qualify', () => assert.ok(qualification.stimulus.qualified && qualification.source.qualified));
+    if (nativeEncoderControl) {
+      try { evidence.nativeEncoderDecode = await probeFrames(evidence.nativeEncoderFile.path); }
+      catch (error) { evidence.nativeEncoderDecodeError = String(error); evidence.failures.push('Raw native offline decode failed'); }
+      const raw = metrics.nativeEncoderControl;
+      check('raw native encoder has actual live startup and clean Stop acknowledgement', () => {
+        assert.equal(evidence.schema, 'rushes.native-encoder-control/1'); assert.ok(raw.firstStartMs !== null && raw.firstStartMs - raw.startRequestedMs < 10000);
+        assert.equal(raw.startCalls, 1); assert.equal(raw.startReturns, 1); assert.equal(raw.stopCalls, 1); assert.equal(raw.stopReturns, 1); assert.equal(raw.stopEvents, 1);
+        assert.equal(raw.cloneEnded, true); assert.deepEqual(raw.failures, []); assert.equal(metrics.nativeEncoderRetirementError, undefined);
+        assert.equal(raw.droppedRows, 0); assert.equal(metrics.nativeEncoderObservationErrors ?? 0, 0); assert.equal(metrics.nativeEncoderRowsDropped ?? 0, 0); assert.equal(evidence.nativeEncoderRowsInvalid, 0); assert.equal(evidence.nativeEncoderRowsDropped, 0);
+      });
+      check('raw native encoder receives all five actual pauses and resumes', () => {
+        for (const kind of ['pause-call', 'pause-event', 'resume-call', 'resume-event']) assert.equal(raw.rows.filter(row => row.kind === kind).length, 5);
+      });
+      check('raw native saved bytes and SHA are retained', () => { assert.ok(raw.bytes > 0 && raw.chunks > 0); assert.equal(evidence.nativeEncoderFile.bytes, raw.bytes); assert.match(evidence.nativeEncoderFile.sha256, /^[a-f0-9]{64}$/); });
+      check('raw native VP8 actually decodes720p', () => assert.deepEqual([evidence.nativeEncoderDecode.width, evidence.nativeEncoderDecode.height], [1280, 720]));
+      check('raw native decoded duration matches its actual observation', () => assert.ok(Math.abs(evidence.nativeEncoderDecode.durationSeconds * 1000 - observed.durationMs) <= 250));
+      check('raw native decoded video retains250ms continuity', () => assert.equal(evidence.nativeEncoderDecode.gapsAbove250ms.length, 0));
+    }
   } else {
   // Retain PCM first. A diagnostic qualification failure must not discard media
   // or prevent the original independent source/decode predicates from running.
@@ -758,6 +813,15 @@ try {
   }
 } catch (error) {
   evidence.failures.push(`Harness execution: ${error.stack || error}`); console.error(error);
+  if (nativeEncoderControl && page) {
+    try { evidence.recording = await bounded(page.evaluate(() => window.matrixTake.finish()), 20000, 'Failed raw encoder source retirement'); }
+    catch (failure) {
+      evidence.nativeEncoderFailureRetirement = String(failure);
+      try { evidence.recording = await bounded(page.evaluate(() => window.matrixTake.snapshot()), 1000, 'Failed raw encoder snapshot'); }
+      catch (missing) { evidence.nativeEncoderFailureSnapshot = String(missing); }
+    }
+    await retainNativeEncoder();
+  }
   try { await durableCheckpoint('first-error'); } catch (checkpointError) { evidence.failures.push(`Durable first-error checkpoint: ${checkpointError.name}`); }
   if (page) {
     try { evidence.preparationMetrics = await bounded(page.evaluate(() => globalThis.matrixPreparationMetrics), 1000, 'Preparation error read-back'); }

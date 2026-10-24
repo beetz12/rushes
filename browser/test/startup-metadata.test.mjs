@@ -1,3 +1,4 @@
+import { frameFormatName } from './startup-metadata.mjs';
 import { generatedAudioWorkerObserver } from './generated-audio-worker.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -161,4 +162,16 @@ test('ordinary short Windows native trace enables the existing startup observer 
   assert.equal(shouldObserveStartup({ ...profile, fullNativeTrace: false }), false);
   for (const change of [{ platform: 'darwin' }, { sourceMode: 'container' }, { sourceOnly: true }, { sourceControl: true }, { diagnostic: true }, { long: true }, { reference: true }])
     assert.equal(shouldObserveStartup({ ...profile, ...change }), false, JSON.stringify(change));
+});
+
+test('first existing frame exposes only a pixel-format enum and never implies its storage type', () => {
+  assert.equal(frameFormatName('NV12'), 'NV12'); assert.equal(frameFormatName('I420'), 'I420');
+  assert.equal(frameFormatName(null), 'opaque');
+  for (const value of [undefined, 'opaque', 'unknown', 'toString', '__proto__', '/private/path']) assert.equal(frameFormatName(value), 'unknown');
+});
+test('first-frame startup rows reject unknown roles, unbounded format strings and extra payload fields', () => {
+  const row = { takeId: 'generated-take', index: 0, timeMs: 12, kind: 'frame-format', role: 'native-input', format: 'I420' };
+  assert.deepEqual(startupMetadata(startupPrefix + JSON.stringify(row)), row);
+  for (const change of [{ role: 'arbitrary' }, { format: '/private/path' }, { pixelBytes: [1, 2, 3] }])
+    assert.equal(startupMetadata(startupPrefix + JSON.stringify({ ...row, ...change })), undefined);
 });

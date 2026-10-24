@@ -21,6 +21,18 @@ async function until(operation, expires) {
     return result;
   } finally { clearTimeout(timer); }
 }
+// Retain only a known assertion reason from the independently executed check.
+// Raw stderr can contain paths and process commands and must not enter evidence.
+export function retirementPredicateReason(stderr) {
+  if (typeof stderr !== 'string') return 'unclassified';
+  const observed = stderr.slice(0, 8192).match(/^AssertionError(?: \[ERR_ASSERTION\])?: ([^\r\n]+)\r?$/m);
+  return new Map([
+    ['Process inventory positive control is missing', 'inventory-positive-control-missing'],
+    ['Owned browser process is still present', 'owned-browser-process-present'],
+    ['A Chrome command line could not be inspected', 'chrome-command-uninspectable'],
+    ['Owned browser profile is still in use', 'owned-profile-in-use'],
+  ]).get(observed?.[1]) ?? 'unclassified';
+}
 export async function requestCheckpoint(channel, sequence, stage) {
   if (typeof channel.send !== 'function' || !Number.isSafeInteger(sequence) || sequence < 1 || sequence > 3 || !stages.has(stage))
     throw new Error('Invalid durable checkpoint channel');
@@ -290,6 +302,7 @@ export async function main() {
   catch(error) { retirementActualExit = 1;retirementFailure={name:error.name,code:typeof error.code==='string'?error.code.slice(0,80):Number.isInteger(error.code)?error.code:undefined,
     signal:typeof error.signal==='string'?error.signal.slice(0,32):undefined,killed:typeof error.killed==='boolean'?error.killed:undefined,
     assertionCode:typeof error.stderr==='string'&&error.stderr.includes('ERR_ASSERTION')?'ERR_ASSERTION':undefined,
+    observedAssertionReason:retirementPredicateReason(error.stderr),
     scope:'Failure classification; not the original command exit unless code is a numeric exit'}; }
   const ids=[startup.artifact.id,...checkpoints.receipts.map(row=>row.artifact.id)];
   const complete = !lifetime.supervisorDeadlineExceeded && outcome.closeObserved && outcome.actualExit === 0 && !outcome.signal && !outcome.processError && !checkpoints.errors.length && retirementActualExit === 0

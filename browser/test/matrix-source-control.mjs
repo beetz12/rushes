@@ -1,3 +1,4 @@
+import { fixtureDocument } from './fixture-document.mjs';
 // Diagnostic: the same native fake camera, without Rushes capture/composition.
 import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile } from 'node:fs/promises';
@@ -15,7 +16,7 @@ const fixture = process.env.RUSHES_M1_SOURCE_FILE;
 if (!fixture) throw new Error('Set RUSHES_M1_SOURCE_FILE to an already generated native MJPEG fixture.');
 const root = fileURLToPath(new URL('..', import.meta.url)), proof = process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir(), 'rushes-native-control-'));
 const server = await createServer({ root, server: { host: '127.0.0.1', port: 0 }, logLevel: 'error' });
-server.middlewares.use('/native-control', (_request, response) => { response.setHeader('Content-Type', 'text/html'); response.end('<!doctype html><title>Native fake capture control</title>'); });
+server.middlewares.use('/native-control', (_request, response) => { response.setHeader('Content-Type', 'text/html'); response.end(fixtureDocument('Native fake capture control')); });
 await server.listen(); const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
 const samples = [], children = [], browsers = [];
 try {

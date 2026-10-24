@@ -168,18 +168,53 @@ jobs:
           RUSHES_M1_BROWSER_MODE: headful
           RUSHES_M1_VIDEO_BUFFER: ${{ runner.os == 'macOS' && 'cpu' || 'default' }}
           RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+          RUSHES_M1_SOURCE_AUDIO_SINK: none
         run: |
           mkdir -p "$RUSHES_M1_PROOF"
           set +e
           node browser/test/matrix.mjs
           verdict=$?
           set -e
+          echo "$verdict" > "$RUSHES_M1_PROOF/command.exit"
+          set +e
           node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          retirement=$?
+          set -e
+          echo "$retirement" > "$RUSHES_M1_PROOF/retirement.exit"
+          if [ "$retirement" -ne 0 ]; then exit "$retirement"; fi
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      # Same-host serial contrast: host/cache warm state and arm order remain
+      # confounders. This full Default128 arm cannot replace the None128 verdict.
+      - name: Full recorder128 Default sink contrast
+        id: loaded_default128
+        if: ${{ !cancelled() && steps.loaded128.outputs.retired == 'true' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-control-loaded-default128
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_BROWSER_MODE: headful
+          RUSHES_M1_VIDEO_BUFFER: ${{ runner.os == 'macOS' && 'cpu' || 'default' }}
+          RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+          RUSHES_M1_SOURCE_AUDIO_SINK: default
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          echo "$verdict" > "$RUSHES_M1_PROOF/command.exit"
+          set +e
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          retirement=$?
+          set -e
+          echo "$retirement" > "$RUSHES_M1_PROOF/retirement.exit"
+          if [ "$retirement" -ne 0 ]; then exit "$retirement"; fi
           echo "retired=true" >> "$GITHUB_OUTPUT"
           exit "$verdict"
       - name: Native source-only480
         id: source480
-        if: ${{ !cancelled() && steps.loaded128.outputs.retired == 'true' }}
+        if: ${{ !cancelled() && steps.loaded_default128.outputs.retired == 'true' }}
         timeout-minutes: 3
         env:
           RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-control-source480
@@ -242,6 +277,8 @@ jobs:
             ${{ runner.temp }}/rushes-test-chrome/windows-sandbox-access.json
             ${{ runner.temp }}/rushes-control-media/pins.json
             ${{ runner.temp }}/rushes-control-*/metrics.json
+            ${{ runner.temp }}/rushes-control-*/command.exit
+            ${{ runner.temp }}/rushes-control-*/retirement.exit
             ${{ runner.temp }}/rushes-control-*/retirement.json
             ${{ runner.temp }}/rushes-control-*/browser-owner.json
             ${{ runner.temp }}/rushes-control-*/owned-browser-pid.json

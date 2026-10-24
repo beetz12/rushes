@@ -6,7 +6,7 @@ import * as brokerPaths from 'node:path';
 import * as brokerProcesses from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { superviseCheckpoints, requestCheckpoint, uploadInWorker, withoutCredentials, matrixChildEnvironment, parseArtifactOutput,
-  supervisorSnapshot,waitForOwnedReady,matrixOutcomeBeforeDeadline } from './matrix-checkpoint-action.mjs';
+  supervisorSnapshot,waitForOwnedReady,matrixOutcomeBeforeDeadline,retirementPredicateReason } from './matrix-checkpoint-action.mjs';
 const artifact = { id: 123, size: 42, digest: 'a'.repeat(64) };
 const assert = verifyBroker.default, EventEmitter = brokerEvents.EventEmitter;
 class Child extends EventEmitter { connected = true; replies = []; send(reply) { this.replies.push(reply); this.emit('reply', reply); } }
@@ -167,4 +167,26 @@ test('a natural child close within budget requires no supervisor termination',as
   const result=await matrixOutcomeBeforeDeadline(Promise.resolve({actualExit:1,signal:null,closeObserved:true}),{expires:performance.now()+1000,
     beforeTerminate:()=>{throw new Error('unexpected snapshot');},terminate:()=>{throw new Error('unexpected termination');}});
   assert.equal(result.supervisorDeadlineExceeded,false);assert.equal(result.outcome.actualExit,1);
+});
+
+// These are the actual hard-coded predicates in verification/browser-retirement.mjs.
+test('independent retirement retains only the enumerated actual assertion reason', () => {
+  for (const [message, reason] of [
+    ['Process inventory positive control is missing', 'inventory-positive-control-missing'],
+    ['Owned browser process is still present', 'owned-browser-process-present'],
+    ['A Chrome command line could not be inspected', 'chrome-command-uninspectable'],
+    ['Owned browser profile is still in use', 'owned-profile-in-use'],
+  ]) for (const newline of ['\n', '\r\n'])
+    assert.equal(retirementPredicateReason(`node:internal/assert/utils:272${newline}AssertionError [ERR_ASSERTION]: ${message}${newline}    at requireRetired`), reason);
+});
+test('unclassified retirement stderr remains unknown without copying private process text', () => {
+  for (const stderr of [undefined, '', 'Error: taskkill failed',
+    'assert.ok(condition, "Owned browser process is still present");',
+    'prefix AssertionError [ERR_ASSERTION]: Owned browser profile is still in use',
+    'AssertionError [ERR_ASSERTION]: unfamiliar predicate',
+    ...['toString', '__proto__', 'constructor'].map(value => `AssertionError [ERR_ASSERTION]: ${value}`),
+    'x'.repeat(8192) + '\nAssertionError [ERR_ASSERTION]: Owned browser process is still present'])
+    assert.equal(retirementPredicateReason(stderr), 'unclassified');
+  const reason = retirementPredicateReason('AssertionError [ERR_ASSERTION]: Owned browser profile is still in use\nprivate --user-data-dir=/secret-owned-profile');
+  assert.equal(reason, 'owned-profile-in-use'); assert.ok(!JSON.stringify({ reason }).includes('secret-owned-profile'));
 });

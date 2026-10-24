@@ -1,5 +1,6 @@
+import { createNativeEncoderControl } from './matrix-native-encoder-control.mjs';
 import { generatedAudioWorkerObserver } from './generated-audio-worker.mjs';
-import { audioFailureMetadata, encoderStartMetadata } from './startup-metadata.mjs';
+import { audioFailureMetadata, encoderStartMetadata, frameFormatName } from './startup-metadata.mjs';
 import { nativeReferenceClock } from './native-reference-clock.mjs';
 import { nativeReferenceWitness, SOURCE_PCM_GUARD_MS } from './native-reference-witness.mjs';
 export async function directContainerControl(durationMs) {
@@ -34,9 +35,46 @@ export async function directContainerControl(durationMs) {
   }
 }
 
+// One explicit raw encoder is layered on the existing source observation only.
+export function withNativeEncoderControl(observation, source, NativeRecorder, metrics, dependencies = {}) {
+  const control = createNativeEncoderControl(source, { ...dependencies, Recorder: NativeRecorder });
+  let stopping, finished;
+  const update = () => { metrics.nativeEncoderControl = control.snapshot(); };
+  const emit = phase => {
+    update(); const raw = metrics.nativeEncoderControl;
+    try { (dependencies.emit ?? (row => console.info('GENERATED_NATIVE_ENCODER_CONTROL ' + JSON.stringify(row))))({
+      schema: 'rushes.raw-native-vp8-row/1', takeId: observation.id, phase, atMs: (dependencies.now ?? (() => performance.now()))(),
+      startCalls: raw.startCalls, startReturns: raw.startReturns, startEvents: raw.startEvents, firstStartMs: raw.firstStartMs,
+      stopCalls: raw.stopCalls, stopReturns: raw.stopReturns, stopEvents: raw.stopEvents, bytes: raw.bytes, failures: raw.failures.length }); }
+    catch { metrics.nativeEncoderObservationErrors = (metrics.nativeEncoderObservationErrors ?? 0) + 1; }
+  };
+  update();
+  const stop = () => stopping ??= (async () => {
+    const observed = observation.session.stop(); emit('before-stop');
+    try { await control.stop(); }
+    catch (error) { metrics.nativeEncoderRetirementError = String(error).slice(0, 256); }
+    finally { emit('stop-settled'); await observed; }
+  })();
+  return { ...observation, session: { stop },
+    async start() {
+      const started = control.start(); observation.start(); emit('after-start-call');
+      // Epoch follows the actual native call, before waiting for its event.
+      try { await started; } finally { emit('startup-settled'); }
+    },
+    pause() { if (!stopping) { control.pause(); observation.pause(); update(); } },
+    resume() { if (!stopping) { control.resume(); observation.resume(); update(); } },
+    snapshot() { update(); return observation.snapshot(); },
+    finish() { return finished ??= (async () => { try { await stop(); return await observation.finish(); } finally { update(); } })(); },
+    async downloadNativeEncoder() {
+      const url = URL.createObjectURL(control.blob()), link = document.createElement('a');
+      link.href = url; link.download = 'raw-native.webm'; link.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+    },
+  };
+}
+
 // Independent M1 instrumentation. Native Chrome fake media is supplied by the
 // runner; this page never requests a real screen or uses a timer as its video source.
-export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true, clockSeed, sourceOnly = false, sourceAudioFrames = 128, sourceAudioSink = 'none', startupObservation = false, audioTimingObservation = false } = {}) {
+export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true, clockSeed, sourceOnly = false, nativeEncoderControl = false, sourceAudioFrames = 128, sourceAudioSink = 'none', startupObservation = false, audioTimingObservation = false } = {}) {
   if (typeof sourceOnly !== 'boolean' || (sourceOnly && (sourceMode !== 'native-reference' || diagnostic || !referenceWitness)))
     throw new Error('Source-only observation requires the ordinary native-reference witness');
   if (![128, 480].includes(sourceAudioFrames) || (sourceAudioFrames !== 128 && sourceMode !== 'native-reference'))
@@ -47,6 +85,8 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
     throw new Error('Startup observations require an explicit generated full native-reference diagnostic');
   if (typeof audioTimingObservation !== 'boolean' || (audioTimingObservation && (!startupObservation || sourceMode !== 'native-reference' || sourceOnly || diagnostic || !referenceWitness)))
     throw new Error('Audio delivery timing requires the supervised initial native-reference diagnostic');
+  if (typeof nativeEncoderControl !== 'boolean' || (nativeEncoderControl && (!sourceOnly || sourceMode !== 'native-reference' || diagnostic || !referenceWitness || sourceAudioFrames !== 128 || sourceAudioSink !== 'none')))
+    throw new Error('Raw native encoder control requires its explicit native-reference128 source-only diagnostic');
   let audioObserver;
   let startup = () => undefined, audioFailureAt;
   const { createCaptureSession } = await import('/src/capture/index.ts');
@@ -230,6 +270,10 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
             if (stopAtTimestampUs !== undefined && frame.timestamp > stopAtTimestampUs) { crossingTimestampUs = frame.timestamp; break; }
             const now = performance.now(), timestamp = frame.timestamp;
             info.count++; info.firstTimestamp ??= timestamp;
+            if (info.count === 1) {
+              info.firstFormat = frameFormatName(frame.format);
+              if (startupObservation) startup({ kind: 'frame-format', role: name, format: info.firstFormat });
+            }
             if (info.lastTimestamp !== null) info.maxTimestampGapUs = Math.max(info.maxTimestampGapUs, timestamp - info.lastTimestamp);
             if (lastWall !== null) info.maxWallGapMs = Math.max(info.maxWallGapMs, now - lastWall);
             info.lastTimestamp = timestamp; lastWall = now; info.lastWallMs = now;
@@ -330,7 +374,7 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
         used: performance.memory.usedJSHeapSize, total: performance.memory.totalJSHeapSize, limit: performance.memory.jsHeapSizeLimit } : null });
     const visibility = () => metrics.visibility.push({ wallMs: performance.now(), state: document.visibilityState, hasFocus: document.hasFocus() });
     document.addEventListener('visibilitychange', visibility); visibility();
-    return { id, metrics, session: { stop: stopObservation }, snapshot,
+    const observation = { id, metrics, session: { stop: stopObservation }, snapshot,
       start() {
         if (startedAt || stopping) throw new Error('This source-only observation has already been used');
         startedAt = performance.now(); state('observing');
@@ -361,6 +405,13 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
         setTimeout(() => URL.revokeObjectURL(url), 30000);
       },
     };
+    if (!nativeEncoderControl) return observation;
+    try { return withNativeEncoderControl(observation, source.getVideoTracks()[0], nativeRecorder, metrics); }
+    catch (error) {
+      try { await observation.finish(); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], 'Raw encoder attachment and source retirement failed'); }
+      throw error;
+    }
   }
   const session = await createCaptureSession({ id, title: 'Independent synthetic M1', mode: 'screen-camera',
     screen, camera, microphone, store, persistent: false, backupFolder: backup,

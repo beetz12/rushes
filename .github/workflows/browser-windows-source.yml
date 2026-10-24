@@ -6,6 +6,7 @@ on:
       - '.github/workflows/browser-windows-source.yml'
       - 'browser/test/matrix.mjs'
       - 'browser/test/matrix-fixture.mjs'
+      - 'browser/test/matrix-native-encoder-control.mjs'
       - 'scripts/install-test-chrome.mjs'
 permissions:
   contents: read
@@ -118,10 +119,65 @@ jobs:
             ${{ runner.temp }}/rushes-windows-source-only/owned-browser-pid.json
             ${{ runner.temp }}/rushes-windows-source-only/supplied-reference.f32le
             ${{ runner.temp }}/rushes-windows-source-only/chrome-stderr.log
+      - name: Raw native VP8 eight-second control and independent retirement
+        id: raw_native
+        if: ${{ !cancelled() && steps.source.conclusion == 'success' && steps.source.outputs.retired == '0' && steps.source_evidence.conclusion == 'success' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_NATIVE_SOURCE_ONLY: '1'
+          RUSHES_M1_NATIVE_ENCODER_CONTROL: '1'
+          RUSHES_M1_SOURCE_AUDIO_SINK: none
+          RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+          RUSHES_M1_BROWSER_MODE: headful
+          RUSHES_M1_VIDEO_BUFFER: default
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-windows-raw-native
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          node browser/test/matrix.mjs
+          $rushesRawExit = $LASTEXITCODE
+          if ($null -eq $rushesRawExit) { throw 'Raw native command exit is unknown' }
+          Set-Content -Path "$env:RUSHES_M1_PROOF/command.exit" -Value $rushesRawExit
+          $rushesRetirementExit = 1
+          if (Test-Path "$env:RUSHES_M1_PROOF/owned-browser-pid.json") {
+            node verification/browser-retirement.mjs "$env:RUSHES_M1_PROOF/owned-browser-pid.json" "$env:RUSHES_M1_PROOF/retirement.json"
+            $rushesRetirementExit = $LASTEXITCODE
+            if ($null -eq $rushesRetirementExit) { throw 'Raw native retirement exit is unknown' }
+          }
+          if ($rushesRetirementExit -eq 0) {
+            $rushesRetired = Get-Content -Raw "$env:RUSHES_M1_PROOF/retirement.json" | ConvertFrom-Json
+            if (!$rushesRetired.processAbsent -or !$rushesRetired.profileAbsent -or $rushesRetired.positiveControl -le 0) {
+              $rushesRetirementExit = 1
+            }
+          }
+          Set-Content -Path "$env:RUSHES_M1_PROOF/retirement.exit" -Value $rushesRetirementExit
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "retired=$rushesRetirementExit"
+          if ($rushesRawExit -ne 0) { exit $rushesRawExit }
+          exit $rushesRetirementExit
+      - name: Finalize raw native evidence before entering the full recorder
+        id: raw_evidence
+        if: ${{ !cancelled() && steps.raw_native.outcome != 'skipped' && steps.source.conclusion == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-raw-before-full-${{ matrix.chrome }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/rushes-windows-source-input/pins.json
+            ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-test-chrome/windows-sandbox-access.json
+            ${{ runner.temp }}/rushes-windows-raw-native/metrics.json
+            ${{ runner.temp }}/rushes-windows-raw-native/command.exit
+            ${{ runner.temp }}/rushes-windows-raw-native/retirement.exit
+            ${{ runner.temp }}/rushes-windows-raw-native/retirement.json
+            ${{ runner.temp }}/rushes-windows-raw-native/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-windows-raw-native/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-windows-raw-native/raw-native.webm
+            ${{ runner.temp }}/rushes-windows-raw-native/chrome-stderr.log
       # No trace: its removal and the source-first order remain diagnostic confounds.
       # A failed source observation may be followed only after actual browser retirement.
       - name: Full untraced short recorder with the existing supervised first-error collector
-        if: ${{ !cancelled() && steps.input.conclusion == 'success' && steps.source.outputs.retired == '0' && steps.source_evidence.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.input.conclusion == 'success' && steps.source.outputs.retired == '0' && steps.source_evidence.conclusion == 'success' && steps.raw_native.outputs.retired == '0' && steps.raw_evidence.conclusion == 'success' }}
         timeout-minutes: 8
         uses: ./.github/actions/matrix-checkpoint
         env:
@@ -149,6 +205,17 @@ jobs:
             ${{ runner.temp }}/rushes-windows-source-only/owned-browser-pid.json
             ${{ runner.temp }}/rushes-windows-source-only/supplied-reference.f32le
             ${{ runner.temp }}/rushes-windows-source-only/chrome-stderr.log
+            ${{ runner.temp }}/rushes-windows-source-input/pins.json
+            ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-test-chrome/windows-sandbox-access.json
+            ${{ runner.temp }}/rushes-windows-raw-native/metrics.json
+            ${{ runner.temp }}/rushes-windows-raw-native/command.exit
+            ${{ runner.temp }}/rushes-windows-raw-native/retirement.exit
+            ${{ runner.temp }}/rushes-windows-raw-native/retirement.json
+            ${{ runner.temp }}/rushes-windows-raw-native/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-windows-raw-native/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-windows-raw-native/raw-native.webm
+            ${{ runner.temp }}/rushes-windows-raw-native/chrome-stderr.log
             ${{ runner.temp }}/rushes-windows-untraced-full/metrics.json
             ${{ runner.temp }}/rushes-windows-untraced-full/supervisor-*.json
             ${{ runner.temp }}/rushes-windows-untraced-full/retirement.json

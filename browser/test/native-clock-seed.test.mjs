@@ -1,3 +1,4 @@
+import { fixtureDocument } from './fixture-document.mjs';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'vite';
@@ -13,7 +14,7 @@ before(async () => {
   server = await createServer({ root: fileURLToPath(new URL('..', import.meta.url)), logLevel: 'error',
     server: { host: '127.0.0.1', port: 0 }, plugins: [{ name: 'native-clock-capability', configureServer(value) {
       value.middlewares.use('/clock-fixture', (_request, response) => {
-        response.setHeader('Content-Type', 'text/html'); response.end('<!doctype html><title>Generated scalar conversion control</title>');
+        response.setHeader('Content-Type', 'text/html'); response.end(fixtureDocument('Generated scalar conversion control'));
       });
     } }] });
   await server.listen(); origin = `http://127.0.0.1:${server.httpServer.address().port}`;

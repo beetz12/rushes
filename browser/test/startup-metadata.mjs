@@ -2,6 +2,11 @@
 export const startupPrefix = 'GENERATED_CAPTURE_STARTUP ';
 const roles = ['screen', 'camera', 'microphone', 'tab-audio', 'composed'];
 const phases = ['session-start-entered', 'session-start-resolved', 'journal-load-entered', 'journal-load-resolved'];
+const frameFormats = ['I420', 'I420A', 'I422', 'I422A', 'I444', 'I444A', 'NV12', 'RGBA', 'RGBX', 'BGRA', 'BGRX',
+  'I420P10', 'I420P12', 'I422P10', 'I422P12', 'I444P10', 'I444P12', 'RGBAF16', 'opaque', 'unknown'];
+export function frameFormatName(value) {
+  return value === null ? 'opaque' : frameFormats.includes(value) && !['opaque', 'unknown'].includes(value) ? value : 'unknown';
+}
 const scalarCount = value => Number.isSafeInteger(value) && value >= 0 && value <= 2147483647;
 const scalarAge = value => value === null || scalarCount(value);
 const vector = (value, length) => Array.isArray(value) && value.length === length && value.every(scalarCount);
@@ -57,6 +62,8 @@ export function startupMetadata(text) {
     && typeof row.message === 'string' && row.message.length <= 512
     && (!Object.hasOwn(row, 'audio') || audioFailureMetadata(row.audio))) return row;
   if (row.kind === 'encoder-timeout' && keys === 'detail,index,kind,takeId,timeMs' && encoderStartMetadata(row.detail)) return row;
+  if (row.kind === 'frame-format' && keys === 'format,index,kind,role,takeId,timeMs'
+    && ['native-input', 'input-screen', 'input-camera', 'output-composed'].includes(row.role) && frameFormats.includes(row.format)) return row;
   if (row.kind === 'audio-late' && row.workerId === 0) {
     const { takeId, index, timeMs, kind, workerId, ...detail } = row;
     if (lateAudioMetadata(detail)) return row;
