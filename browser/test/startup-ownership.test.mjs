@@ -14,18 +14,19 @@ const path = ownershipPaths.join(root, 'capture.mjs'); await ownershipFiles.writ
 const { createCaptureSession } = await import(ownershipURLs.pathToFileURL(path).href);
 const turn = () => new Promise(resolve => setImmediate(resolve));
 function deferred() { let resolve; const promise = new Promise(value => { resolve = value; }); return { promise, resolve }; }
-async function fixture({ failBeforeEvents = false, heldCheckpoint = false, simulatedClock = false, refuseWarningOnce = false, refuseTerminalCheckpoint = false, heldStops = false, refuseProducerShutdown = false } = {}) {
+async function fixture({ failBeforeEvents = false, heldCheckpoint = false, simulatedClock = false, refuseWarningOnce = false, refuseTerminalCheckpoint = false, heldStops = false, refuseProducerShutdown = false, heldStarts = false, includeCamera = false, audioInput, trackTimers = false, platform = 'Win32', clientPlatform } = {}) {
   const keys = ['isSecureContext', 'navigator', 'OffscreenCanvas', 'VideoFrame', 'MediaStream',
-    'MediaStreamTrackProcessor', 'MediaStreamTrackGenerator', 'MediaRecorder', 'Worker', 'document', ...(simulatedClock ? ['performance'] : [])];
+    'MediaStreamTrackProcessor', 'MediaStreamTrackGenerator', 'MediaRecorder', 'Worker', 'document', ...(simulatedClock ? ['performance'] : []), ...(trackTimers ? ['setTimeout', 'clearTimeout'] : [])];
   const previous = new Map(keys.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const stopSnapshots = []; let compositorTerminated = false;
-  const states = [], recorders = [], saves = [], tracks = [], entered = deferred(), gate = deferred();
+  const states = [], recorders = [], saves = [], tracks = [], warnings = [], workerMessages = [], timeouts = [], entered = deferred(), gate = deferred();
+  const nativeTimeout = globalThis.setTimeout, nativeClear = globalThis.clearTimeout;
   let worker, disk, held = false, now = 1, drainSawLive, warningRefused = false;
   class Track extends EventTarget {
     kind = 'video'; readyState = 'live'; enabled = true; muted = false;
-    constructor() { super(); tracks.push(this); }
+    constructor(kind = 'video') { super(); this.kind = typeof kind === 'string' ? kind : kind.kind; tracks.push(this); }
     async applyConstraints(value) { assert.deepEqual(value, { width: { max: 1280 }, height: { max: 720 }, frameRate: { max: 30 } }); }
-    clone() { return new Track(); }
+    clone() { return new Track(this.kind); }
     stop() { this.readyState = 'ended'; }
   }
   class Stream {
@@ -38,11 +39,13 @@ async function fixture({ failBeforeEvents = false, heldCheckpoint = false, simul
   class Generator extends Track { writable = new WritableStream(); }
   class Recorder extends EventTarget {
     static isTypeSupported() { return true; }
-    state = 'inactive'; startDelivered = false;
-    constructor(_stream, options) { super(); this.mimeType = options.mimeType; recorders.push(this); }
+    state = 'inactive'; startDelivered = false; startCalls = 0; stopCalls = 0; stopEvents = 0;
+    constructor(stream, options) { super(); this.mimeType = options.mimeType; this.options = options; this.video = stream.getVideoTracks().length > 0;
+      this.addEventListener('stop', () => this.stopEvents++); recorders.push(this); }
     deliverStart() { if (!this.startDelivered) { this.startDelivered = true; this.dispatchEvent(new Event('start')); } }
-    start() { this.state = 'recording'; if (!failBeforeEvents) queueMicrotask(() => this.deliverStart()); }
+    start() { this.startCalls++; this.state = 'recording'; if (!failBeforeEvents && !heldStarts) queueMicrotask(() => this.deliverStart()); }
     stop() {
+      this.stopCalls++;
       stopSnapshots.push({ tracksEnded: tracks.every(value => value.readyState === 'ended'), compositorTerminated });
       this.state = 'inactive'; queueMicrotask(() => { this.deliverStart(); if (!heldStops) this.dispatchEvent(new Event('stop')); });
     }
@@ -59,6 +62,7 @@ async function fixture({ failBeforeEvents = false, heldCheckpoint = false, simul
       }
     }
     postMessage(message) {
+      workerMessages.push(message.kind);
       if (message.kind === 'setup') queueMicrotask(() => this.emit({ kind: 'ready' }));
       if (message.kind === 'start' && failBeforeEvents) queueMicrotask(() => this.emit({ kind: 'error', message: 'Controlled compositor failure' }));
     }
@@ -81,24 +85,35 @@ async function fixture({ failBeforeEvents = false, heldCheckpoint = false, simul
         read: { queueWaitMs: 0, integrityMs: 0, assemblyMs: 0, chunks: 0, bytes: 0 } };
     }),
   };
-  const globals = { document: { createElement() { return { duration: .001, videoWidth: 1280, videoHeight: 720,
+  const globals = {
+    ...(trackTimers ? { setTimeout(fn, ms, ...args) { const row = { fn, ms, at: now, cleared: false }; row.id = nativeTimeout(fn, ms, ...args); timeouts.push(row); return row.id; },
+      clearTimeout(id) { const row = timeouts.find(value => value.id === id); if (row) row.cleared = true; nativeClear(id); } } : {}),
+    document: { createElement() { return { duration: .001, videoWidth: 1280, videoHeight: 720,
     load() { queueMicrotask(() => this.onloadeddata?.()); }, removeAttribute() {} }; } },
-    ...(simulatedClock ? { performance: { now: () => now } } : {}), isSecureContext: true, navigator: { storage: { getDirectory() {} } }, OffscreenCanvas: class {},
+    ...(simulatedClock ? { performance: { now: () => now } } : {}), isSecureContext: true, navigator: { platform, ...(clientPlatform !== undefined ? { userAgentData: { platform: clientPlatform } } : {}), storage: { getDirectory() {} } }, OffscreenCanvas: class {},
     VideoFrame: class {}, MediaStream: Stream, MediaStreamTrackGenerator: Generator, MediaRecorder: Recorder,
     Worker: WorkerEndpoint, MediaStreamTrackProcessor: class { readable = new ReadableStream(); } };
   for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { configurable: true, value });
-  let session;
+  let session; const screenTrack = new Track();
+  const audioTrack = audioInput ? new Track('audio') : undefined;
   try {
-    session = await createCaptureSession({ id: crypto.randomUUID(), title: 'Controlled startup ownership', mode: 'screen',
-      screen: new Stream([new Track()]), store, persistent: false, backupFolder: false, onState: value => states.push(value),
-      onWarning() { if (refuseWarningOnce && !warningRefused) { warningRefused = true; throw new Error('Controlled first warning refusal'); } },
+    session = await createCaptureSession({ id: crypto.randomUUID(), title: 'Controlled startup ownership', mode: includeCamera ? 'screen-camera' : 'screen',
+      screen: new Stream([screenTrack, ...(audioInput === 'screen' ? [audioTrack] : [])]),
+      ...(includeCamera ? { camera: new Stream([new Track()]) } : {}),
+      ...(audioInput === 'microphone' ? { microphone: new Stream([audioTrack]) } : {}), store, persistent: false, backupFolder: false, onState: value => states.push(value),
+      onWarning(message, detail) { warnings.push({ message, detail }); if (refuseWarningOnce && !warningRefused) { warningRefused = true; throw new Error('Controlled first warning refusal'); } },
       onCheckpoint(value) { if (refuseTerminalCheckpoint && value.state === 'interrupted') throw new Error('Controlled terminal checkpoint refusal'); } });
   } catch (error) { restore(); throw error; }
   function restore() { for (const [key, descriptor] of previous) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } }
-  return { session, states, saves, tracks, recorders, stopSnapshots, releaseStops: () => recorders.forEach(value => value.dispatchEvent(new Event('stop'))), entered: entered.promise, release: gate.resolve,
+  return { session, states, saves, tracks, recorders, warnings, workerMessages, stopSnapshots,
+    endSource: () => screenTrack.dispatchEvent(new Event('ended')),
+    activeTimeouts: () => timeouts.filter(value => !value.cleared),
+    fireExpired() { for (const value of timeouts.filter(value => !value.cleared && value.at + value.ms <= now)) { value.cleared = true; nativeClear(value.id); value.fn(); } }, releaseStops: () => recorders.filter(value => value.stopCalls > value.stopEvents).forEach(value => value.dispatchEvent(new Event('stop'))), entered: entered.promise, release: gate.resolve,
     stored: () => structuredClone(disk), advance: value => { now += value; }, savedState: () => disk?.state, drainLive: () => drainSawLive,
     fail: () => worker.emit({ kind: 'error', message: 'Controlled compositor failure' }), exists: () => !!disk,
-    async close() { gate.resolve(); if (heldStops) recorders.forEach(value => value.dispatchEvent(new Event('stop'))); try { await session.cancel(); } finally { restore(); } } };
+    async close() { gate.resolve(); const canceling = session.cancel();
+      if (heldStops) { await turn(); recorders.filter(value => value.stopCalls > value.stopEvents).forEach(value => value.dispatchEvent(new Event('stop'))); }
+      try { await canceling; } finally { timeouts.forEach(value => nativeClear(value.id)); restore(); } } };
 }
 test('late native start events after compositor failure cannot resolve startup successfully', { timeout: 5000 }, async () => {
   const f = await fixture({ failBeforeEvents: true });
@@ -189,7 +204,8 @@ test('fatal Stop requests owned producer shutdown first but still awaits real st
     await turn(); const beforeAck = settled;
     const snapshots = structuredClone(f.stopSnapshots); f.releaseStops();
     assert.match(await starting ?? '', /Controlled compositor failure/);
-    assert.equal(beforeAck, false); assert.equal(snapshots.length, 2);
+    assert.equal(beforeAck, false); assert.equal(snapshots.length, f.recorders.filter(value => value.startCalls > 0).length);
+    assert.equal(f.recorders[0].startCalls, 1); assert.equal(f.recorders[1].startCalls, 0);
     assert.ok(snapshots.every(value => value.tracksEnded && value.compositorTerminated));
     assert.equal(f.savedState(), 'interrupted');
   } finally { await f.close(); }
@@ -202,7 +218,195 @@ test('a fatal producer shutdown refusal cannot skip native Stop or its acknowled
     const starting = f.session.start().then(() => { settled = true; }, error => { settled = true; return error.message; });
     await turn(); const beforeAck = settled; const stops = f.stopSnapshots.length; f.releaseStops();
     assert.match(await starting ?? '', /Controlled compositor failure/);
-    assert.equal(beforeAck, false); assert.equal(stops, 2); assert.equal(f.savedState(), 'interrupted');
+    assert.equal(beforeAck, false); assert.equal(stops, f.recorders.filter(value => value.startCalls > 0).length);
+    assert.equal(f.recorders[0].startCalls, 1); assert.equal(f.recorders[1].startCalls, 0); assert.equal(f.savedState(), 'interrupted');
     assert.ok(f.stored().events.some(value => value.kind === 'producer-shutdown-error' && value.message.includes('Controlled producer shutdown refusal')));
   } finally { await f.close(); }
+});
+
+
+test('cohort admission starts first video and audio-only slots before waiting for a real live first video acknowledgement', { timeout: 5000 }, async () => {
+  for (const audioInput of ['screen', 'microphone']) {
+    const f = await fixture({ heldStarts: true, includeCamera: true, audioInput });
+    const starting = f.session.start(); void starting.catch(() => undefined);
+    try {
+      await turn(); const first = f.recorders[0], audio = f.recorders.find(value => !value.video);
+      const later = f.recorders.filter(value => value.video && value !== first);
+      assert.equal(first.startCalls, 1); assert.equal(audio.startCalls, 1); assert.ok(later.every(value => value.startCalls === 0));
+      assert.equal(first.options.videoBitsPerSecond, 4000000); assert.equal(f.recorders[1].options.videoBitsPerSecond, 1500000);
+      const early = audioInput === 'screen' ? audio : first, last = audioInput === 'screen' ? first : audio;
+      early.deliverStart(); await turn(); assert.ok(later.every(value => value.startCalls === 0));
+      last.deliverStart(); await turn(); assert.ok(later.every(value => value.startCalls === 1));
+      later.forEach(value => value.deliverStart()); await starting;
+      assert.equal(f.states.at(-1), 'recording');
+    } finally { await f.close(); }
+  }
+});
+
+test('cohort admission keeps the original whole ten-second deadline for a late second cohort', { timeout: 5000 }, async () => {
+  const f = await fixture({ heldStarts: true, includeCamera: true, audioInput: 'screen', simulatedClock: true, trackTimers: true });
+  const starting = f.session.start().then(() => undefined, error => error.message);
+  try {
+    await turn(); f.advance(9000); f.recorders.filter(value => value.startCalls > 0).forEach(value => value.deliverStart()); await turn();
+    const active = f.activeTimeouts(); assert.equal(active.length, 1); assert.equal(active[0].at + active[0].ms, 10001);
+    f.advance(1001); f.fireExpired(); assert.match(await starting, /encoder did not start/);
+    const observed = f.warnings.find(value => value.detail?.type === 'encoder-start').detail;
+    assert.ok(observed.elapsedMs >= 10000 && observed.elapsedMs < 10002); assert.equal(f.states.at(-1), 'interrupted');
+    assert.equal(f.activeTimeouts().length, 0);
+  } finally { await f.close(); }
+});
+
+test('cohort admission never issues later native starts after Stop, Cancel or source failure', { timeout: 5000 }, async () => {
+  for (const terminal of ['stop', 'cancel', 'source']) {
+    const f = await fixture({ heldStarts: true, includeCamera: true, audioInput: 'screen' });
+    const starting = f.session.start().then(() => undefined, error => error.message);
+    try {
+      await turn(); const later = f.recorders.filter(value => value.video && value !== f.recorders[0]);
+      assert.ok(later.every(value => value.startCalls === 0));
+      if (terminal === 'source') f.endSource(); else await f.session[terminal]();
+      assert.match(await starting ?? '', /during startup|source ended/); assert.ok(later.every(value => value.startCalls === 0));
+      assert.ok(f.tracks.every(value => value.readyState === 'ended'));
+    } finally { await f.close(); }
+  }
+});
+
+test('cohort admission carries an owned pause into every later recorder', { timeout: 5000 }, async () => {
+  const f = await fixture({ heldStarts: true, includeCamera: true, audioInput: 'screen' });
+  const starting = f.session.start(); void starting.catch(() => undefined);
+  try {
+    await turn(); await f.session.pause();
+    f.recorders.filter(value => value.startCalls > 0).forEach(value => value.deliverStart()); await turn();
+    const later = f.recorders.filter(value => value.video && value !== f.recorders[0]);
+    assert.ok(later.every(value => value.startCalls === 1 && value.state === 'paused'));
+    later.forEach(value => value.deliverStart()); await starting;
+    assert.equal(f.states.at(-1), 'paused'); assert.ok(f.recorders.every(value => value.state === 'paused'));
+    await f.session.resume(); assert.ok(f.recorders.every(value => value.state === 'recording'));
+  } finally { await f.close(); }
+});
+
+
+test('cohort admission rejects an inactive native Start even before a terminal owner exists', { timeout: 5000 }, async () => {
+  const f = await fixture({ heldStarts: true, includeCamera: true, audioInput: 'screen' });
+  const starting = f.session.start().then(() => undefined, error => error.message);
+  try {
+    await turn(); f.recorders[0].stop();
+    assert.match(await starting ?? '', /live start/);
+    assert.ok(f.recorders.filter(value => value.video && value !== f.recorders[0]).every(value => value.startCalls === 0));
+    assert.equal(f.states.at(-1), 'interrupted');
+  } finally { await f.close(); }
+});
+
+
+test('cohort admission rechecks ownership when Cancel follows the last first-cohort acknowledgement', { timeout: 5000 }, async () => {
+  const f = await fixture({ heldStarts: true, includeCamera: true, audioInput: 'screen' });
+  const starting = f.session.start().then(() => undefined, error => error.message); let canceling;
+  try {
+    await turn(); f.recorders.find(value => !value.video).deliverStart();
+    f.recorders[0].addEventListener('start', () => { canceling = f.session.cancel(); }, { once: true });
+    f.recorders[0].deliverStart(); assert.match(await starting ?? '', /during startup/); await canceling;
+    assert.ok(f.recorders.filter(value => value.video && value !== f.recorders[0]).every(value => value.startCalls === 0));
+    assert.equal(f.exists(), false);
+  } finally { await f.close(); }
+});
+
+
+test('platform admission preserves parallel Mac and unknown startup while explicitly selecting Windows only', { timeout: 5000 }, async () => {
+  const cases = [
+    { platform: 'MacIntel', clientPlatform: 'macOS', cohort: false },
+    { platform: 'MacIntel', cohort: false }, { platform: 'unrecognized', cohort: false },
+    { platform: 'Win32', clientPlatform: 'Unknown', cohort: false },
+    { platform: 'Win32', clientPlatform: null, cohort: false },
+    { platform: 'Win32', clientPlatform: 'macOS', cohort: false },
+    { platform: 'MacIntel', clientPlatform: 'Windows', cohort: true },
+    { platform: 'Win32', clientPlatform: 'Windows', cohort: true }, { platform: 'Win32', cohort: true },
+  ];
+  for (const input of cases) {
+    const f = await fixture({ ...input, heldStarts: true, includeCamera: true, audioInput: 'screen' });
+    const starting = f.session.start(); void starting.catch(() => undefined);
+    try {
+      await turn(); assert.deepEqual(f.recorders.map(value => value.startCalls), input.cohort ? [1, 0, 1, 0] : [1, 1, 1, 1]);
+      f.recorders.filter(value => value.startCalls > 0).forEach(value => value.deliverStart()); await turn();
+      f.recorders.filter(value => value.startCalls > 0).forEach(value => value.deliverStart()); await starting;
+      const policy = JSON.parse(f.stored().events.find(value => value.kind === 'encoder-admission').message);
+      assert.equal(policy.policy, input.cohort ? 'first-video-audio' : 'parallel');
+      assert.equal(policy.platformSource, input.clientPlatform === undefined ? 'legacy' : 'client-hint');
+      assert.equal(policy.platform, input.clientPlatform === null ? 'unknown' : input.clientPlatform ?? input.platform);
+    } finally { await f.close(); }
+  }
+});
+
+test('platform admission retains terminal ownership and waiter retirement on both branches', { timeout: 5000 }, async () => {
+  for (const platform of ['Win32', 'MacIntel']) for (const terminal of ['stop', 'cancel', 'source']) {
+    const f = await fixture({ platform, heldStarts: true, includeCamera: true, audioInput: 'screen', simulatedClock: true, trackTimers: true });
+    const starting = f.session.start().then(() => undefined, error => error.message);
+    try {
+      await turn(); const expected = platform === 'Win32' ? [1, 0, 1, 0] : [1, 1, 1, 1];
+      assert.deepEqual(f.recorders.map(value => value.startCalls), expected);
+      if (terminal === 'source') f.endSource(); else await f.session[terminal]();
+      assert.match(await starting ?? '', /during startup|source ended/);
+      assert.deepEqual(f.recorders.map(value => value.startCalls), expected); assert.equal(f.activeTimeouts().length, 0);
+      assert.ok(f.tracks.every(value => value.readyState === 'ended'));
+    } finally { await f.close(); }
+  }
+});
+
+test('platform admission freezes actual issued slots and still joins their held Stop acknowledgements', { timeout: 5000 }, async () => {
+  for (const platform of ['Win32', 'MacIntel']) {
+    const f = await fixture({ platform, heldStarts: true, heldStops: true, includeCamera: true, audioInput: 'screen', simulatedClock: true, trackTimers: true });
+    let settled = false; const starting = f.session.start().then(() => { settled = true; }, error => { settled = true; return error.message; });
+    try {
+      await turn(); const expected = platform === 'Win32' ? [1, 0, 1, 0] : [1, 1, 1, 1];
+      assert.deepEqual(f.recorders.map(value => value.startCalls), expected);
+      assert.equal(f.activeTimeouts().length, 1); assert.equal(f.activeTimeouts()[0].at + f.activeTimeouts()[0].ms, 10001);
+      f.advance(10001); f.fireExpired(); await turn();
+      const detail = f.warnings.find(value => value.detail?.type === 'encoder-start').detail;
+      assert.deepEqual(detail.encoders.map(value => value[2]), expected); assert.deepEqual(detail.encoders.map(value => value[3]), expected);
+      assert.deepEqual(detail.encoders.map(value => value[1]), expected.map(value => value ? 'recording' : 'inactive'));
+      assert.ok(Object.isFrozen(detail) && Object.isFrozen(detail.encoders)); assert.equal(detail.released, false);
+      assert.deepEqual(detail.encoders.map(value => value[4]), [0, 0, 0, 0]);
+      assert.equal(settled, false); assert.equal(f.stopSnapshots.length, platform === 'Win32' ? 2 : 4);
+      assert.deepEqual(f.recorders.map(value => value.stopCalls), expected);
+      assert.deepEqual(f.recorders.map(value => value.stopEvents), [0, 0, 0, 0]);
+      assert.ok(f.stopSnapshots.every(value => value.tracksEnded && value.compositorTerminated));
+      f.releaseStops(); assert.match(await starting ?? '', /encoder did not start/);
+      assert.deepEqual(f.recorders.map(value => value.stopEvents), expected);
+      assert.deepEqual(f.recorders.map(value => value.startCalls), expected); assert.equal(f.activeTimeouts().length, 0);
+      assert.equal(f.savedState(), 'interrupted');
+    } finally { f.releaseStops(); await f.close(); }
+  }
+});
+
+test('platform admission preserves nonterminal pause and rejects inactive Start on both branches', { timeout: 5000 }, async () => {
+  for (const platform of ['Win32', 'MacIntel']) {
+    const f = await fixture({ platform, heldStarts: true, includeCamera: true, audioInput: 'screen' });
+    const starting = f.session.start(); void starting.catch(() => undefined);
+    try {
+      await turn(); await f.session.pause();
+      f.recorders.filter(value => value.startCalls > 0).forEach(value => value.deliverStart()); await turn();
+      f.recorders.filter(value => value.startCalls > 0).forEach(value => value.deliverStart()); await starting;
+      assert.ok(f.recorders.every(value => value.state === 'paused')); await f.session.resume();
+      assert.ok(f.recorders.every(value => value.state === 'recording'));
+    } finally { await f.close(); }
+    const bad = await fixture({ platform, heldStarts: true, includeCamera: true, audioInput: 'screen' });
+    const refused = bad.session.start().then(() => undefined, error => error.message);
+    try { await turn(); const calls = bad.recorders.map(value => value.startCalls); bad.recorders[0].stop();
+      assert.match(await refused ?? '', /live start/); assert.deepEqual(bad.recorders.map(value => value.startCalls), calls);
+    } finally { await bad.close(); }
+  }
+});
+
+
+test('platform admission rejects a last-acknowledgement Cancel without reviving either branch', { timeout: 5000 }, async () => {
+  for (const platform of ['Win32', 'MacIntel']) {
+    const f = await fixture({ platform, heldStarts: true, includeCamera: true, audioInput: 'screen' });
+    const starting = f.session.start().then(() => undefined, error => error.message); let canceling;
+    try {
+      await turn(); const issued = f.recorders.filter(value => value.startCalls > 0), last = issued.at(-1);
+      const calls = f.recorders.map(value => value.startCalls);
+      issued.slice(0, -1).forEach(value => value.deliverStart());
+      last.addEventListener('start', () => { canceling = f.session.cancel(); }, { once: true }); last.deliverStart();
+      assert.match(await starting ?? '', /during startup/); await canceling;
+      assert.deepEqual(f.recorders.map(value => value.startCalls), calls); assert.equal(f.exists(), false);
+    } finally { await f.close(); }
+  }
 });

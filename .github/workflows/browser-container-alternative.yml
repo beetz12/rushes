@@ -4,6 +4,7 @@ on:
     branches: [codex/browser-production-20261022]
     paths:
       - '.github/workflows/browser-container-alternative.yml'
+      - 'browser/**'
 permissions:
   contents: read
 jobs:

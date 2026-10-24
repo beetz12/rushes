@@ -1397,12 +1397,15 @@ test('native startup timeout freezes before cleanup and reports after release ev
     const NativeRecorder = MediaRecorder, result = [];
     for (const refuse of [false, true]) {
       const order = [], encoders = [];
+      const hintPlatform = navigator.userAgentData?.platform;
+      const reportedPlatform = { hintMissing: hintPlatform === undefined, hint: hintPlatform, legacy: navigator.platform };
       class HeldRecorder extends EventTarget {
         static isTypeSupported(value) { return NativeRecorder.isTypeSupported(value); }
-        state = 'inactive';
-        constructor(stream, options) { super(); this.mimeType = options.mimeType; encoders.push(this); }
-        start() { this.state = 'recording'; } // Deliberately withhold the native start event.
-        stop() { order.push('stop'); this.state = 'inactive'; this.dispatchEvent(new Event('stop')); }
+        state = 'inactive'; startCalls = 0; stopCalls = 0; stopEvents = 0;
+        constructor(stream, options) { super(); this.mimeType = options.mimeType; this.kinds = stream.getTracks().map(value => value.kind);
+          this.addEventListener('stop', () => this.stopEvents++); encoders.push(this); }
+        start() { this.startCalls++; this.state = 'recording'; } // Deliberately withhold the native start event.
+        stop() { this.stopCalls++; order.push('stop'); this.state = 'inactive'; this.dispatchEvent(new Event('stop')); }
       }
       globalThis.MediaRecorder = HeldRecorder;
       const canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720;
@@ -1423,7 +1426,9 @@ test('native startup timeout freezes before cleanup and reports after release ev
         let error;
         try { await session.start(); } catch (value) { error = value.message; }
         const saved = await store.load(id);
-        result.push({ refuse, error, detail, releasedAtWarning, order, state: saved.state,
+        result.push({ refuse, error, detail, releasedAtWarning, order, state: saved.state, reportedPlatform,
+          calls: encoders.map(value => ({ start: value.startCalls, stop: value.stopCalls, stopEvents: value.stopEvents, kinds: value.kinds })),
+          policyEvent: saved.events.find(value => value.kind === 'encoder-admission'),
           refusalRetained: saved.events.some(event => event.kind === 'startup-warning-refused'),
           frozen: Object.isFrozen(detail) && Object.isFrozen(detail.encoders) && detail.encoders.every(Object.isFrozen),
           allInactive: encoders.every(value => value.state === 'inactive') });
@@ -1439,9 +1444,20 @@ test('native startup timeout freezes before cleanup and reports after release ev
     assert.match(row.error, /screen encoder did not start/); assert.equal(row.state, 'interrupted');
     assert.equal(row.detail.released, false); assert.equal(row.releasedAtWarning, true);
     assert.ok(row.detail.elapsedMs >= 9900); assert.equal(row.detail.audio, null);
-    assert.deepEqual(row.detail.encoders.map(value => value.slice(1)), [['recording', 1, 1, 0, 0, 0, 0], ['recording', 1, 1, 0, 0, 0, 0]]);
+    const windows = row.reportedPlatform.hint === 'Windows' || (row.reportedPlatform.hintMissing && row.reportedPlatform.legacy === 'Win32');
+    const expectedCalls = windows ? [1, 0] : [1, 1];
+    const expectedFrozen = windows
+      ? [['recording', 1, 1, 0, 0, 0, 0], ['inactive', 0, 0, 0, 0, 0, 0]]
+      : [['recording', 1, 1, 0, 0, 0, 0], ['recording', 1, 1, 0, 0, 0, 0]];
+    assert.deepEqual(row.detail.encoders.map(value => value[0]), ['screen', 'composed']);
+    assert.deepEqual(row.detail.encoders.map(value => value.slice(1)), expectedFrozen);
+    assert.deepEqual(row.calls.map(value => value.start), expectedCalls);
+    assert.deepEqual(row.calls.map(value => value.stop), expectedCalls);
+    assert.deepEqual(row.calls.map(value => value.stopEvents), expectedCalls);
+    assert.deepEqual(row.calls.map(value => value.kinds), [['video'], ['video']]);
+    assert.equal(JSON.parse(row.policyEvent.message).policy, windows ? 'first-video-audio' : 'parallel');
     assert.ok(row.detail.tracks.every(value => value[1] === 'live'));
-    assert.equal(row.order[0], 'warning'); assert.equal(row.order.filter(value => value === 'stop').length, 2);
+    assert.equal(row.order[0], 'warning'); assert.equal(row.order.filter(value => value === 'stop').length, windows ? 1 : 2);
     assert.equal(row.refusalRetained, row.refuse); assert.equal(row.frozen, true); assert.equal(row.allInactive, true);
   }
 }));

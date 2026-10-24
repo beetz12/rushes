@@ -10,7 +10,7 @@ type FrameAPIs = {
   MediaStreamTrackProcessor?: new (options: { track: MediaStreamTrack; maxBufferSize: number }) => FrameProcessor;
   MediaStreamTrackGenerator?: new (options: { kind: 'video' }) => FrameGenerator;
 };
-type RecorderSlot = { kind: TrackKind; recorder: MediaRecorder; sequence: number; ended: Promise<void>; started: boolean; startCalls: number; startReturns: number; startEvents: number; errors: number; bytes: number };
+type RecorderSlot = { kind: TrackKind; video: boolean; recorder: MediaRecorder; sequence: number; ended: Promise<void>; started: boolean; startCalls: number; startReturns: number; startEvents: number; errors: number; bytes: number };
 async function limited<T>(operation: Promise<T>, milliseconds: number, message: string): Promise<T> {
   let deadline: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
@@ -164,6 +164,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
     else void finish().catch(error => { warn(messageOf(error)); release(); });
   }
   function activelyRecording(): boolean { return state === 'recording' && !released; }
+  function isPaused(): boolean { return state === 'paused'; }
   function stopAtLimit() {
     if (activelyRecording() && !ending) { event('take-limit'); void finish(); }
   }
@@ -196,7 +197,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
       ...(hasAudio ? { audioBitsPerSecond: 128_000 } : {}),
     });
     const ended = new Promise<void>(resolve => recorder.addEventListener('stop', () => resolve(), { once: true }));
-    const slot = { kind, recorder, sequence: 0, ended, started: false, startCalls: 0, startReturns: 0, startEvents: 0, errors: 0, bytes: 0 }; slots.push(slot);
+    const slot = { kind, video, recorder, sequence: 0, ended, started: false, startCalls: 0, startReturns: 0, startEvents: 0, errors: 0, bytes: 0 }; slots.push(slot);
     manifest.tracks.push({ kind, mimeType: recorder.mimeType, startOffsetMs: 0, startOffsetTimeBasis: 'media-recorder-start-event', chunks: [], bytes: 0 });
     recorder.addEventListener('dataavailable', eventValue => {
       if (!eventValue.data.size || canceled) return;
@@ -216,6 +217,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
       if (pendingBytes > 32 * 1024 ** 2) fail('The storage writer fell behind. Finalizing the saved portion to protect this take.');
       if (checkpointMs >= BROWSER_LIMITS.maxTakeSeconds * 1000 && !ending) { event('take-limit'); void finish(); }
     });
+    recorder.addEventListener('start', () => { slot.startEvents++; });
     recorder.addEventListener('error', () => { slot.errors++; fail(`The ${kind} encoder failed. Saved chunks remain recoverable.`); });
     return slot;
   }
@@ -412,6 +414,12 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
           }
         };
         try {
+          const hintPlatform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform;
+          const platform = hintPlatform === undefined ? navigator.platform : hintPlatform;
+          const windowsCohort = hintPlatform === 'Windows' || (hintPlatform === undefined && platform === 'Win32');
+          event('encoder-admission', JSON.stringify({ policy: windowsCohort ? 'first-video-audio' : 'parallel',
+            platform: typeof platform === 'string' ? platform.slice(0, 64) : 'unknown',
+            platformSource: hintPlatform === undefined ? 'legacy' : 'client-hint' }));
           await audio?.start();
           if (released) throw new Error('The recording was canceled during startup.');
           await limited(inputs.store.create(structuredClone(manifest)), 10_000, 'Creating the local draft timed out.'); created = true;
@@ -420,29 +428,73 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
             throw new Error('The recording source closed during startup.');
           }
           startedAt = performance.now(); manifest.epochMs = startedAt; notify('recording');
-          const starts = slots.map(slot => new Promise<void>((resolve, reject) => {
-            const startedTimer = setTimeout(() => {
-              const at = performance.now();
-              const held = [['screen', screen], ['camera', camera], ['microphone', inputs.microphone?.getAudioTracks()[0]],
-                ['tab-audio', inputs.screen?.getAudioTracks()[0]], ['preview-video', generator], ['preview-audio', audio?.track]] as const;
-              startTimeout ??= Object.freeze({ type: 'encoder-start', schema: 1, role: slot.kind, atMs: Math.ceil(at),
-                elapsedMs: Math.ceil(at - startedAt), released,
-                encoders: Object.freeze(slots.map(value => Object.freeze([value.kind, value.recorder.state, value.startCalls,
-                  value.startReturns, value.startEvents, value.errors, value.sequence, value.bytes] as const))),
-                tracks: Object.freeze(held.flatMap(([role, track]) => track ? [Object.freeze([role, track.readyState, track.enabled, track.muted] as const)] : [])),
-                audio: audio?.status?.() ?? null });
-              reject(new Error(`The ${slot.kind} encoder did not start.`));
-            }, 10_000);
-            slot.recorder.addEventListener('error', () => { clearTimeout(startedTimer); reject(new Error(`The ${slot.kind} encoder failed during startup.`)); }, { once: true });
-            const start = () => {
-              slot.startEvents++; clearTimeout(startedTimer);
-              manifest.tracks.find(track => track.kind === slot.kind)!.startOffsetMs = performance.now() - startedAt;
-              event(`start-${slot.kind}`); resolve();
+          const startExpires = startedAt + 10_000;
+          const pending = new Map<RecorderSlot, (error: unknown) => void>();
+          const timedOut = (slot: RecorderSlot) => {
+            const at = performance.now();
+            const held = [['screen', screen], ['camera', camera], ['microphone', inputs.microphone?.getAudioTracks()[0]],
+              ['tab-audio', inputs.screen?.getAudioTracks()[0]], ['preview-video', generator], ['preview-audio', audio?.track]] as const;
+            startTimeout ??= Object.freeze({ type: 'encoder-start', schema: 1, role: slot.kind, atMs: Math.ceil(at),
+              elapsedMs: Math.ceil(at - startedAt), released,
+              encoders: Object.freeze(slots.map(value => Object.freeze([value.kind, value.recorder.state, value.startCalls,
+                value.startReturns, value.startEvents, value.errors, value.sequence, value.bytes] as const))),
+              tracks: Object.freeze(held.flatMap(([role, track]) => track ? [Object.freeze([role, track.readyState, track.enabled, track.muted] as const)] : [])),
+              audio: audio?.status?.() ?? null });
+            return new Error(`The ${slot.kind} encoder did not start.`);
+          };
+          const starts = slots.map(slot => {
+            let accept: () => void, refuse: (error: unknown) => void;
+            const ready = new Promise<void>((resolve, reject) => { accept = resolve; refuse = reject; });
+            const cleanup = () => {
+              pending.delete(slot);
+              slot.recorder.removeEventListener('start', started);
+              slot.recorder.removeEventListener('error', failed);
             };
-            slot.recorder.addEventListener('start', start, { once: true });
-            try { slot.startCalls++; slot.recorder.start(2000); slot.startReturns++; slot.started = true; } catch (error) { clearTimeout(startedTimer); reject(error); }
-          }));
-          worker.postMessage({ kind: 'start' }); await Promise.all(starts);
+            const reject = (error: unknown) => { cleanup(); refuse(error); };
+            const failed = () => {
+              try { requireStartupOwner(); reject(new Error(`The ${slot.kind} encoder failed during startup.`)); }
+              catch (error) { reject(error); }
+            };
+            const started = () => {
+              try {
+                requireStartupOwner();
+                if (performance.now() >= startExpires) throw timedOut(slot);
+                const live = slot.recorder.state === 'recording' || slot.recorder.state === 'paused';
+                if (!slot.started || slot.startCalls !== 1 || slot.startReturns !== 1 || !live)
+                  throw new Error(`The ${slot.kind} encoder did not acknowledge a live start.`);
+                manifest.tracks.find(track => track.kind === slot.kind)!.startOffsetMs = performance.now() - startedAt;
+                event(`start-${slot.kind}`); cleanup(); accept();
+              } catch (error) { reject(error); }
+            };
+            pending.set(slot, reject);
+            slot.recorder.addEventListener('start', started);
+            slot.recorder.addEventListener('error', failed);
+            return { slot, ready, begin() {
+              requireStartupOwner();
+              if (performance.now() >= startExpires) throw timedOut(pending.keys().next().value ?? slot);
+              slot.startCalls++; slot.recorder.start(2000); slot.startReturns++; slot.started = true;
+              if (isPaused() && slot.recorder.state === 'recording') slot.recorder.pause();
+            } };
+          });
+          const allStarted = Promise.all(starts.map(value => value.ready)); void allStarted.catch(() => undefined);
+          const firstVideo = starts.find(value => value.slot.video);
+          const first = windowsCohort ? starts.filter(value => value === firstVideo || !value.slot.video) : starts;
+          const rejectPending = (error: unknown) => { for (const reject of [...pending.values()]) reject(error); };
+          const startDeadline = setTimeout(() => {
+            try {
+              requireStartupOwner(); const slot = pending.keys().next().value;
+              if (slot) rejectPending(timedOut(slot));
+            } catch (error) { rejectPending(error); }
+          }, Math.max(1, startExpires - performance.now()));
+          try {
+            first.forEach(value => value.begin());
+            worker.postMessage({ kind: 'start' }); if (isPaused()) worker.postMessage({ kind: 'pause' });
+            await Promise.all(first.map(value => value.ready)); requireStartupOwner();
+            starts.filter(value => !first.includes(value)).forEach(value => value.begin());
+            await allStarted;
+          } finally {
+            clearTimeout(startDeadline); rejectPending(new Error('Encoder startup observation closed.'));
+          }
           requireStartupOwner(); await save(); requireStartupOwner();
           armTakeDeadline(); requireStartupOwner();
           if (!released && !ending) timer = setInterval(() => {
