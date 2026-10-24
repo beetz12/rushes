@@ -419,7 +419,7 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
       cameraEligible: cameraSourceAlreadyBounded(camera.getVideoTracks()[0]) });
   }
   // Observe the same owned compositor messages; no extra reader or console traffic.
-  metrics.compositionSpans = { samples: [], dropped: 0, missing: 0, invalid: 0, validation: 'envelope-only; numeric table reader required' };
+  metrics.compositionSpans = { samples: [], dropped: 0, missing: 0, invalid: 0, validation: 'envelope-only; numeric table reader required', beforeStop: null };
   const composingWorker = globalThis.Worker;
   globalThis.Worker = class extends composingWorker {
     constructor(...args) {
@@ -443,8 +443,15 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
   const session = await createCaptureSession({ id, title: 'Independent synthetic M1', mode: 'screen-camera',
     screen, camera, microphone, store, persistent: false, backupFolder: backup,
     bubble: { x: 1030, y: 490, size: 180 }, onState: state => {
-      metrics.states.push({ state, wallMs: performance.now() });
-      if (state === 'stopping') void retireObservations();
+      const stateRecord = { state, wallMs: performance.now() }; metrics.states.push(stateRecord);
+      if (state === 'stopping') {
+        const spans = metrics.compositionSpans;
+        if (spans.beforeStop === null) spans.beforeStop = { takeId: id, state: 'stopping', wallMs: stateRecord.wallMs,
+          retained: spans.samples.length, lastRetainedIndex: spans.samples.length ? spans.samples.length - 1 : null,
+          received: spans.samples.length + spans.dropped + spans.missing + spans.invalid,
+          dropped: spans.dropped, missing: spans.missing, invalid: spans.invalid };
+        void retireObservations();
+      }
     },
     onWarning: (message, details) => {
       metrics.warnings.push(message);

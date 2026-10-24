@@ -10,7 +10,7 @@ function fixture({ mixed = false, drawMs = 0, cacheMs = 0, constructMs = 0, writ
   let at = 100, surface = 0; const messages = [], inputs = [], outputs = [], writes = [], gates = [];
   class Input {
     closed = 0;
-    constructor(stamp) { this.stamp = stamp; inputs.push(this); }
+    constructor(stamp, role = 'camera') { this.stamp = stamp; this.role = role; inputs.push(this); }
     get timestamp() { spanChecks.equal(this.closed, 0); return this.stamp; }
     get displayWidth() { spanChecks.equal(this.closed, 0); return 1280; }
     get displayHeight() { spanChecks.equal(this.closed, 0); return 720; }
@@ -19,7 +19,7 @@ function fixture({ mixed = false, drawMs = 0, cacheMs = 0, constructMs = 0, writ
   class Canvas {
     constructor() { this.number = surface++; }
     getContext() { const number = this.number; return { fillRect() {}, drawImage(value) {
-      if (value instanceof Input) { spanChecks.equal(value.closed, 0); at += number ? cacheMs : drawMs; if (drawFailure) throw new Error('Measured draw refusal'); }
+      if (value instanceof Input) { spanChecks.equal(value.closed, 0); at += value.role === 'screen' ? cacheMs : drawMs; if (drawFailure) throw new Error('Measured draw refusal'); }
     }, save() {}, beginPath() {}, arc() {}, clip() {}, restore() {} }; }
   }
   class Output {
@@ -43,7 +43,7 @@ function fixture({ mixed = false, drawMs = 0, cacheMs = 0, constructMs = 0, writ
   const send = data => realm.onmessage({ data });
   send({ kind: 'setup', screen, camera, output: { getWriter: () => writer }, width: 1280, height: 720, fps: 30, maxSeconds: 600, bubble: { x: 100, y: 100, size: 180 } });
   return { messages, inputs, outputs, writes, camera, screen, send, advance: value => { at += value; }, setNow: value => { at = value; },
-    push: (stamp = 1000000) => camera.reader.push(new Input(stamp)), cache: (stamp = 1000000) => screen.reader.push(new Input(stamp)),
+    push: (stamp = 1000000) => camera.reader.push(new Input(stamp)), cache: (stamp = 1000000) => screen.reader.push(new Input(stamp, 'screen')),
     release: () => gates.splice(0).forEach(done => done()),
     async close() { send({ kind: 'stop' }); gates.splice(0).forEach(done => done()); await tick(); await tick(); } };
 }
@@ -149,4 +149,22 @@ spanTests.test('actual generated fixture caps32 envelopes and records unavailabl
   spanChecks.doesNotThrow(() => worker.emit({ kind: 'progress', compositionSpans: cyclic }));
   spanChecks.equal(metrics.compositionSpans.invalid, 3);
   spanChecks.equal(metrics.compositionSpans.validation, 'envelope-only; numeric table reader required');
+});
+
+spanTests.test('existing stopping notification freezes one received prefix with its existing timestamp', async () => {
+  const source = await spanFiles.readFile(new URL('./matrix-fixture.mjs', import.meta.url), 'utf8');
+  const begin = source.indexOf('onState: state => {', source.indexOf('const session = await createCaptureSession'));
+  const end = source.indexOf('    onWarning:', begin); spanChecks.ok(begin > 0 && end > begin);
+  let at = 100, reads = 0, retirements = 0;
+  const metrics = { states: [], compositionSpans: { samples: [{ frameCount: 1 }], dropped: 2, missing: 1, invalid: 0, beforeStop: null } };
+  const realm = { metrics, id: 'generated-prefix-take', performance: { now() { reads++; return at; } }, retireObservations() { retirements++; } };
+  spanVM.runInNewContext('globalThis.changed = ({' + source.slice(begin, end) + '}).onState;', realm);
+  realm.changed('recording'); at = 200; metrics.compositionSpans.samples.push({ frameCount: 2 }); realm.changed('stopping');
+  const prefix = structuredClone(metrics.compositionSpans.beforeStop);
+  spanChecks.equal(prefix.wallMs, metrics.states.at(-1).wallMs); spanChecks.equal(reads, 2);
+  spanChecks.equal(prefix.retained, 2); spanChecks.equal(prefix.lastRetainedIndex, 1); spanChecks.equal(prefix.received, 5); spanChecks.equal(prefix.takeId, 'generated-prefix-take');
+  metrics.compositionSpans.samples.push({ frameCount: 3 }); metrics.compositionSpans.dropped++; at = 300; realm.changed('stopping');
+  spanChecks.deepEqual(structuredClone(metrics.compositionSpans.beforeStop), prefix); spanChecks.equal(reads, 3); spanChecks.equal(retirements, 2);
+  metrics.compositionSpans = { samples: [], dropped: 0, missing: 0, invalid: 0, beforeStop: null }; realm.changed('stopping');
+  spanChecks.equal(metrics.compositionSpans.beforeStop.received, 0); spanChecks.equal(metrics.compositionSpans.beforeStop.lastRetainedIndex, null);
 });

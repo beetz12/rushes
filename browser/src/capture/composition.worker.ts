@@ -56,10 +56,32 @@ async function compose(setup: Setup) {
   const canvas = new OffscreenCanvas(setup.width, setup.height);
   const context = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
   if (!context) throw new Error('The browser could not initialize composition.');
-  const screenRaster = setup.screen && setup.camera ? new OffscreenCanvas(setup.width, setup.height) : undefined;
-  const screenDrawing = screenRaster?.getContext('2d', { alpha: false, willReadFrequently: true });
-  if (screenRaster && !screenDrawing) throw new Error('The browser could not initialize screen composition.');
-  let screenReady = false;
+  const mixed = !!(setup.screen && setup.camera);
+  const backgroundPatch = mixed ? new OffscreenCanvas(1, 1) : undefined;
+  const patchDrawing = backgroundPatch?.getContext('2d', { alpha: false, willReadFrequently: true });
+  if (backgroundPatch && !patchDrawing) throw new Error('The browser could not initialize screen composition.');
+  type PixelBox = { x: number; y: number; width: number; height: number };
+  let savedBox: PixelBox | undefined, screenReady = false;
+  const bubblePixels = (): PixelBox => {
+    const leftEdge = Math.max(0, Math.floor(placement.x) - 1), upperEdge = Math.max(0, Math.floor(placement.y) - 1);
+    const rightEdge = Math.min(setup.width, Math.ceil(placement.x + placement.size) + 1);
+    const lowerEdge = Math.min(setup.height, Math.ceil(placement.y + placement.size) + 1);
+    return { x: leftEdge, y: upperEdge, width: Math.max(0, rightEdge - leftEdge), height: Math.max(0, lowerEdge - upperEdge) };
+  };
+  const resizePatch = (box: PixelBox) => {
+    if (backgroundPatch!.width !== box.width) backgroundPatch!.width = box.width;
+    if (backgroundPatch!.height !== box.height) backgroundPatch!.height = box.height;
+  };
+  const restorePatch = () => {
+    if (savedBox) context.drawImage(backgroundPatch!, savedBox.x, savedBox.y);
+    savedBox = undefined;
+  };
+  const capturePatch = (box: PixelBox) => {
+    if (!box.width || !box.height) return;
+    resizePatch(box);
+    patchDrawing!.drawImage(canvas, box.x, box.y, box.width, box.height, 0, 0, box.width, box.height);
+    savedBox = box;
+  };
   writer = setup.output.getWriter();
   const admit = createFrameCadence(setup.fps);
   const snapshot = (driver: VideoFrame) => {
@@ -70,10 +92,14 @@ async function compose(setup: Setup) {
     if (begun && !pausedAt && now - begun - pausedTime >= setup.maxSeconds * 1000) { send('limit'); begun = 0; }
     const raster = enterSpan('raster');
     try {
-    context.fillStyle = '#101820'; context.fillRect(0, 0, setup.width, setup.height);
-    if (screenRaster) context.drawImage(screenRaster, 0, 0);
-    else drawFit(context, driver, 0, 0, setup.width, setup.height);
-    if (setup.screen && setup.camera) {
+    if (mixed) {
+      const box = bubblePixels();
+      restorePatch(); capturePatch(box);
+    } else {
+      context.fillStyle = '#101820'; context.fillRect(0, 0, setup.width, setup.height);
+      drawFit(context, driver, 0, 0, setup.width, setup.height);
+    }
+    if (mixed) {
       const size = placement.size;
       const x = placement.x, y = placement.y;
       context.save(); context.beginPath(); context.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2); context.clip();
@@ -111,10 +137,11 @@ async function compose(setup: Setup) {
           if (isScreen && !driving) {
             const caching = enterSpan('cache');
             try {
-              screenDrawing!.fillStyle = '#101820'; screenDrawing!.fillRect(0, 0, setup.width, setup.height);
-              drawFit(screenDrawing!, frame, 0, 0, setup.width, setup.height); screenReady = true;
+              context!.fillStyle = '#101820'; context!.fillRect(0, 0, setup.width, setup.height);
+              drawFit(context!, frame, 0, 0, setup.width, setup.height); screenReady = true;
+              savedBox = undefined;
             } finally { leaveSpan(caching); }
-          } else if (!screenRaster || screenReady) output = snapshot(frame);
+          } else if (!mixed || screenReady) output = snapshot(frame);
           else sourceCounts.notReady++;
         } finally { try { frame.close(); } finally { leaveSpan(leased); } }
         // The output owns its canvas snapshot; source leases end before backpressure.

@@ -65,10 +65,15 @@ export function recorderCallMetadata(text) {
   const prefix='GENERATED_RECORDER_CALL ';
   if(typeof text!=='string'||text.length>1024||!text.startsWith(prefix))return;
   let row;try{row=JSON.parse(text.slice(prefix.length));}catch{return;}
-  if(!row||Object.keys(row).sort().join(',')!=='edge,id,index,method,state,timeMs'
+  const keys=row&&Object.keys(row).sort().join(',');
+  const invocation=keys==='edge,id,index,invokeEndMs,invokeStartMs,method,state,timeMs';
+  if(!row||(!invocation&&keys!=='edge,id,index,method,state,timeMs')
     ||!Number.isSafeInteger(row.id)||row.id<0||!Number.isSafeInteger(row.index)||row.index<0
     ||!['start','pause','resume','stop'].includes(row.method)||!['before','after'].includes(row.edge)
     ||!['inactive','recording','paused'].includes(row.state)||!Number.isFinite(row.timeMs)||row.timeMs<0)return;
+  if(invocation&& (row.edge!=='after'
+    ||![row.invokeStartMs,row.invokeEndMs].every(value=>value===null||(Number.isFinite(value)&&value>=0&&value<=row.timeMs))
+    ||(row.invokeStartMs!==null&&row.invokeEndMs!==null&&row.invokeEndMs<row.invokeStartMs)))return;
   return row;
 }
 
@@ -170,10 +175,12 @@ export async function beginColdTrace(browser, page, directory, limits = {}) {
     await deadline(page.evaluate(({token,streamRecorderCalls}) => {
       const calls = [], observations = [], originals = new Map(), ids = new WeakMap();
       let nextId = 0, streamedCallRows=0, droppedCallRows=0;
+      const invokeTime=()=>{try{const value=performance.now();return Number.isFinite(value)&&value>=0?value:null;}catch{return null;}};
       const streamCall=(row,edge,timeMs,state)=>{
         if(!streamRecorderCalls)return;
         if(streamedCallRows>=128){droppedCallRows++;return;}
-        streamedCallRows++;console.log('GENERATED_RECORDER_CALL '+JSON.stringify({id:row.id,index:row.index,method:row.method,edge,timeMs,state}));
+        streamedCallRows++;console.log('GENERATED_RECORDER_CALL '+JSON.stringify({id:row.id,index:row.index,method:row.method,edge,timeMs,state,
+          ...(edge==='after'?{invokeStartMs:row.invokeStartMs,invokeEndMs:row.invokeEndMs}:{})}));
       };
       const prescribed = (batch, coordinates) => coordinates.forEach((coordinateMs, index) => {
         const name = `${token}/clock-${batch}-${index}`;
@@ -196,12 +203,21 @@ export async function beginColdTrace(browser, page, directory, limits = {}) {
           const row = { id, index, method, before: performance.now(), beforeState: this.state };
           calls.push(row); performance.mark(`${token}/recorder-${id}/${index}-${method}-before`, { startTime: row.before });
           streamCall(row,'before',row.before,row.beforeState);
-          try { return Reflect.apply(original, this, args); }
-          catch (error) { row.error = String(error); throw error; }
-          finally {
-            row.after = performance.now(); row.afterState = this.state;
-            streamCall(row,'after',row.after,row.afterState);
-            performance.mark(`${token}/recorder-${id}/${index}-${method}-after`, { startTime: row.after });
+          let nativeThrew=false;
+          row.invokeStartMs=invokeTime();
+          try {
+            try { return Reflect.apply(original, this, args); }
+            finally { row.invokeEndMs=invokeTime(); }
+          } catch (error) {
+            nativeThrew=true;
+            try { row.error=String(error); } catch { row.error='Error detail unavailable'; }
+            throw error;
+          } finally {
+            try {
+              row.after = performance.now(); row.afterState = this.state;
+              streamCall(row,'after',row.after,row.afterState);
+              performance.mark(`${token}/recorder-${id}/${index}-${method}-after`, { startTime: row.after });
+            } catch (observationError) { row.afterObservationFailed=true; if(!nativeThrew)throw observationError; }
           }
         };
       }

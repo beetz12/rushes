@@ -18,10 +18,11 @@ function harness(mode, { writeFailure, drawFailure = false, snapshotFailure = fa
     close() { assert.equal(this.closed, 0, 'Input closed twice'); this.closed++; }
   }
   class Canvas {
-    constructor(width, height) { this.width = width; this.height = height; this.ops = []; surfaces.push(this); }
-    getContext() { const canvas = this; return { fillStyle: '', fillRect(...values) { canvas.ops = [{ fill: this.fillStyle, values }]; },
+    constructor(width, height) { this.width = width; this.height = height; this.ops = []; this.calls = []; surfaces.push(this); }
+    getContext() { const canvas = this; return { fillStyle: '', fillRect(...values) { canvas.calls.push({ kind: 'fill', values }); canvas.ops = [{ fill: this.fillStyle, values }]; },
       drawImage(source, ...values) {
         if (source instanceof Input) { assert.equal(source.closed, 0, 'Draw consumed a closed input'); if (drawFailure) throw new Error('Controlled draw refusal'); }
+        canvas.calls.push({ kind: 'draw', source, values });
         canvas.ops.push({ source: source.id ?? 'owned-raster', pixels: source.ops ? structuredClone(source.ops) : source.id, values });
       }, save() {}, beginPath() {}, arc(...values) { canvas.ops.push({ arc: values }); }, clip() {}, restore() {} }; }
   }
@@ -55,7 +56,7 @@ for (const mode of ['camera', 'screen']) test(`${mode} input closes before a blo
     f.gates[0].resolve(); await turn(); assert.equal(f.outputs[0].closed, 1); assert.equal(f.messages.filter(value => value.kind === 'ready').length, 1);
   } finally { await f.close(); }
 });
-test('mixed screen is an owned pixel cache and both inputs close before output backpressure', async () => {
+test('mixed screen background remains owned and both inputs close before output backpressure', async () => {
   const f = harness('mixed'), screen = f.input('screen-one', 1000000), camera = f.input('camera-one', 1000000);
   try {
     f.screen.reader.push(screen); await turn(); assert.equal(screen.closed, 1);
@@ -64,10 +65,14 @@ test('mixed screen is an owned pixel cache and both inputs close before output b
     f.screen.reader.push(next); f.send({ kind: 'bubble', value: { x: 100, y: 100, size: 180 } }); await turn();
     assert.equal(next.closed, 1); assert.deepEqual(f.outputs[0].pixels, snapshot, 'Later cache or bubble mutation changed an owned output');
     f.gates[0].resolve(); await turn(); f.camera.reader.push(f.input('camera-two', 1033334)); await turn();
-    const raster = f.outputs[1].pixels.find(value => value.source === 'owned-raster');
-    assert.ok(raster); assert.equal(raster.pixels[0].fill, '#101820'); assert.equal(raster.pixels.at(-1).source, 'portrait-screen');
-    assert.deepEqual(raster.pixels.at(-1).values, [437.5, 0, 405, 720]);
-    assert.deepEqual(raster.values, [0, 0]); assert.deepEqual(f.outputs[1].pixels.find(value => value.arc)?.arc, [190, 190, 90, 0, Math.PI * 2]);
+    const cached = f.outputs[1].pixels.find(value => value.source === 'owned-raster');
+    const portrait = f.outputs[1].pixels.find(value => value.source === 'portrait-screen') ?? cached?.pixels.find(value => value.source === 'portrait-screen');
+    assert.ok(portrait); assert.equal(f.outputs[1].pixels[0].fill, '#101820');
+    assert.deepEqual(portrait.values, [437.5, 0, 405, 720]);
+    const patchCopy = f.surfaces[1].ops.at(-1).values;
+    if (patchCopy.length === 8) { assert.equal(patchCopy[2], patchCopy[6]); assert.equal(patchCopy[3], patchCopy[7]); }
+    else assert.deepEqual(cached.values, [0, 0]);
+    assert.deepEqual(f.outputs[1].pixels.filter(value => value.arc).at(-1)?.arc, [190, 190, 90, 0, Math.PI * 2]);
   } finally { await f.close(); }
 });
 test('pre-screen and cadence-rejected camera frames close without fabricated output', async () => {
@@ -88,4 +93,32 @@ for (const failure of ['draw', 'snapshot', 'write']) test(`${failure} refusal pr
   const raw = f.input('driver', 1000000);
   try { f.camera.reader.push(raw); await turn(); await turn(); assert.equal(raw.closed, 1); assert.ok(f.messages.some(value => value.kind === 'error' && value.message.includes(`Controlled ${failure} refusal`))); assert.ok(f.outputs.every(value => value.closed === 1)); }
   finally { await f.close(); }
+});
+
+test('mixed camera updates avoid full-output repaint and full-cache copy while a static screen stays live', async () => {
+  const f = harness('mixed', { immediate: true });
+  try {
+    f.screen.reader.push(f.input('static-screen', 1000000)); await turn();
+    for (let index = 0; index < 4; index++) { f.camera.reader.push(f.input('live-camera-' + index, 1000000 + index * 33334)); await turn(); }
+    assert.equal(f.outputs.length, 4); assert.ok(f.inputs.every(frame => frame.closed === 1));
+    const fullFills = f.surfaces[0].calls.filter(call => call.kind === 'fill' && call.values.join(',') === '0,0,1280,720');
+    assert.equal(fullFills.length, 1, 'Only a new screen paints the full background');
+    const fullCopies = f.surfaces[0].calls.filter(call => call.kind === 'draw' && call.source?.width === 1280 && call.source?.height === 720 && call.values.join(',') === '0,0');
+    assert.equal(fullCopies.length, 0, 'An accepted mixed camera frame must not copy a full cached raster');
+  } finally { await f.close(); }
+});
+test('fractional clipped and moving bubble patches stay bounded and copy pixels without scaling', async () => {
+  const f = harness('mixed', { immediate: true });
+  try {
+    f.screen.reader.push(f.input('screen', 1000000)); await turn();
+    for (const [index, value] of [{ x: -30.25, y: -20.5, size: 180.75 }, { x: 1210.5, y: 680.25, size: 200.5 }, { x: 90.5, y: 80.25, size: 100.25 }].entries()) {
+      f.send({ kind: 'bubble', value }); f.camera.reader.push(f.input('camera-' + index, 1000000 + index * 33334)); await turn();
+    }
+    const captures = f.surfaces[1].calls.filter(call => call.kind === 'draw'); assert.equal(captures.length, 3);
+    for (const { values: box } of captures) {
+      assert.ok(Number.isInteger(box[0]) && Number.isInteger(box[1]) && box[0] >= 0 && box[1] >= 0);
+      assert.ok(box[0] + box[2] <= 1280 && box[1] + box[3] <= 720);
+      assert.equal(box[2], box[6]); assert.equal(box[3], box[7]);
+    }
+  } finally { await f.close(); }
 });
