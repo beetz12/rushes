@@ -66,14 +66,21 @@ test('one composed input retains actual PCM references and independent lifetime'
     }
   } finally { await page.close(); }
 });
-test('two-input worker bridge retains Window references, fixed packets and both stereo channels', { timeout: 15000 }, async () => {
+for (const dedicatedAvailable of [true, false]) test(`two-input mixer retains Window references and stereo PCM with dedicated endpoint ${dedicatedAvailable ? 'available' : 'unavailable'}`, { timeout: 15000 }, async () => {
   const page = await browser.newPage();
   try {
     const response = await page.goto(origin);
     assert.equal(response.headers()['cross-origin-opener-policy'], 'same-origin');
     assert.equal(response.headers()['cross-origin-embedder-policy'], 'require-corp');
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async dedicatedAvailable => {
       if (!crossOriginIsolated) throw new Error('Audio microprecision context is not isolated');
+      const NativeWorker = Worker;
+      if (!dedicatedAvailable) globalThis.Worker = class extends NativeWorker {
+        constructor(url, options) {
+          if (String(url).includes('/audio.worker')) throw new Error('Controlled dedicated mixer endpoint unavailable');
+          super(url, options);
+        }
+      };
       const { composedAudio } = await import('/src/capture/audio.ts');
       const sources = [0, 1].map(() => new MediaStreamTrackGenerator({ kind: 'audio' }));
       const writers = sources.map(source => source.writable.getWriter()), failures = [];
@@ -106,8 +113,8 @@ test('two-input worker bridge retains Window references, fixed packets and both 
         }
         await Promise.all([mix.start(), reading]); mix.close();
         return { packets, failures, timedOut, sourceStates: sources.map(track => track.readyState), outputState: mix.track.readyState };
-      } finally { clearTimeout(deadline); await reader.cancel().catch(() => {}); observer.stop(); mix.close(); sources.forEach(track => track.stop()); writers.forEach(writer => writer.releaseLock()); }
-    });
+      } finally { clearTimeout(deadline); await reader.cancel().catch(() => {}); observer.stop(); mix.close(); sources.forEach(track => track.stop()); writers.forEach(writer => writer.releaseLock()); globalThis.Worker = NativeWorker; }
+    }, dedicatedAvailable);
     assert.equal(result.timedOut, false); assert.deepEqual(result.failures, []); assert.equal(result.packets.length, 3);
     assert.deepEqual(result.sourceStates, ['live', 'live']); assert.equal(result.outputState, 'ended');
     for (const [packet, value] of result.packets.entries()) {

@@ -1,8 +1,9 @@
 import type { AudioFailureDetails, AudioTransportStatus } from '../contracts';
 import type { AudioTransformAPIs, PCMFrame } from './audio-frame';
 import { MIX_FRAMES, MIX_RATE, stereoPlanes } from './pcm-mixer';
+import { createWindowAudioMixer } from './audio-mixer';
 // Endpoints stay in this Window: Chrome changes reference origins on stream transfer.
-// Only copied PCM crosses the worker boundary. Originals belong to the coordinator.
+// Only copied PCM crosses the owned message ports. Originals belong to the coordinator.
 export function composedAudio(tracks: MediaStreamTrack[], failed: (message: string) => void = () => undefined): {
   track?: MediaStreamTrack; readonly diagnostics?: { [key: string]: unknown; parentFailure?: AudioFailureDetails }; status?(): AudioTransportStatus; start(): Promise<void>; quiesce(): Promise<void>; close(): void;
 } {
@@ -22,7 +23,7 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
   let parentFailure: AudioFailureDetails | undefined;
   let capacityFailure: Pick<AudioFailureDetails, 'edge' | 'input' | 'waitMs'> | undefined;
   const capacityWake: Array<(() => void) | undefined> = [undefined, undefined];
-  let output: InstanceType<AudioTransformAPIs['MediaStreamTrackGenerator']> | undefined, worker: Worker | undefined;
+  let output: InstanceType<AudioTransformAPIs['MediaStreamTrackGenerator']> | undefined, worker: ReturnType<typeof createWindowAudioMixer> | undefined;
   let writer: WritableStreamDefaultWriter<PCMFrame> | undefined;
   let closed = false, quiesced = false, writing = false, readied = false, hasFailureDiagnostics = false, diagnostics: { [key: string]: unknown; parentFailure?: AudioFailureDetails } | undefined, deadline: ReturnType<typeof setTimeout> | undefined;
   let quiescedAt: number | undefined;
@@ -74,7 +75,7 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
     const begun = performance.now(), expires = begun + 250;
     const timeout = (edge: 'before-wait' | 'timer' | 'late-wake') => {
       capacityFailure ??= { edge, input: Object.freeze([source, frames, rate] as const), waitMs: Math.ceil(performance.now() - begun) };
-      return new Error('Audio worker capacity receipt timed out');
+      return new Error('Audio mixer capacity receipt timed out');
     };
     while (!quiesced && pendingFrames[source] + frames > rate / 4) {
       const remaining = expires - performance.now();
@@ -111,7 +112,7 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
           // Mono shares a plane until this boundary; transfer each buffer only once.
           if (left === right) right = right.slice();
           pendingFrames[source] += frame.numberOfFrames;
-          if (pendingFrames[source] > frame.sampleRate / 4) throw new Error('Audio worker queue exceeded250ms');
+          if (pendingFrames[source] > frame.sampleRate / 4) throw new Error('Audio mixer queue exceeded250ms');
           worker!.postMessage({ kind: 'input', source, rate: frame.sampleRate, timestamp: frame.timestamp, left, right }, [left.buffer, right.buffer]); posted[source]++;
         } finally { frame.close(); }
       }
@@ -138,7 +139,7 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
       readers.push(new apis.MediaStreamTrackProcessor({ track: clone, maxBufferSize: 25 }).readable.getReader());
     }
     output = new apis.MediaStreamTrackGenerator({ kind: 'audio' }); writer = output.writable.getWriter();
-    worker = new Worker(new URL('./audio.worker.ts', import.meta.url), { type: 'module' });
+    worker = createWindowAudioMixer();
     worker.onmessage = event => {
       messages++; lastMessageAt = performance.now();
       lastKind = ['consumed', 'packet', 'ready', 'timing', 'error', 'stopped'].includes(event.data.kind) ? event.data.kind : 'unknown';
@@ -162,7 +163,7 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
         failure(`Audio composition failed: ${event.data.message}`);
       }
     };
-    worker.onerror = () => failure('Audio composition worker failed');
+    worker.onerror = () => failure('Audio composition transport failed');
     deadline = setTimeout(() => failure('Composed audio did not become ready'), 10000);
     worker.postMessage({ kind: 'setup' });
     for (const [source, reader] of readers.entries()) void consume(reader, source);

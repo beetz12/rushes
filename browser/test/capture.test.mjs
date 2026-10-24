@@ -56,23 +56,31 @@ async function pageFixture(callback) {
   const context = await browser.newContext(); const page = await context.newPage();
   page.on('console',message=>{if(message.text().startsWith('GENERATED_AUDIO_FAILURE '))console.log(message.text());});
   await page.addInitScript(()=>{
-    const NativeWorker=Worker;let audioWorkerId=0;
+    const NativeWorker=Worker,NativeChannel=MessageChannel;let audioMixerId=0;
     globalThis.generatedAudioInputMetadata={rows:[],dropped:0};
+    const observe=(mixer,transport,message)=>{
+      if(message?.kind!=='input')return;
+      const ledger=globalThis.generatedAudioInputMetadata;
+      if(ledger.rows.length<2048)ledger.rows.push({mixer,transport,source:message.source,rate:message.rate,timestampUs:message.timestamp,frames:message.left.length});
+      else ledger.dropped++;
+    };
+    const observeError=event=>{if(event.data.kind==='error')console.log('GENERATED_AUDIO_FAILURE '+JSON.stringify(event.data));};
     globalThis.Worker=class extends NativeWorker{
       constructor(url,options){
         super(url,options);
-        this.generatedAudioWorker=String(url).includes('/audio.worker')?audioWorkerId++:undefined;
-        if(this.generatedAudioWorker!==undefined)this.addEventListener('message',event=>{
-          if(event.data.kind==='error')console.log('GENERATED_AUDIO_FAILURE '+JSON.stringify(event.data));
-        });
+        this.generatedAudioWorker=String(url).includes('/audio.worker')?audioMixerId++:undefined;
+        if(this.generatedAudioWorker!==undefined)this.addEventListener('message',observeError);
       }
       postMessage(message,...rest){
-        if(this.generatedAudioWorker!==undefined&&message?.kind==='input'){
-          const ledger=globalThis.generatedAudioInputMetadata;
-          if(ledger.rows.length<2048)ledger.rows.push({worker:this.generatedAudioWorker,source:message.source,rate:message.rate,timestampUs:message.timestamp,frames:message.left.length});
-          else ledger.dropped++;
-        }
+        if(this.generatedAudioWorker!==undefined)observe(this.generatedAudioWorker,'dedicated-worker',message);
         return super.postMessage(message,...rest);
+      }
+    };
+    globalThis.MessageChannel=class extends NativeChannel{
+      constructor(){
+        super();const mixer=audioMixerId++,port=this.port1,post=port.postMessage.bind(port);
+        port.addEventListener('message',observeError);
+        port.postMessage=(message,...rest)=>{observe(mixer,'window-message-port',message);return post(message,...rest);};
       }
     };
   });
@@ -187,6 +195,7 @@ test('screen/camera composition, separate originals, mixed audio, pause timeline
   assert.ok(result.data.composed.samples.at(-1)[2][0] > 160 && result.data.composed.samples.at(-1)[2][2] < 100);
   assert.ok(result.data.composed.samples.at(-1)[1][2] > 160);
   assert.ok(result.audioInputMetadata.rows.length>0&&result.audioInputMetadata.rows.length<=2048);
+  assert.ok(result.audioInputMetadata.rows.every(row=>row.transport==='window-message-port'));
   assert.ok(result.mixed.powers.every(power => power > 0.025));
   assert.ok(result.data.microphone.powers[0] > 0.08 && result.data.microphone.powers[1] < 0.01);
   assert.ok(result.data['tab-audio'].powers[1] > 0.08 && result.data['tab-audio'].powers[0] < 0.01);
@@ -1005,20 +1014,24 @@ test('saved coverage survives a native Stop that discards its late video tail', 
 
 for (const phase of ['after-stop', 'before-stop']) test(`audio source retirement preserves the ${phase} discontinuity boundary`, { timeout: 30000 }, async () => pageFixture(async page => {
   const result = await page.evaluate(async phase => {
-    const NativeWorker = Worker, NativeRecorder = MediaRecorder, recorders = [];
-    let inject = false, injected = 0, terminal, signalTerminal, audioWorker, heldError, replaying = false;
+    const NativeChannel = MessageChannel, NativeRecorder = MediaRecorder, recorders = [];
+    let inject = false, injected = 0, terminal, signalTerminal, audioPort, heldError, replaying = false;
+    const heldTerminal = [];
     const retired = new Promise(resolve => { signalTerminal = resolve; });
-    globalThis.Worker = class extends NativeWorker {
-      constructor(url, options) {
-        super(url, options); this.audio = String(url).includes('/audio.worker');
-        if (this.audio) super.addEventListener('message', event => {
+    globalThis.MessageChannel = class extends NativeChannel {
+      constructor() {
+        super(); const port = this.port1, post = port.postMessage.bind(port);
+        port.addEventListener('message', event => {
           if (['error', 'stopped'].includes(event.data.kind)) { terminal ??= event.data.kind; signalTerminal(); }
-          if (phase === 'before-stop' && event.data.kind === 'error' && !replaying) { heldError = event.data; audioWorker = this; event.stopImmediatePropagation(); }
+          if (phase === 'before-stop' && ['error', 'stopped'].includes(event.data.kind) && !replaying) {
+            if (event.data.kind === 'error') heldError = event.data;
+            heldTerminal.push(event.data); audioPort = port; event.stopImmediatePropagation();
+          }
         });
-      }
-      postMessage(message, ...args) {
-        if (this.audio && inject && message.kind === 'input') { message = { ...message, timestamp: message.timestamp + 500000 }; injected++; }
-        return super.postMessage(message, ...args);
+        port.postMessage = (message, ...args) => {
+          if (inject && message.kind === 'input') { message = { ...message, timestamp: message.timestamp + 500000 }; injected++; }
+          return post(message, ...args);
+        };
       }
     };
     globalThis.MediaRecorder = class extends NativeRecorder {
@@ -1043,11 +1056,11 @@ for (const phase of ['after-stop', 'before-stop']) test(`audio source retirement
       inject = true;
       if (phase === 'before-stop') await boundedRetirement();
       const finishing = value.session.stop();
-      if (heldError) { replaying = true; audioWorker.dispatchEvent(new MessageEvent('message', { data: heldError })); }
+      if (heldError) { replaying = true; for (const data of heldTerminal) audioPort.dispatchEvent(new MessageEvent('message', { data })); }
       const manifest = await finishing;
       const decoded = phase === 'after-stop' ? await inspectAudio(await value.store.trackBlob(value.id, 'composed')) : undefined;
       return { manifest, terminal, injected, outputWasLive, decoded, delayedPreStopError: !!heldError };
-    } finally { if (value) { await value.session.cancel(); await value.cleanup(); } globalThis.Worker = NativeWorker; globalThis.MediaRecorder = NativeRecorder; }
+    } finally { if (value) { await value.session.cancel(); await value.cleanup(); } globalThis.MessageChannel = NativeChannel; globalThis.MediaRecorder = NativeRecorder; }
   }, phase);
   console.log('Audio Stop boundary', JSON.stringify({ phase, state: result.manifest.state, terminal: result.terminal, injected: result.injected, outputWasLive: result.outputWasLive }));
   if (phase === 'after-stop') {
@@ -1063,11 +1076,10 @@ for (const phase of ['after-stop', 'before-stop']) test(`audio source retirement
 
 test('a missing actual mixer Stop receipt cannot report a complete recording', { timeout: 30000 }, async () => pageFixture(async page => {
   const result = await page.evaluate(async () => {
-    const NativeWorker = Worker; let held = 0;
-    globalThis.Worker = class extends NativeWorker {
-      constructor(url, options) {
-        super(url, options);
-        if (String(url).includes('/audio.worker')) super.addEventListener('message', event => {
+    const NativeChannel = MessageChannel; let held = 0;
+    globalThis.MessageChannel = class extends NativeChannel {
+      constructor() {
+        super(); this.port1.addEventListener('message', event => {
           if (event.data.kind === 'stopped') { held++; event.stopImmediatePropagation(); }
         });
       }
@@ -1076,7 +1088,7 @@ test('a missing actual mixer Stop receipt cannot report a complete recording', {
     try {
       value = await fixture('screen', true); await value.session.start(); await waitForActiveTime(value.store, value.id, 1200);
       const manifest = await value.session.stop(); return { manifest, held };
-    } finally { if (value) { await value.session.cancel(); await value.cleanup(); } globalThis.Worker = NativeWorker; }
+    } finally { if (value) { await value.session.cancel(); await value.cleanup(); } globalThis.MessageChannel = NativeChannel; }
   });
   assert.equal(result.held, 1); assert.equal(result.manifest.state, 'interrupted'); assert.match(result.manifest.recoveryNote, /mixer.*acknowledge/i);
 }));

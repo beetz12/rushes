@@ -1,4 +1,4 @@
-// Actual parent bridge, controlled stream/worker transport only. Real PCM mixing
+// Actual parent bridge, controlled stream/port transport only. Real PCM mixing
 // and recording acceptance remain in composed-audio/capture/matrix tests.
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -22,7 +22,7 @@ const bounded = async promise => {
 };
 
 function transport({ hold = false, now, stopReceipt = true, onFailure, writeGate } = {}) {
-  const keys = ['AudioData', 'MediaStreamTrackProcessor', 'MediaStreamTrackGenerator', 'Worker', ...(now ? ['performance'] : [])];
+  const keys = ['AudioData', 'MediaStreamTrackProcessor', 'MediaStreamTrackGenerator', 'MessageChannel', ...(now ? ['performance'] : [])];
   const original = new Map(keys.map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
   const records = [], failures = [], frames = [[], []], outputs = [], clones = [], unacknowledged = [0, 0], peak = [0, 0];
   let worker, receiptCount = 0, allResolve, fullResolve, failureResolve;
@@ -52,9 +52,9 @@ function transport({ hold = false, now, stopReceipt = true, onFailure, writeGate
     constructor(options) { assert.equal(options.maxBufferSize, 25); this.readable = options.track.readable; }
   }
   class Generator extends Track { constructor() { super(); this.writable = new WritableStream({ write: () => writeGate }); } }
-  class ControlledWorker {
+  class ControlledPort {
     constructor() { worker = this; }
-    emit(data) { this.onmessage({ data }); }
+    emit(data) { this.onmessage?.({ data }); }
     postMessage(message, transfer) {
       if (message.kind === 'setup') { queueMicrotask(() => this.emit({ kind: 'ready' })); return; }
       if (message.kind === 'stop') { if (stopReceipt) setImmediate(() => this.emit({ kind: 'stopped' })); return; }
@@ -71,10 +71,14 @@ function transport({ hold = false, now, stopReceipt = true, onFailure, writeGate
         if (++receiptCount === 32) allResolve();
       });
     }
-    terminate() {}
+    close() {}
+  }
+  class ControlledChannel {
+    port1 = new ControlledPort();
+    port2 = { onmessage: null, onmessageerror: null, postMessage() {}, close() {} };
   }
   for (const [key, value] of Object.entries({ AudioData: Frame, MediaStreamTrackProcessor: Processor,
-    MediaStreamTrackGenerator: Generator, Worker: ControlledWorker, ...(now ? { performance: { now } } : {}) }))
+    MediaStreamTrackGenerator: Generator, MessageChannel: ControlledChannel, ...(now ? { performance: { now } } : {}) }))
     Object.defineProperty(globalThis, key, { configurable: true, writable: true, value });
   const mix = composedAudio(sources, message => { failures.push(message); failureResolve(); onFailure?.(message); });
   return { mix, sources, clones, records, failures, frames, outputs, peak, all, full, failed,
