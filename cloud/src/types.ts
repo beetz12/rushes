@@ -27,6 +27,9 @@ export interface ShareManifest {
 }
 export interface ReserveInput {
     id?: string;
+    /** Stable native take identity makes uncertain reservation retries idempotent. */
+    clientId?: string;
+    mode?: 'screen' | 'camera' | 'screen-camera';
     title: string;
     durationMs?: number;
     password?: string;
@@ -96,6 +99,7 @@ export interface ShareFeedback {
     reactions: ShareReaction[];
 }
 export interface ShareProvider {
+    readonly supportsAncillaryAssets?: boolean;
     reserve(input: ReserveInput): Promise<ShareReservation>;
     upload(share: ShareReservation, input: UploadInput): Promise<UploadedAsset>;
     publish(share: ShareReservation, input: PublishInput): Promise<ShareReservation>;
@@ -106,7 +110,7 @@ export interface ShareProvider {
     feedback?(id: string): Promise<ShareFeedback>;
     setupCheck(): Promise<{
         ok: true;
-        provider: 'bucket' | 'worker';
+        provider: 'bucket' | 'worker' | 'hosted';
         checks: string[];
     }>;
 }
