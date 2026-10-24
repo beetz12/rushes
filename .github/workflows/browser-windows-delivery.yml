@@ -1,0 +1,245 @@
+name: browser-windows-delivery
+on:
+  push:
+    branches: [codex/browser-production-20261022]
+    paths:
+      - '.github/workflows/browser-windows-delivery.yml'
+      - '.github/actions/matrix-checkpoint/**'
+      - 'browser/**'
+      - 'verification/browser-retirement.mjs'
+      - 'scripts/install-test-chrome.mjs'
+permissions:
+  contents: read
+jobs:
+  delivery-pair:
+    if: github.repository == 'beetz12/rushes' && github.event.repository.private == false
+    name: Windows output delivery / Chrome current / ${{ matrix.delivery }}
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        # Separate fresh VMs: cross-host diagnostic, not a within-process switch.
+        # Both arms keep the same full graph and ordinary encoder policy.
+        delivery: [observe-forward, retain-only]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+      - run: npm --prefix browser ci --no-audit --no-fund
+      - run: node scripts/install-test-chrome.mjs --generation current --destination "${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-chrome"
+      - run: choco install ffmpeg --no-progress -y
+      - run: |
+          ffmpeg -version
+          ffprobe -version
+      - name: Build the shared browser
+        id: build
+        run: npm --prefix browser run build
+      - name: Prepare identical generated input and preserve the existing supervisor runtime
+        id: input
+        run: |
+          @'
+          import * as files from 'node:fs/promises';
+          import { join } from 'node:path';
+          import { createHash } from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
+          import assert from 'node:assert/strict';
+          import { matrixMedia } from './browser/test/matrix-media.mjs';
+          const root = join(process.env.RUNNER_TEMP, 'rushes-delivery-${{ matrix.delivery }}-input');
+          await files.mkdir(root, {recursive:true});
+          const media = await matrixMedia(root), pins = {};
+          for (const [kind, path] of Object.entries(media)) {
+            const bytes = await files.readFile(path);
+            pins[kind] = {path, bytes:bytes.length, sha256:createHash('sha256').update(bytes).digest('hex')};
+          }
+          pins.generator = {platform:process.platform, arch:process.arch, node:process.version,
+            ffmpeg:execFileSync('ffmpeg', ['-version'], {encoding:'utf8', timeout:5000}).split(/\r?\n/)[0],
+            sourceSHA256:createHash('sha256').update(await files.readFile('./browser/test/matrix-media.mjs')).digest('hex')};
+          await files.writeFile(join(root, 'pins.json'), JSON.stringify(pins, null, 2), {flag:'wx'});
+          // Both delivery arms must reproduce the held Windows input bytes.
+          // The Mac-generated MJPEG has a different hash.
+          assert.equal(pins.video.sha256, 'cb16f489fa2cbd564dc781a18f778124d77bf530bccbcde75a9a403de2cb251b');
+          assert.equal(pins.video.bytes, 40621116);
+          assert.equal(pins.audio.sha256, '5631af0475cc31f063c9500f65bb085ea8f75158d12609ba737490acc6aecee7');
+          assert.equal(pins.audio.bytes, 192044);
+          await files.appendFile(process.env.GITHUB_ENV,
+            'RUSHES_M1_SOURCE_FILE='+media.video+'\nRUSHES_MATRIX_NODE='+process.execPath+
+            '\nRUSHES_MATRIX_PS_MODULE_PATH='+(process.env.PSModulePath ?? '')+'\n');
+          '@ | node --input-type=module
+      - name: Prepare the existing byte-pinned artifact uploader
+        run: node .github/actions/matrix-checkpoint/prepare-upload.mjs
+      - name: Source-only eight-second observation and independent retirement
+        id: source
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_NATIVE_SOURCE_ONLY: '1'
+          RUSHES_M1_SOURCE_AUDIO_SINK: none
+          RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+          RUSHES_M1_BROWSER_MODE: headful
+          RUSHES_M1_VIDEO_BUFFER: default
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          node browser/test/matrix.mjs
+          $rushesSourceExit = $LASTEXITCODE
+          if ($null -eq $rushesSourceExit) { throw 'Source command exit is unknown' }
+          Set-Content -Path "$env:RUSHES_M1_PROOF/command.exit" -Value $rushesSourceExit
+          $rushesRetirementExit = 1
+          if (Test-Path "$env:RUSHES_M1_PROOF/owned-browser-pid.json") {
+            node verification/browser-retirement.mjs "$env:RUSHES_M1_PROOF/owned-browser-pid.json" "$env:RUSHES_M1_PROOF/retirement.json"
+            $rushesRetirementExit = $LASTEXITCODE
+            if ($null -eq $rushesRetirementExit) { throw 'Source retirement exit is unknown' }
+          }
+          if ($rushesRetirementExit -eq 0) {
+            $rushesRetired = Get-Content -Raw "$env:RUSHES_M1_PROOF/retirement.json" | ConvertFrom-Json
+            if (!$rushesRetired.processAbsent -or !$rushesRetired.profileAbsent -or $rushesRetired.positiveControl -le 0) {
+              $rushesRetirementExit = 1
+            }
+          }
+          Set-Content -Path "$env:RUSHES_M1_PROOF/retirement.exit" -Value $rushesRetirementExit
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "retired=$rushesRetirementExit"
+          if ($rushesSourceExit -ne 0) { exit $rushesSourceExit }
+          exit $rushesRetirementExit
+      - name: Finalize source evidence before entering the full recorder
+        id: source_evidence
+        if: ${{ !cancelled() && steps.input.conclusion == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-delivery-source-current-${{ matrix.delivery }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-input/pins.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-chrome/release.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-chrome/windows-sandbox-access.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/metrics.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/command.exit
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/retirement.exit
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/retirement.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/chrome-stderr.log
+      - name: Raw native VP8 eight-second control and independent retirement
+        id: raw_native
+        if: ${{ !cancelled() && steps.source.conclusion == 'success' && steps.source.outputs.retired == '0' && steps.source_evidence.conclusion == 'success' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_NATIVE_SOURCE_ONLY: '1'
+          RUSHES_M1_NATIVE_ENCODER_CONTROL: '1'
+          RUSHES_M1_SOURCE_AUDIO_SINK: none
+          RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+          RUSHES_M1_BROWSER_MODE: headful
+          RUSHES_M1_VIDEO_BUFFER: default
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          node browser/test/matrix.mjs
+          $rushesRawExit = $LASTEXITCODE
+          if ($null -eq $rushesRawExit) { throw 'Raw native command exit is unknown' }
+          Set-Content -Path "$env:RUSHES_M1_PROOF/command.exit" -Value $rushesRawExit
+          $rushesRetirementExit = 1
+          if (Test-Path "$env:RUSHES_M1_PROOF/owned-browser-pid.json") {
+            node verification/browser-retirement.mjs "$env:RUSHES_M1_PROOF/owned-browser-pid.json" "$env:RUSHES_M1_PROOF/retirement.json"
+            $rushesRetirementExit = $LASTEXITCODE
+            if ($null -eq $rushesRetirementExit) { throw 'Raw native retirement exit is unknown' }
+          }
+          if ($rushesRetirementExit -eq 0) {
+            $rushesRetired = Get-Content -Raw "$env:RUSHES_M1_PROOF/retirement.json" | ConvertFrom-Json
+            if (!$rushesRetired.processAbsent -or !$rushesRetired.profileAbsent -or $rushesRetired.positiveControl -le 0) {
+              $rushesRetirementExit = 1
+            }
+          }
+          Set-Content -Path "$env:RUSHES_M1_PROOF/retirement.exit" -Value $rushesRetirementExit
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "retired=$rushesRetirementExit"
+          if ($rushesRawExit -ne 0) { exit $rushesRawExit }
+          exit $rushesRetirementExit
+      - name: Finalize raw native evidence before entering the full recorder
+        id: raw_evidence
+        if: ${{ !cancelled() && steps.raw_native.outcome != 'skipped' && steps.source.conclusion == 'success' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-delivery-raw-current-${{ matrix.delivery }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-input/pins.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-chrome/release.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-chrome/windows-sandbox-access.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/metrics.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/command.exit
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/retirement.exit
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/retirement.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/raw-native.webm
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/chrome-stderr.log
+      # Source/raw remain unflagged. Their order and fresh-VM differences remain confounds.
+      # Quiet logs cannot qualify native Start, Stop, media timing or retirement.
+      - name: Full untraced output-delivery diagnostic with the original native guards
+        id: full
+        if: ${{ !cancelled() && steps.input.conclusion == 'success' && steps.source.outputs.retired == '0' && steps.source_evidence.conclusion == 'success' && steps.raw_native.outputs.retired == '0' && steps.raw_evidence.conclusion == 'success' }}
+        timeout-minutes: 8
+        uses: ./.github/actions/matrix-checkpoint
+        env:
+          RUSHES_M1_SOURCE_MODE: native-reference
+          RUSHES_M1_SOURCE_AUDIO_SINK: none
+          RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+          RUSHES_M1_BROWSER_MODE: headful
+          RUSHES_M1_VIDEO_BUFFER: default
+          RUSHES_M1_OUTPUT_DELIVERY: ${{ matrix.delivery }}
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-full
+      - name: Preserve each stage outcome without replacing command receipts
+        if: always()
+        run: |
+          @{
+            scope = 'Provider stage outcomes only; command exits, native media guards and independent retirement remain separate'
+            delivery = '${{ matrix.delivery }}'
+            source = @{ outcome = '${{ steps.source.outcome }}'; conclusion = '${{ steps.source.conclusion }}'; retired = '${{ steps.source.outputs.retired }}' }
+            source_evidence = @{ outcome = '${{ steps.source_evidence.outcome }}'; conclusion = '${{ steps.source_evidence.conclusion }}' }
+            raw_native = @{ outcome = '${{ steps.raw_native.outcome }}'; conclusion = '${{ steps.raw_native.conclusion }}'; retired = '${{ steps.raw_native.outputs.retired }}' }
+            raw_evidence = @{ outcome = '${{ steps.raw_evidence.outcome }}'; conclusion = '${{ steps.raw_evidence.conclusion }}' }
+            full = @{ outcome = '${{ steps.full.outcome }}'; conclusion = '${{ steps.full.conclusion }}' }
+          } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 -Path "${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-outcomes.json"
+      - name: Retain each actual diagnostic outcome and generated evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-delivery-full-current-${{ matrix.delivery }}
+          retention-days: 1
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-outcomes.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-input/pins.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-chrome/release.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-chrome/windows-sandbox-access.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/metrics.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/command.exit
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/retirement.exit
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/retirement.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-source/chrome-stderr.log
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-input/pins.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-chrome/release.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-chrome/windows-sandbox-access.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/metrics.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/command.exit
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/retirement.exit
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/retirement.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/raw-native.webm
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-raw/chrome-stderr.log
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-full/metrics.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-full/supervisor-*.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-full/retirement.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-full/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-full/chrome-stderr.log
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-full/matrix-child-stdout.log
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-full/matrix-child-stderr.log
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-full/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-delivery-${{ matrix.delivery }}-full/normal-stop/*.webm
