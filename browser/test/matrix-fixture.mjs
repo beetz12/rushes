@@ -418,6 +418,28 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
     startup({ kind: 'source-limits-proof', screenEligible: cameraSourceAlreadyBounded(screen.getVideoTracks()[0]),
       cameraEligible: cameraSourceAlreadyBounded(camera.getVideoTracks()[0]) });
   }
+  // Observe the same owned compositor messages; no extra reader or console traffic.
+  metrics.compositionSpans = { samples: [], dropped: 0, missing: 0, invalid: 0, validation: 'envelope-only; numeric table reader required' };
+  const composingWorker = globalThis.Worker;
+  globalThis.Worker = class extends composingWorker {
+    constructor(...args) {
+      super(...args);
+      const requested = new URL(args[0], location.href);
+      if (requested.origin !== location.origin || requested.username !== '' || requested.password !== ''
+        || requested.pathname !== '/src/capture/composition.worker.ts') return;
+      this.addEventListener('message', event => {
+        if (!['ready', 'progress', 'error', 'stopped'].includes(event.data?.kind)) return;
+        const spans = event.data?.compositionSpans;
+        if (spans === undefined) { metrics.compositionSpans.missing++; return; }
+        let encoded;
+        try { encoded = JSON.stringify(spans); }
+        catch { metrics.compositionSpans.invalid++; return; }
+        if (!spans || spans.schema !== 'rushes.composition-local-spans/1' || typeof encoded !== 'string' || encoded.length > 16384) { metrics.compositionSpans.invalid++; return; }
+        if (metrics.compositionSpans.samples.length >= 32) { metrics.compositionSpans.dropped++; return; }
+        metrics.compositionSpans.samples.push({ kind: event.data.kind, frameCount: event.data.frameCount, spans });
+      });
+    }
+  };
   const session = await createCaptureSession({ id, title: 'Independent synthetic M1', mode: 'screen-camera',
     screen, camera, microphone, store, persistent: false, backupFolder: backup,
     bubble: { x: 1030, y: 490, size: 180 }, onState: state => {

@@ -15,7 +15,38 @@ const readers: ReadableStreamDefaultReader<VideoFrame>[] = [];
 let writer: WritableStreamDefaultWriter<VideoFrame>;
 let frameCount = 0;
 let lastReport = 0;
-const send = (kind: string, message?: string) => endpoint.postMessage({ kind, message, frameCount });
+// Fixed-size local wall observations. No media clock or native-consumer ACK.
+const spanNames = ['read-screen', 'read-camera', 'cache', 'raster', 'construct', 'write-call', 'write-wait', 'lease-screen', 'lease-camera'] as const;
+const spanPhases = ['preroll', 'start-control', 'paused', 'ending', 'mixed'] as const;
+type SpanName = typeof spanNames[number];
+type SpanPhase = typeof spanPhases[number];
+type Span = { name: SpanName; phase: SpanPhase; epoch: number; at: number };
+let spanPhase: SpanPhase = 'preroll', spanEpoch = 0, invalidSpans = 0;
+const spanRows = Object.fromEntries(spanPhases.map(phase => [phase,
+  Object.fromEntries(spanNames.map(name => [name, { count: 0, totalMs: 0, maxMs: 0 }]))])) as Record<SpanPhase, Record<SpanName, { count: number; totalMs: number; maxMs: number }>>;
+const pendingSpans: Partial<Record<SpanName, Span>> = {};
+const sourceCounts = { screen: 0, camera: 0, admitted: 0, rejected: 0, notReady: 0 };
+const enterSpan = (name: SpanName): Span => {
+  const span = { name, phase: spanPhase, epoch: spanEpoch, at: performance.now() }; pendingSpans[name] = span; return span;
+};
+const leaveSpan = (span: Span) => {
+  const elapsed = performance.now() - span.at;
+  if (pendingSpans[span.name] === span) delete pendingSpans[span.name]; else invalidSpans++;
+  if (!Number.isFinite(elapsed) || elapsed < 0) { invalidSpans++; return; }
+  const row = spanRows[span.epoch === spanEpoch && span.phase === spanPhase ? span.phase : 'mixed'][span.name];
+  row.count++; row.totalMs += elapsed; row.maxMs = Math.max(row.maxMs, elapsed);
+};
+const spanSnapshot = () => {
+  const at = performance.now();
+  return { schema: 'rushes.composition-local-spans/1', phase: spanPhase, epoch: spanEpoch, invalid: invalidSpans,
+    counts: { ...sourceCounts }, rows: spanRows,
+    pending: spanNames.flatMap(name => {
+      const span = pendingSpans[name]; if (!span) return [];
+      const age = at - span.at; return [{ name, phase: span.phase, epoch: span.epoch, ageMs: Number.isFinite(age) && age >= 0 ? age : null }];
+    }), scope: 'Worker-local wall intervals; start-control is not native-ready; write-wait is not encoder ACK' };
+};
+const send = (kind: string, message?: string) => endpoint.postMessage({ kind, message, frameCount,
+  ...(['ready', 'progress', 'error', 'stopped'].includes(kind) ? { compositionSpans: spanSnapshot() } : {}) });
 function drawFit(context: OffscreenCanvasRenderingContext2D, frame: VideoFrame, x: number, y: number, width: number, height: number, cover = false) {
   const scale = (cover ? Math.max : Math.min)(width / frame.displayWidth, height / frame.displayHeight);
   const drawnWidth = frame.displayWidth * scale, drawnHeight = frame.displayHeight * scale;
@@ -33,9 +64,12 @@ async function compose(setup: Setup) {
   const admit = createFrameCadence(setup.fps);
   const snapshot = (driver: VideoFrame) => {
     const timestamp = driver.timestamp;
-    if (!admit(timestamp)) return;
+    if (!admit(timestamp)) { sourceCounts.rejected++; return; }
+    sourceCounts.admitted++;
     const now = performance.now();
     if (begun && !pausedAt && now - begun - pausedTime >= setup.maxSeconds * 1000) { send('limit'); begun = 0; }
+    const raster = enterSpan('raster');
+    try {
     context.fillStyle = '#101820'; context.fillRect(0, 0, setup.width, setup.height);
     if (screenRaster) context.drawImage(screenRaster, 0, 0);
     else drawFit(context, driver, 0, 0, setup.width, setup.height);
@@ -45,10 +79,18 @@ async function compose(setup: Setup) {
       context.save(); context.beginPath(); context.arc(x + size / 2, y + size / 2, size / 2, 0, Math.PI * 2); context.clip();
       drawFit(context, driver, x, y, size, size, true); context.restore();
     }
-    return { frame: new VideoFrame(canvas, { timestamp }), now };
+    } finally { leaveSpan(raster); }
+    const constructing = enterSpan('construct');
+    try { return { frame: new VideoFrame(canvas, { timestamp }), now }; }
+    finally { leaveSpan(constructing); }
   };
   const write = async (frame: VideoFrame, now: number) => {
-    try { await writer.write(frame); } finally { frame.close(); }
+    try {
+      const calling = enterSpan('write-call'); let completion: Promise<void>;
+      try { completion = writer.write(frame); } finally { leaveSpan(calling); }
+      const waiting = enterSpan('write-wait');
+      try { await completion; } finally { leaveSpan(waiting); }
+    } finally { frame.close(); }
     frameCount++;
     if (frameCount === 1) send('ready');
     if (now - lastReport > 1000) { send('progress'); lastReport = now; }
@@ -57,17 +99,24 @@ async function compose(setup: Setup) {
     const reader = stream.getReader(); readers.push(reader);
     try {
       while (!ending) {
-        const item = await reader.read();
+        const reading = enterSpan(isScreen ? 'read-screen' : 'read-camera');
+        let item: ReadableStreamReadResult<VideoFrame>;
+        try { item = await reader.read(); } finally { leaveSpan(reading); }
         if (item.done) { if (!ending) send('source-ended'); break; }
-        const frame = item.value;
+        const frame = item.value; sourceCounts[isScreen ? 'screen' : 'camera']++;
+        const leased = enterSpan(isScreen ? 'lease-screen' : 'lease-camera');
         let output: ReturnType<typeof snapshot>;
         try {
           if (ending) continue;
           if (isScreen && !driving) {
-            screenDrawing!.fillStyle = '#101820'; screenDrawing!.fillRect(0, 0, setup.width, setup.height);
-            drawFit(screenDrawing!, frame, 0, 0, setup.width, setup.height); screenReady = true;
+            const caching = enterSpan('cache');
+            try {
+              screenDrawing!.fillStyle = '#101820'; screenDrawing!.fillRect(0, 0, setup.width, setup.height);
+              drawFit(screenDrawing!, frame, 0, 0, setup.width, setup.height); screenReady = true;
+            } finally { leaveSpan(caching); }
           } else if (!screenRaster || screenReady) output = snapshot(frame);
-        } finally { frame.close(); }
+          else sourceCounts.notReady++;
+        } finally { try { frame.close(); } finally { leaveSpan(leased); } }
         // The output owns its canvas snapshot; source leases end before backpressure.
         if (output) await write(output.frame, output.now);
       }
@@ -84,10 +133,10 @@ async function compose(setup: Setup) {
 
 endpoint.onmessage = event => {
   const message = event.data;
-  if (message.kind === 'setup') { placement = message.bubble; void compose(message).catch(error => send('error', String(error))); }
+  if (message.kind === 'setup') { spanEpoch++; placement = message.bubble; void compose(message).catch(error => send('error', String(error))); }
   else if (message.kind === 'bubble') placement = message.value;
-  else if (message.kind === 'start') { begun = performance.now(); pausedTime = 0; pausedAt = 0; }
-  else if (message.kind === 'pause' && !pausedAt) pausedAt = performance.now();
-  else if (message.kind === 'resume' && pausedAt) { pausedTime += performance.now() - pausedAt; pausedAt = 0; }
-  else if (message.kind === 'stop') { ending = true; for (const reader of readers) void reader.cancel().catch(() => undefined); }
+  else if (message.kind === 'start') { spanEpoch++; spanPhase = 'start-control'; begun = performance.now(); pausedTime = 0; pausedAt = 0; }
+  else if (message.kind === 'pause' && !pausedAt) { spanEpoch++; spanPhase = 'paused'; pausedAt = performance.now(); }
+  else if (message.kind === 'resume' && pausedAt) { spanEpoch++; spanPhase = 'start-control'; pausedTime += performance.now() - pausedAt; pausedAt = 0; }
+  else if (message.kind === 'stop') { spanEpoch++; spanPhase = 'ending'; ending = true; for (const reader of readers) void reader.cancel().catch(() => undefined); }
 };
