@@ -490,7 +490,9 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
             first.forEach(value => value.begin());
             worker.postMessage({ kind: 'start' }); if (isPaused()) worker.postMessage({ kind: 'pause' });
             await Promise.all(first.map(value => value.ready)); requireStartupOwner();
-            starts.filter(value => !first.includes(value)).forEach(value => value.begin());
+            for (const value of starts.filter(value => !first.includes(value))) {
+              value.begin(); await value.ready; requireStartupOwner();
+            }
             await allStarted;
           } finally {
             clearTimeout(startDeadline); rejectPending(new Error('Encoder startup observation closed.'));
