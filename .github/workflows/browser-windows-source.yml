@@ -4,9 +4,8 @@ on:
     branches: [codex/browser-production-20261022]
     paths:
       - '.github/workflows/browser-windows-source.yml'
-      - 'browser/test/matrix.mjs'
-      - 'browser/test/matrix-fixture.mjs'
-      - 'browser/test/matrix-native-encoder-control.mjs'
+      - 'browser/**'
+      - 'verification/browser-retirement.mjs'
       - 'scripts/install-test-chrome.mjs'
 permissions:
   contents: read

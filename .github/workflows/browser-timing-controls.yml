@@ -6,7 +6,7 @@ on:
       - '.github/workflows/browser-timing-controls.yml'
       - 'verification/browser-retirement.mjs'
       - 'scripts/install-test-chrome.mjs'
-      - 'browser/test/windows-chrome-access.mjs'
+      - 'browser/**'
 permissions:
   contents: read
 jobs:

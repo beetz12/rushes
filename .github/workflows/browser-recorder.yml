@@ -93,6 +93,7 @@ jobs:
           RUSHES_M1_SOURCE_MODE: native-reference
           RUSHES_M1_BROWSER_MODE: headful
           RUSHES_M1_VIDEO_BUFFER: ${{ runner.os == 'macOS' && 'cpu' || 'default' }}
+          RUSHES_M1_SOURCE_AUDIO_SINK: ${{ runner.os == 'macOS' && 'default' || 'none' }}
           RUSHES_M1_NATIVE_TRACE_PROOF: '1'
           RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-native-short
         run: node browser/test/matrix.mjs
@@ -103,6 +104,7 @@ jobs:
           RUSHES_M1_SOURCE_MODE: native-reference
           RUSHES_M1_BROWSER_MODE: headful
           RUSHES_M1_VIDEO_BUFFER: ${{ runner.os == 'macOS' && 'cpu' || 'default' }}
+          RUSHES_M1_SOURCE_AUDIO_SINK: ${{ runner.os == 'macOS' && 'default' || 'none' }}
           RUSHES_M1_REFERENCE: '1'
           RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-native-reference
         run: node browser/test/matrix.mjs
@@ -185,6 +187,7 @@ jobs:
           RUSHES_M1_SOURCE_MODE: native-reference
           RUSHES_M1_BROWSER_MODE: headful
           RUSHES_M1_VIDEO_BUFFER: ${{ runner.os == 'macOS' && 'cpu' || 'default' }}
+          RUSHES_M1_SOURCE_AUDIO_SINK: ${{ runner.os == 'macOS' && 'default' || 'none' }}
           RUSHES_M1_NATIVE_TRACE_PROOF: '1'
           RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-independent-native-short
         run: node browser/test/matrix.mjs
@@ -211,6 +214,7 @@ jobs:
           RUSHES_M1_SOURCE_MODE: native-reference
           RUSHES_M1_BROWSER_MODE: headful
           RUSHES_M1_VIDEO_BUFFER: ${{ runner.os == 'macOS' && 'cpu' || 'default' }}
+          RUSHES_M1_SOURCE_AUDIO_SINK: ${{ runner.os == 'macOS' && 'default' || 'none' }}
           RUSHES_M1_REFERENCE: '1'
           RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-independent-native-reference
         run: node browser/test/matrix.mjs

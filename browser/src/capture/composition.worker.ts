@@ -23,10 +23,10 @@ function drawFit(context: OffscreenCanvasRenderingContext2D, frame: VideoFrame, 
 }
 async function compose(setup: Setup) {
   const canvas = new OffscreenCanvas(setup.width, setup.height);
-  const context = canvas.getContext('2d', { alpha: false });
+  const context = canvas.getContext('2d', { alpha: false, willReadFrequently: true });
   if (!context) throw new Error('The browser could not initialize composition.');
   const screenRaster = setup.screen && setup.camera ? new OffscreenCanvas(setup.width, setup.height) : undefined;
-  const screenDrawing = screenRaster?.getContext('2d', { alpha: false });
+  const screenDrawing = screenRaster?.getContext('2d', { alpha: false, willReadFrequently: true });
   if (screenRaster && !screenDrawing) throw new Error('The browser could not initialize screen composition.');
   let screenReady = false;
   writer = setup.output.getWriter();

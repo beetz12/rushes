@@ -888,6 +888,7 @@ test('matrix witnesses freeze at Stop while later product finalization is parked
   await writeFile(reportFile, '[]', { flag: 'wx' });
   const stage = async value => { events.push({ at: new Date().toISOString(), ...value }); await writeFile(reportFile, JSON.stringify(events, null, 2)); };
   const media = await matrixMedia(proof, { signal: context.signal, onStage: (name, details) => stage({ stage: name, ...details }) });
+  const witnessAudioSink = process.platform === 'darwin' ? 'default' : 'none';
   const argumentsForFakeSource = [`--use-file-for-fake-video-capture=${media.video}`];
   for (const name of ['device', 'ui']) argumentsForFakeSource.push(`--use-fake-${name}-for-media-stream`);
   await stage({ stage: 'native-launch-start' });
@@ -900,12 +901,12 @@ test('matrix witnesses freeze at Stop while later product finalization is parked
   await stage({ stage: 'native-launched', pid: owned.process.pid });
   const page = await nativeBrowser.newPage(); await page.goto(`${origin}/capture-fixture`);
   await page.exposeFunction('witnessStage', stage);
-  const result = await page.evaluate(async () => {
+  const result = await page.evaluate(async sourceAudioSink => {
     const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
     let take, release, previewEndedAtBarrier = false;
     try {
       await window.witnessStage({ stage: 'before-prepare' });
-      take = await prepareMatrix({ sourceMode: 'native-reference' });
+      take = await prepareMatrix({ sourceMode: 'native-reference', sourceAudioSink });
       await window.witnessStage({ stage: 'before-start' }); await take.start();
       const readSnapshot = take.store.readSnapshot; let entered;
       const parked = new Promise(resolve => { entered = resolve; });
@@ -936,12 +937,12 @@ test('matrix witnesses freeze at Stop while later product finalization is parked
       catch { /* Node owns abort/exit evidence when this page is already gone. */ }
       throw error;
     } finally { release?.(); }
-  });
+  }, witnessAudioSink);
   await stage({ stage: 'before-assertions', result });
   assert.equal(result.previewEndedAtBarrier, true);
   const output = result.first.metrics.generatedAudioOutput;
   assert.deepEqual({ type: output.type, sampleRate: output.sampleRate, state: output.state,
-    requestedCallbackFrames: output.requestedCallbackFrames }, { type: 'none', sampleRate: 48000, state: 'running', requestedCallbackFrames: 128 });
+    requestedCallbackFrames: output.requestedCallbackFrames }, { type: witnessAudioSink, sampleRate: 48000, state: 'running', requestedCallbackFrames: 128 });
   assert.ok(Number.isFinite(output.baseLatency) && output.baseLatency >= 0);
   assert.ok(output.renderQuantumSize === null || (Number.isSafeInteger(output.renderQuantumSize) && output.renderQuantumSize > 0));
   assert.ok(result.first.metrics.observationBoundary.finishedPageMs);
