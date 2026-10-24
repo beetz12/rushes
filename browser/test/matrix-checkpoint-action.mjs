@@ -1,3 +1,4 @@
+import { outputDeliveryMode, observeChildOutput } from './node-output-delivery.mjs';
 // Generated-media CI only. Pinned upload-action workers own credentials; the matrix child never receives them.
 import * as checkpointFiles from 'node:fs/promises';
 import * as checkpointPaths from 'node:path';
@@ -66,6 +67,8 @@ async function freezeCheckpoint(proof, sequence, stage, signal, requireOwner) {
   const entries = stage === 'supervisor-startup'
     ? [['supervisor-owner.json', 8192, true], ['uploader-tool.json', 8192, true]]
     : [['metrics.json', 32 * 1024 ** 2, !supervised], ['chrome-stderr.log', 4 * 1024 ** 2, false], ['owned-browser-pid.json', 8192, requireOwner]];
+  if (process.env.RUSHES_M1_OUTPUT_DELIVERY !== undefined) entries.push(['supervisor-output-delivery.json', 128 * 1024, false],
+    ['matrix-child-stdout.log', 1024 ** 2, false], ['matrix-child-stderr.log', 1024 ** 2, false]);
   if (stage === 'supervisor-deadline') entries.push(['supervisor-owner.json',8192,true],['uploader-tool.json',8192,true],['supervisor-deadline.json',8192,true],
     ...['main','page','rss','monitor'].map(lane=>[`checkpoint-phase-${lane}.json`,8192,false]));
   for (const [name, maximum, required] of entries) {
@@ -156,7 +159,7 @@ export async function uploadInWorker(request, { signal, expires }, launch) {
     try { await until(ended, performance.now() + 2000); } finally { worker.off('error',onError); }
   }
 }
-export function superviseCheckpoints(child, { proof, upload, prefix, uploadBudgetMs = 45_000 }) {
+export function superviseCheckpoints(child, { proof, upload, prefix, uploadBudgetMs = 45_000, beforeFreeze }) {
   if (!/^[A-Za-z0-9_-]{1,160}$/.test(prefix) || !Number.isSafeInteger(uploadBudgetMs) || uploadBudgetMs < 1 || uploadBudgetMs > 45_000)
     throw new Error('Invalid checkpoint supervisor limits');
   let tail = Promise.resolve(), previous = 0, previousStage, failed = false;
@@ -173,6 +176,7 @@ export function superviseCheckpoints(child, { proof, upload, prefix, uploadBudge
         previous = sequence; previousStage = request.stage;
         const expires = performance.now() + Math.min(uploadBudgetMs, wallRemaining);
         alarm = setTimeout(() => controller.abort(), Math.max(1, expires - performance.now()));
+        if (beforeFreeze) await until(beforeFreeze({ signal: controller.signal, expires }), expires);
         const snapshot = await until(freezeCheckpoint(proof, sequence, request.stage, controller.signal,
           request.stage === 'normal-before-recovery' || receipts.some(row => row.stage === 'normal-before-recovery')), expires);
         controller.signal.throwIfAborted();
@@ -242,6 +246,7 @@ export async function main() {
   if (environment.GITHUB_ACTIONS !== 'true' || process.platform !== 'win32') throw new Error('This diagnostic action requires a public Windows runner');
   const event = JSON.parse(await until(checkpointFiles.readFile(environment.GITHUB_EVENT_PATH, 'utf8'),performance.now()+5000));
   if (event.repository?.private !== false || event.repository?.full_name !== 'beetz12/rushes') throw new Error('Private Actions are forbidden');
+  const outputDelivery = outputDeliveryMode(environment.RUSHES_M1_OUTPUT_DELIVERY);
   console.log('Checkpoint supervisor: public repository verified');
   const workspace = environment.GITHUB_WORKSPACE, proof = checkpointPaths.resolve(environment.RUSHES_M1_PROOF);
   const temporary = await until(checkpointFiles.realpath(environment.RUNNER_TEMP),performance.now()+5000), relative = checkpointPaths.relative(temporary, proof);
@@ -262,11 +267,16 @@ export async function main() {
   console.log('Checkpoint supervisor: startup artifact finalized',JSON.stringify(startup.artifact));
   const child = checkpointProcesses.fork(fileURLToPath(new URL('./matrix-checkpoint-child.mjs', import.meta.url)), [], { cwd: workspace, execPath: node,
     env: matrixEnvironment, stdio: ['ignore','pipe','pipe','ipc'] });
-  child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr);
+  // Diagnostic observers attach before pipe's downstream write; default forwarding is unchanged.
+  const childOutput = outputDelivery === undefined ? undefined : observeChildOutput(child, outputDelivery);
+  if (outputDelivery !== 'retain-only') {
+    child.stdout.pipe(process.stdout); child.stderr.pipe(process.stderr);
+  }
   let matrixProcessError = false; child.on('error', () => { matrixProcessError = true; });
   const ended = new Promise(resolve => child.once('close', (actualExit, signal) => resolve({ actualExit, signal, processError: matrixProcessError,closeObserved:true })));
   const ready=waitForOwnedReady(child,ended,Math.min(actionExpires,performance.now()+10000));void ready.catch(()=>undefined);
-  const supervisor = superviseCheckpoints(child,{proof,prefix,upload});
+  const supervisor = superviseCheckpoints(child,{proof,prefix,upload,
+    beforeFreeze: childOutput ? control => childOutput.flush(proof, control) : undefined });
   try {
     await until(checkpointFiles.writeFile(ownerFile, JSON.stringify({ supervisorPid: process.pid, matrixPid: child.pid, supervisorNode: process.version, matrixNode: node, modulePathHash: checkpointCrypto.createHash('sha256').update(inheritedModules).digest('hex'), state: 'child-created-before-readiness' })),performance.now()+5000);
     await ready;
@@ -286,6 +296,7 @@ export async function main() {
         actionElapsedMs:performance.now()-actionBegan,scope:'Wall deadline; no synthetic child exit or retirement inferred'}),{flag:'wx',mode:0o600,signal}),performance.now()+5000);
       let settlementError;
       try{checkpoints=await until(settling,performance.now()+50000);}catch(error){settlementError=error.name;}
+      if (childOutput) await until(childOutput.flush(proof, { signal }), performance.now()+5000);
       const snapshot=await supervisorSnapshot(proof,'supervisor-deadline',{prefix,upload,signal});return {snapshot,settlementError};
     },
     terminate:async()=>{
@@ -304,11 +315,17 @@ export async function main() {
     assertionCode:typeof error.stderr==='string'&&error.stderr.includes('ERR_ASSERTION')?'ERR_ASSERTION':undefined,
     observedAssertionReason:retirementPredicateReason(error.stderr),
     scope:'Failure classification; not the original command exit unless code is a numeric exit'}; }
+  let outputDeliveryResult;
+  if (childOutput) {
+    try { await until(childOutput.flush(proof), performance.now()+5000); outputDeliveryResult = childOutput.snapshot(); }
+    finally { if (outcome.closeObserved) childOutput.detach(); }
+  }
   const ids=[startup.artifact.id,...checkpoints.receipts.map(row=>row.artifact.id)];
-  const complete = !lifetime.supervisorDeadlineExceeded && outcome.closeObserved && outcome.actualExit === 0 && !outcome.signal && !outcome.processError && !checkpoints.errors.length && retirementActualExit === 0
+  const complete = !outputDeliveryResult?.overflow && !lifetime.supervisorDeadlineExceeded && outcome.closeObserved && outcome.actualExit === 0 && !outcome.signal && !outcome.processError && !checkpoints.errors.length && retirementActualExit === 0
     && new Set(ids).size===ids.length
     && ['normal-before-recovery','final-before-close'].every(stage => checkpoints.receipts.some(receipt => receipt.stage === stage));
   await until(checkpointFiles.writeFile(checkpointPaths.join(proof, 'supervisor-result.json'), JSON.stringify({ ...outcome, ...checkpoints, retirementActualExit,retirementFailure,startup,lifetime,termination,
+    ...(outputDeliveryResult ? { outputDeliveryResult } : {}),
     scope: 'Original matrix verdict and independent retirement remain required', accepted: complete }, null, 2), { flag: 'wx', mode: 0o600 }),performance.now()+5000);
   return complete ? 0 : 1;
 }

@@ -224,5 +224,7 @@ jobs:
             ${{ runner.temp }}/rushes-windows-untraced-full/retirement.json
             ${{ runner.temp }}/rushes-windows-untraced-full/owned-browser-pid.json
             ${{ runner.temp }}/rushes-windows-untraced-full/chrome-stderr.log
+            ${{ runner.temp }}/rushes-windows-untraced-full/matrix-child-stdout.log
+            ${{ runner.temp }}/rushes-windows-untraced-full/matrix-child-stderr.log
             ${{ runner.temp }}/rushes-windows-untraced-full/supplied-reference.f32le
             ${{ runner.temp }}/rushes-windows-untraced-full/normal-stop/*.webm

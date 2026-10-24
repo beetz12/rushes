@@ -1,4 +1,5 @@
 import { fixtureDocument } from './fixture-document.mjs';
+import { nodeConsoleLedger } from './node-output-delivery.mjs';
 import { macForegroundConfiguration, ownedForegroundBeforeMedia } from './mac-foreground.mjs';
 import { withoutCredentials } from './matrix-checkpoint-action.mjs';
 import assert from 'node:assert/strict';
@@ -92,6 +93,13 @@ if (softwareEncoderDiagnostic && (process.platform !== 'win32' || sourceMode !==
   || sourceAudioFrames !== 128 || sourceAudioSink !== 'none' || process.env.RUSHES_M1_BROWSER_MODE !== 'headful'
   || (process.env.RUSHES_M1_VIDEO_BUFFER ?? 'default') !== 'default'))
   throw new Error('Software encoder diagnosis requires the untraced supervised8s Windows full graph with None128/default buffers');
+const outputDelivery = process.env.RUSHES_M1_OUTPUT_DELIVERY;
+if (outputDelivery !== undefined && !['observe-forward', 'retain-only'].includes(outputDelivery)) throw new Error('Unknown generated output delivery diagnostic');
+if (outputDelivery !== undefined && (process.platform !== 'win32' || sourceMode !== 'native-reference' || long || reference
+  || sourceOnly || sourceControl || diagnostic || nativeEncoderControl || nativeTraceRequested || !checkpointRequested
+  || softwareEncoderDiagnostic || sourceAudioFrames !== 128 || sourceAudioSink !== 'none'
+  || process.env.RUSHES_M1_BROWSER_MODE !== 'headful' || (process.env.RUSHES_M1_VIDEO_BUFFER ?? 'default') !== 'default'))
+  throw new Error('Output delivery diagnosis requires the ordinary untraced supervised8s Windows full graph');
 const diagnosticDurationMs = allocationDiagnostic ? 180000 : 240000;
 const macLockRequired = allocationDiagnostic || (long && process.platform === 'darwin');
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -107,6 +115,11 @@ const evidence = { schema: softwareEncoderDiagnostic ? 'rushes.software-encoder-
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; tab activation alone is not physical minimization',
   diagnostic, allocationDiagnostic, samples: [], actions: [], checks: [], failures: [], browserStderr: [], lifecycle: [], hostTimeline: [], nativeAllocationSamples: [], fixturePages: [], appRequests: [] };
+const nodeOutput = outputDelivery === undefined ? undefined : nodeConsoleLedger();
+if (nodeOutput) {
+  evidence.schema = 'rushes.output-delivery-control/1';
+  evidence.outputDeliveryDiagnostic = { mode: outputDelivery, scope: 'Generated output transport diagnostic; ordinary-product acceptance excluded' };
+}
 evidence.fileHashes = {};
 for (const filename of ['test/matrix.mjs', 'test/matrix-browser-options.mjs', 'test/matrix-fixture.mjs', 'test/matrix-media.mjs', 'test/matrix-source.worker.mjs', 'test/matrix-native-observation.mjs', 'test/matrix-host-state.mjs', 'test/matrix-calibration.mjs', 'test/matrix-tone.worklet.mjs', 'test/media-coordinates.mjs', 'test/decoded-media.mjs', 'test/synchronized-media.mjs',
   'test/matrix-source-qualification.mjs', 'test/native-reference-clock.mjs', 'test/native-reference-witness.mjs', 'test/native-reference-analysis.mjs', 'src/capture/index.ts', 'src/capture/audio.ts', 'src/capture/audio-frame.ts', 'src/capture/audio.worker.ts', 'src/capture/audio-mixer.ts', 'src/capture/pcm-mixer.ts', 'src/capture/composition.worker.ts', 'src/capture/storage.ts'])
@@ -114,7 +127,7 @@ for (const filename of ['test/matrix.mjs', 'test/matrix-browser-options.mjs', 't
 for (const filename of ['test/native-clock-seed.mjs', 'test/cold-trace.mjs', 'test/startup-metadata.mjs'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 evidence.fileHashes['test/matrix-checkpoint-action.mjs'] = createHash('sha256').update(await readFile(join(root, 'test/matrix-checkpoint-action.mjs'))).digest('hex');
-for (const filename of ['test/matrix-native-encoder-control.mjs', 'test/fixture-document.mjs', 'src/capture/camera-source-limits.ts'])
+for (const filename of ['test/matrix-native-encoder-control.mjs', 'test/fixture-document.mjs', 'src/capture/camera-source-limits.ts', 'test/node-output-delivery.mjs'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 evidence.fileHashes['src/capture/cadence.ts'] = createHash('sha256').update(await readFile(join(root, 'src/capture/cadence.ts'))).digest('hex');
 evidence.fileHashes['test/native-optical-roi.mjs'] = createHash('sha256').update(await readFile(join(root, 'test/native-optical-roi.mjs'))).digest('hex');
@@ -128,7 +141,10 @@ const check = (name, operation) => {
   try { operation(); evidence.checks.push({ name, passed: true }); }
   catch (error) { evidence.checks.push({ name, passed: false, message: error.message }); evidence.failures.push(`${name}: ${error.message}`); }
 };
-const save = () => writeFile(join(proof, 'metrics.json'), JSON.stringify(evidence, null, 2));
+const save = () => {
+  if (nodeOutput) evidence.nodeConsoleReceipts = nodeOutput.snapshot();
+  return writeFile(join(proof, 'metrics.json'), JSON.stringify(evidence, null, 2));
+};
 async function stage(name, details) { evidence.lifecycle.push({ name, ...details, at: new Date().toISOString() }); await save(); }
 async function checkpointPhase(name,lane='main',status='pending',details) {
   if(checkpointRequested)await writeFile(join(proof,`checkpoint-phase-${lane}.json`),JSON.stringify({name,status,details,at:new Date().toISOString(),scope:'Last issued diagnostic operation; no recording acceptance inferred'}));
@@ -557,9 +573,13 @@ try {
     }
     evidence.nextStartupObservationIndex = 0; evidence.startupObservationSequenceErrors = 0;
     page.on('console', message => {
+      const received = nodeOutput?.receive();
       const text = message.text(); if (!text.startsWith(startupPrefix)) return;
       const row = collectStartupMetadata(evidence, text);
-      if (row) console.log(startupPrefix + JSON.stringify(row));
+      if (row) {
+        if (nodeOutput) nodeOutput.record(row, received, () => console.log(startupPrefix + JSON.stringify(row)));
+        else console.log(startupPrefix + JSON.stringify(row));
+      }
     });
   }
   const beginNativeTrace = async () => {
