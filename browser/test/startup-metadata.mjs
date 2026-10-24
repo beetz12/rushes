@@ -81,3 +81,8 @@ export function collectStartupMetadata(evidence, text) {
   evidence.startupObservations.push(row);
   return row;
 }
+
+export function shouldObserveStartup({ checkpointRequested, fullNativeTrace, platform, sourceMode, sourceOnly, sourceControl, diagnostic, long, reference }) {
+  return platform === 'win32' && sourceMode === 'native-reference' && !sourceOnly && !sourceControl && !diagnostic && !long && !reference
+    && (checkpointRequested || fullNativeTrace);
+}

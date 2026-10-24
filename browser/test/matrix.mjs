@@ -22,7 +22,7 @@ import { inspectHistogramPayload } from './matrix-native-observation.mjs';
 import { macHostState, isVerifiedUnlockedMac, assertUnlockedMac, monitorMacLock } from './matrix-host-state.mjs';
 import { nativeClockSeed } from './native-clock-seed.mjs';
 import { beginColdTrace, requireNativeClockTrace, recorderCallMetadata, sourceTaskObservationWindow } from './cold-trace.mjs';
-import { collectStartupMetadata, startupPrefix } from './startup-metadata.mjs';
+import { collectStartupMetadata, startupPrefix, shouldObserveStartup } from './startup-metadata.mjs';
 import { requestCheckpoint } from './matrix-checkpoint-action.mjs';
 
 const run = promisify(execFile), sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -79,11 +79,12 @@ if (checkpointRequested && (process.platform !== 'win32' || typeof process.send 
 const diagnosticDurationMs = allocationDiagnostic ? 180000 : 240000;
 const macLockRequired = allocationDiagnostic || (long && process.platform === 'darwin');
 const root = fileURLToPath(new URL('..', import.meta.url));
+const startupObservationRequested = shouldObserveStartup({ checkpointRequested, fullNativeTrace, platform: process.platform, sourceMode, sourceOnly, sourceControl, diagnostic, long, reference });
 const proof = resolve(process.env.RUSHES_M1_PROOF || await mkdtemp(join(tmpdir(), 'rushes-m1-')));
 await mkdir(proof, { recursive: true, mode: 0o700 });
 const profile = join(proof, 'isolated-chrome-profile');
 const evidence = { schema: sourceOnly ? 'rushes.source-load-control/1' : 'rushes.independent-m1/1', startedAt: new Date().toISOString(),
-  node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceAudioSink, sourceAudioTrace, sourceVideoTrace, sourceTaskTrace, sourceTaskWindowMs, checkpointRequested, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
+  node: process.version, platform: process.platform, arch: process.arch, long, reference, sourceMode, sourceControl, sourceOnly, sourceAudioFrames, sourceAudioSink, sourceAudioTrace, sourceVideoTrace, sourceTaskTrace, sourceTaskWindowMs, checkpointRequested, startupObservationRequested, sourceRevision: (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim(),
   normalBackgroundFlags: true, source: 'native Chrome fake MJPEG with frame-fed optical ordinal and dual-frequency AudioWorklet ordinal',
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; tab activation alone is not physical minimization',
@@ -192,7 +193,7 @@ async function startMatrixTake(options = {}, beforeStart) {
   await bounded(page.evaluate(async options => {
     const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
     window.matrixTake = await prepareMatrix(options);
-  }, { ...options, sourceMode, sourceOnly, sourceAudioFrames, sourceAudioSink, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed, startupObservation: checkpointRequested && !evidence.recording }), 30000, 'Matrix page preparation');
+  }, { ...options, sourceMode, sourceOnly, sourceAudioFrames, sourceAudioSink, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed, startupObservation: startupObservationRequested && !evidence.recording }), 30000, 'Matrix page preparation');
   await stage('page-preparation-ready');
   if (beforeStart) {
     try { await beforeStart(); }
@@ -459,7 +460,7 @@ try {
       evidence.nativeRecorderCalls.push(row);console.log('GENERATED_RECORDER_CALL '+JSON.stringify(row));
     });
   }
-  if (checkpointRequested) {
+  if (startupObservationRequested) {
     evidence.startupObservations = []; evidence.droppedStartupObservations = 0; evidence.invalidStartupObservations = 0;
     evidence.nextStartupObservationIndex = 0; evidence.startupObservationSequenceErrors = 0;
     page.on('console', message => {

@@ -155,3 +155,13 @@ test('first native timeout survives collector capacity independently of the firs
   assert.deepEqual(evidence.firstEncoderTimeout, first); assert.equal(evidence.droppedStartupObservations, 2);
   assert.equal(evidence.invalidStartupObservations, 0); assert.equal(evidence.startupObservationSequenceErrors, 0);
 });
+
+const { shouldObserveStartup } = await import('./startup-metadata.mjs');
+test('ordinary short Windows native trace enables the existing startup observer without IPC checkpoints', () => {
+  const profile = { checkpointRequested: false, fullNativeTrace: true, platform: 'win32', sourceMode: 'native-reference', sourceOnly: false, sourceControl: false, diagnostic: false, long: false, reference: false };
+  assert.equal(shouldObserveStartup(profile), true);
+  assert.equal(shouldObserveStartup({ ...profile, checkpointRequested: true, fullNativeTrace: false }), true);
+  assert.equal(shouldObserveStartup({ ...profile, fullNativeTrace: false }), false);
+  for (const change of [{ platform: 'darwin' }, { sourceMode: 'container' }, { sourceOnly: true }, { sourceControl: true }, { diagnostic: true }, { long: true }, { reference: true }])
+    assert.equal(shouldObserveStartup({ ...profile, ...change }), false, JSON.stringify(change));
+});

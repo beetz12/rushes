@@ -58,6 +58,7 @@ jobs:
       - name: Gate
         env:
           RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-proof
+          RUSHES_UI_PROOF: ${{ runner.temp }}/rushes-browser-ui
         run: |
           set -euo pipefail
           bash scripts/check.sh 2>&1 | tee "$RUNNER_TEMP/rushes-source-gate.log"
@@ -72,6 +73,10 @@ jobs:
             ${{ runner.temp }}/rushes-browser-proof/capture-cold.log
             ${{ runner.temp }}/rushes-browser-proof/capture-cold-*.webm
             ${{ runner.temp }}/rushes-browser-proof/witness-stop.log
+            ${{ runner.temp }}/rushes-browser-proof/paused-sync.log
+            ${{ runner.temp }}/rushes-browser-proof/paused-sync-*.webm
+            ${{ runner.temp }}/rushes-browser-ui/*.webm
+            ${{ runner.temp }}/rushes-browser-ui/*.json
       - name: Collect only owned engine crash stack metadata
         if: always()
         run: |

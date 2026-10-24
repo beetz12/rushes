@@ -12,6 +12,7 @@ import { matrixMedia } from './matrix-media.mjs';
 import { beginColdTrace } from './cold-trace.mjs';
 import { ownedTestBrowser } from './owned-test-browser.mjs';
 import { ownedProfile } from '../../verification/browser-retirement.mjs';
+import { retainGeneratedCapture, observeGeneratedRecorders } from './generated-capture-evidence.mjs';
 const runFile = promisify(execFile);
 // Startup-readiness bound for recorder start-EVENT offsets: an event-dispatch observation
 // (docs/design/browser-capture-recovery.md), never recorded-media alignment evidence.
@@ -428,12 +429,21 @@ test('quota/write failure stops encoders, releases sources and preserves previou
 }));
 
 test('decoded synthetic visual/audio edges align at beginning, middle and end of a paused take', { timeout: 30000 }, async () => pageFixture(async page => {
+  await page.evaluate(observeGeneratedRecorders);
+  await page.exposeFunction('retainPausedSyncCapture', value => retainGeneratedCapture(process.env.RUSHES_M1_PROOF, 'paused-sync', value));
   const result = await page.evaluate(async () => {
     const { fixture, syncTransitions } = await import('/test/capture-fixture.mjs');
     const value = await fixture('screen-camera', true, true); await value.session.start();
     await new Promise(resolve => setTimeout(resolve, 2100)); value.pauseCalibration(); await value.session.pause();
     await new Promise(resolve => setTimeout(resolve, 730)); value.resumeCalibration(); await value.session.resume();
     await new Promise(resolve => setTimeout(resolve, 2200)); const manifest = await value.session.stop();
+    const retained = {};
+    for (const track of manifest.tracks) {
+      const bytes = new Uint8Array(await (await value.store.trackBlob(value.id, track.kind)).arrayBuffer()), pieces = [];
+      for (let offset = 0; offset < bytes.length; offset += 16384) pieces.push(String.fromCharCode(...bytes.subarray(offset, offset + 16384)));
+      retained[track.kind] = btoa(pieces.join(''));
+    }
+    await window.retainPausedSyncCapture({ manifest, retained, nativeEvents: globalThis.generatedRecorderObservations });
     const drifts = await syncTransitions(await value.store.trackBlob(value.id, 'composed'));
     const originals = {};
     const audio = await value.store.trackBlob(value.id, 'microphone');

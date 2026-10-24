@@ -1,0 +1,5 @@
+# Generated platform failure evidence
+
+The hosted Mac failures need their actual saved media before decoded-edge or complete-state assertions throw. Tests retain only explicit generated fixtures: manifests, unchanged original/composed WebM bytes and bounded native recorder start/pause/resume/stop/error event observations. Event dispatch times are diagnostics, not media sample PTS, and cannot be subtracted from coverage checks. The original100ms sync and250ms extent/gap assertions remain authoritative and still run.
+
+Ordinary short Windows native-trace qualification already has scalar startup metadata support in its fixture, but only the IPC checkpoint wrapper enabled it. Enable the same bounded observer in the existing short full native-reference Windows trace mode. Preserve checkpoint admission and all source/clock/PCM/acknowledgement/cleanup/byte predicates. No new readers, media source, retries, native commands, deadlines or pass exemption are introduced. Diagnostic metadata does not prove the failure cause or qualify an interrupted take.

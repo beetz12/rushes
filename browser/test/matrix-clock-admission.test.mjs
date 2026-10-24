@@ -8,7 +8,7 @@ const end = runner.indexOf('\nasync function nativeAllocationProbe()', begin);
 assert.ok(begin >= 0 && end > begin);
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const actualStart = new AsyncFunction('requireUnlockedHost', 'stage', 'sourceMode', 'evidence', 'nativeClockSeed', 'page',
-  'bounded', 'sourceOnly', 'sourceAudioFrames', 'sourceAudioSink', 'checkpointRequested', 'beforeStart', `${runner.slice(begin, end)}\nreturn startMatrixTake({}, beforeStart);`);
+  'bounded', 'sourceOnly', 'sourceAudioFrames', 'sourceAudioSink', 'startupObservationRequested', 'beforeStart', `${runner.slice(begin, end)}\nreturn startMatrixTake({}, beforeStart);`);
 
 function coldImportControl(seedRetirementMs = 0, importFailure = false, cleanupFailure) {
   let pageMs = 0;

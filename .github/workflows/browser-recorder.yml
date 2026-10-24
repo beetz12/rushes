@@ -123,10 +123,13 @@ jobs:
             ${{ runner.temp }}/rushes-browser-source-control/*.log
             ${{ runner.temp }}/rushes-browser-proof/metrics.json
             ${{ runner.temp }}/rushes-browser-proof/capture-cold-*.webm
+            ${{ runner.temp }}/rushes-browser-proof/paused-sync-*.webm
             ${{ runner.temp }}/rushes-browser-proof/normal-stop/*.webm
             ${{ runner.temp }}/rushes-browser-proof/*.log
             ${{ runner.temp }}/rushes-browser-proof/normal-stop/*.log
             ${{ runner.temp }}/rushes-browser-ui/*.png
+            ${{ runner.temp }}/rushes-browser-ui/*.webm
+            ${{ runner.temp }}/rushes-browser-ui/*.json
             ${{ runner.temp }}/rushes-browser-ui/unclosed-*.json
             ${{ runner.temp }}/rushes-browser-reference/metrics.json
             ${{ runner.temp }}/rushes-browser-reference/*.log
