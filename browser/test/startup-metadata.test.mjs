@@ -1,7 +1,7 @@
 import * as workerFixtureFiles from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { startupMetadata, startupPrefix, collectStartupMetadata, audioFailureMetadata, lateAudioMetadata } from './startup-metadata.mjs';
+import { startupMetadata, startupPrefix, collectStartupMetadata, audioFailureMetadata, lateAudioMetadata, encoderStartMetadata } from './startup-metadata.mjs';
 const base = { takeId: 'generated-case', index: 0, timeMs: 42.5 };
 const line = row => startupPrefix + JSON.stringify(row);
 const warning = { ...base, kind: 'warning', state: 'recording', message: 'Audio sink write timed out' };
@@ -120,4 +120,38 @@ test('actual generated Worker listener positively identifies audio and retains o
     assert.deepEqual(metrics.audioWorkerIdentity, { id: 0, pathname: '/src/capture/audio.worker.ts' });
     new f.Worker('http://generated.invalid/src/capture/audio.worker.ts'); assert.equal(metrics.observerErrors.length, 1);
   } finally { if (previous) Object.defineProperty(globalThis, 'Worker', previous); else delete globalThis.Worker; }
+});
+
+const { schema: _schema, edge: _edge, input: _input, waitMs: _wait, ...audioStatus } = audio;
+const encoder = { type: 'encoder-start', schema: 1, role: 'screen', atMs: 11000, elapsedMs: 10000, released: false,
+  encoders: [['screen', 'recording', 1, 1, 0, 0, 0, 0], ['composed', 'recording', 1, 1, 0, 0, 0, 0]],
+  tracks: [['screen', 'live', true, false], ['preview-video', 'live', true, false]], audio: audioStatus };
+test('native timeout retains independent bounded pre-release encoder and nonfatal audio status', () => {
+  assert.equal(encoderStartMetadata(encoder), encoder);
+  const row = { ...base, kind: 'encoder-timeout', detail: encoder };
+  assert.deepEqual(startupMetadata(line(row)), row);
+  assert.deepEqual(startupMetadata(line({ ...row, detail: { ...encoder, audio: null } })), { ...row, detail: { ...encoder, audio: null } });
+  const bad = [{ ...encoder, payload: [1] }, { ...encoder, role: 'unknown' }, { ...encoder, elapsedMs: -1 },
+    { ...encoder, released: 0 }, { ...encoder, encoders: [...encoder.encoders, encoder.encoders[0]] },
+    { ...encoder, encoders: [['screen', 'recording', 1, 1, 0, 0, 0, -1]] },
+    { ...encoder, encoders: [['composed', 'recording', 1, 1, 0, 0, 0, 0]] },
+    { ...encoder, tracks: [...encoder.tracks, encoder.tracks[0]] }, { ...encoder, tracks: [['screen', 'missing', true, false]] },
+    { ...encoder, audio: { ...audioStatus, data: [1] } }];
+  for (const detail of bad) { assert.equal(encoderStartMetadata(detail), undefined); assert.equal(startupMetadata(line({ ...row, detail })), undefined); }
+  const max = 2147483647;
+  const full = { ...encoder, atMs: max, elapsedMs: max,
+    encoders: ['screen', 'camera', 'microphone', 'tab-audio', 'composed'].map(role => [role, 'recording', max, max, max, max, max, max]),
+    tracks: ['screen', 'camera', 'microphone', 'tab-audio', 'preview-video', 'preview-audio'].map(role => [role, 'live', true, false]) };
+  const maximal = { ...row, takeId: 'x'.repeat(128), timeMs: Number.MAX_VALUE, index: 255, detail: full };
+  assert.ok(line(maximal).length <= 4096); assert.deepEqual(startupMetadata(line(maximal)), maximal);
+});
+test('first native timeout survives collector capacity independently of the first warning', () => {
+  const evidence = { startupObservations: [], invalidStartupObservations: 0, droppedStartupObservations: 0,
+    nextStartupObservationIndex: 0, startupObservationSequenceErrors: 0 };
+  for (let index = 0; index < 128; index++) collectStartupMetadata(evidence, line({ ...phase, index }));
+  const first = { ...base, index: 128, kind: 'encoder-timeout', detail: encoder };
+  collectStartupMetadata(evidence, line(first));
+  collectStartupMetadata(evidence, line({ ...first, index: 129, detail: { ...encoder, atMs: 12000 } }));
+  assert.deepEqual(evidence.firstEncoderTimeout, first); assert.equal(evidence.droppedStartupObservations, 2);
+  assert.equal(evidence.invalidStartupObservations, 0); assert.equal(evidence.startupObservationSequenceErrors, 0);
 });

@@ -1291,3 +1291,51 @@ test('final playback verifies a new snapshot after every native Stop acknowledge
   assert.equal(result.stopEvents, result.encoders); assert.equal(result.reads.at(-1).stopsAtReadStart, result.encoders);
   assert.deepEqual(result.reads.at(-1).bytes, result.manifest.tracks.map(track => [track.kind, track.bytes]));
 }));
+
+test('native startup timeout freezes before cleanup and reports after release even when detail is refused', { timeout: 35000 }, async () => pageFixture(async page => {
+  const rows = await page.evaluate(async () => {
+    const { createCaptureSession } = await import('/src/capture/index.ts');
+    const { createDraftStore } = await import('/src/capture/storage.ts');
+    const NativeRecorder = MediaRecorder, result = [];
+    for (const refuse of [false, true]) {
+      const order = [], encoders = [];
+      class HeldRecorder extends EventTarget {
+        static isTypeSupported(value) { return NativeRecorder.isTypeSupported(value); }
+        state = 'inactive';
+        constructor(stream, options) { super(); this.mimeType = options.mimeType; encoders.push(this); }
+        start() { this.state = 'recording'; } // Deliberately withhold the native start event.
+        stop() { order.push('stop'); this.state = 'inactive'; this.dispatchEvent(new Event('stop')); }
+      }
+      globalThis.MediaRecorder = HeldRecorder;
+      const canvas = document.createElement('canvas'); canvas.width = 1280; canvas.height = 720;
+      const context = canvas.getContext('2d'); context.fillRect(0, 0, 1280, 720);
+      const screen = canvas.captureStream(30), store = await createDraftStore(), id = crypto.randomUUID();
+      let session, detail, releasedAtWarning;
+      try {
+        session = await createCaptureSession({ id, title: 'Controlled missing native start event', mode: 'screen', screen,
+          store, persistent: false, backupFolder: false, onWarning(message, value) {
+            if (value?.type !== 'encoder-start') return;
+            detail = value; releasedAtWarning = screen.getTracks().every(track => track.readyState === 'ended');
+            order.push('warning'); if (refuse) throw new Error('Controlled detail refusal');
+          } });
+        let error;
+        try { await session.start(); } catch (value) { error = value.message; }
+        const saved = await store.load(id);
+        result.push({ refuse, error, detail, releasedAtWarning, order, state: saved.state,
+          refusalRetained: saved.events.some(event => event.kind === 'startup-warning-refused'),
+          frozen: Object.isFrozen(detail) && Object.isFrozen(detail.encoders) && detail.encoders.every(Object.isFrozen),
+          allInactive: encoders.every(value => value.state === 'inactive') });
+      } finally { await session?.cancel(); screen.getTracks().forEach(track => track.stop()); globalThis.MediaRecorder = NativeRecorder; }
+    }
+    return result;
+  });
+  for (const row of rows) {
+    assert.match(row.error, /screen encoder did not start/); assert.equal(row.state, 'interrupted');
+    assert.equal(row.detail.released, false); assert.equal(row.releasedAtWarning, true);
+    assert.ok(row.detail.elapsedMs >= 9900); assert.equal(row.detail.audio, null);
+    assert.deepEqual(row.detail.encoders.map(value => value.slice(1)), [['recording', 1, 1, 0, 0, 0, 0], ['recording', 1, 1, 0, 0, 0, 0]]);
+    assert.ok(row.detail.tracks.every(value => value[1] === 'live'));
+    assert.equal(row.order[0], 'warning'); assert.equal(row.order.filter(value => value === 'stop').length, 2);
+    assert.equal(row.refusalRetained, row.refuse); assert.equal(row.frozen, true); assert.equal(row.allInactive, true);
+  }
+}));

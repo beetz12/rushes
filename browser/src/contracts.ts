@@ -55,12 +55,20 @@ export type AudioFailureDetails = Readonly<{
   output: readonly [number, number | null, number, number];
   writing: boolean; writeAgeMs: number | null; readied: boolean; quiesced: boolean; closed: boolean;
 }>;
+export type AudioTransportStatus = Omit<AudioFailureDetails, 'schema' | 'edge' | 'input' | 'waitMs'>;
+export type EncoderStartFailureDetails = Readonly<{
+  type: 'encoder-start'; schema: 1; role: TrackKind; atMs: number; elapsedMs: number; released: boolean;
+  encoders: readonly (readonly [TrackKind, 'inactive' | 'recording' | 'paused', number, number, number, number, number, number])[];
+  tracks: readonly (readonly [string, MediaStreamTrackState, boolean, boolean])[];
+  audio: AudioTransportStatus | null;
+}>;
+export type WarningDetails = AudioFailureDetails | EncoderStartFailureDetails;
 export type CaptureInputs = {
   id: string; title: string; mode: CaptureMode; screen?: MediaStream; camera?: MediaStream;
   microphone?: MediaStream; store: DraftStore; persistent: boolean; backupFolder: boolean;
   cloudRecordingId?: string;
   bubble?: BubblePlacement; onState?: (state: CaptureState) => void;
-  onWarning?: (message: string, details?: AudioFailureDetails) => void; onCheckpoint?: (manifest: DraftManifest) => void;
+  onWarning?: (message: string, details?: WarningDetails) => void; onCheckpoint?: (manifest: DraftManifest) => void;
 };
 export type CaptureSession = {
   readonly preview: MediaStream;

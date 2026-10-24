@@ -1,10 +1,10 @@
-import type { AudioFailureDetails } from '../contracts';
+import type { AudioFailureDetails, AudioTransportStatus } from '../contracts';
 import type { AudioTransformAPIs, PCMFrame } from './audio-frame';
 import { MIX_FRAMES, MIX_RATE, stereoPlanes } from './pcm-mixer';
 // Endpoints stay in this Window: Chrome changes reference origins on stream transfer.
 // Only copied PCM crosses the worker boundary. Originals belong to the coordinator.
 export function composedAudio(tracks: MediaStreamTrack[], failed: (message: string) => void = () => undefined): {
-  track?: MediaStreamTrack; readonly diagnostics?: { [key: string]: unknown; parentFailure?: AudioFailureDetails }; start(): Promise<void>; quiesce(): Promise<void>; close(): void;
+  track?: MediaStreamTrack; readonly diagnostics?: { [key: string]: unknown; parentFailure?: AudioFailureDetails }; status?(): AudioTransportStatus; start(): Promise<void>; quiesce(): Promise<void>; close(): void;
 } {
   if (!tracks.length) return { async start() {}, async quiesce() {}, close() {} };
   if (tracks.length === 1) {
@@ -52,16 +52,18 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
     if (writer) void writer.abort().finally(() => writer?.releaseLock()).catch(() => undefined);
     if (worker) deadline = setTimeout(() => worker?.terminate(), 500);
   }
+  function status(at = performance.now()): AudioTransportStatus {
+    return Object.freeze({ pending: Object.freeze([pendingFrames[0], pendingFrames[1]] as const),
+      posted: Object.freeze([posted[0], posted[1]] as const), consumed: Object.freeze([consumed[0], consumed[1]] as const),
+      messages, lastKind, lastAgeMs: lastMessageAt === undefined ? null : Math.ceil(at - lastMessageAt),
+      output: Object.freeze([outputPackets, outputSequence, writes, receipts] as const), writing,
+      writeAgeMs: writeAt === undefined ? null : Math.ceil(at - writeAt), readied, quiesced, closed });
+  }
   function failure(message: string) {
     if (!closed) {
       const at = performance.now();
       parentFailure ??= Object.freeze({ schema: 1, edge: capacityFailure?.edge ?? 'other', input: capacityFailure?.input ?? null,
-        pending: Object.freeze([pendingFrames[0], pendingFrames[1]] as const),
-        posted: Object.freeze([posted[0], posted[1]] as const), consumed: Object.freeze([consumed[0], consumed[1]] as const),
-        waitMs: capacityFailure?.waitMs ?? null, messages, lastKind,
-        lastAgeMs: lastMessageAt === undefined ? null : Math.ceil(at - lastMessageAt),
-        output: Object.freeze([outputPackets, outputSequence, writes, receipts] as const), writing,
-        writeAgeMs: writeAt === undefined ? null : Math.ceil(at - writeAt), readied, quiesced, closed });
+        waitMs: capacityFailure?.waitMs ?? null, ...status(at) });
       hasFailureDiagnostics = true;
       readyReject(new Error(message));
       // A consumer may enter synchronous native Stop. Retire owned audio first.
@@ -164,6 +166,6 @@ export function composedAudio(tracks: MediaStreamTrack[], failed: (message: stri
     deadline = setTimeout(() => failure('Composed audio did not become ready'), 10000);
     worker.postMessage({ kind: 'setup' });
     for (const [source, reader] of readers.entries()) void consume(reader, source);
-    return { track: output, get diagnostics() { return parentFailure ? { ...diagnostics, parentFailure } : diagnostics; }, async start() { await ready; }, quiesce, close };
+    return { track: output, status, get diagnostics() { return parentFailure ? { ...diagnostics, parentFailure } : diagnostics; }, async start() { await ready; }, quiesce, close };
   } catch (error) { close(); throw error; }
 }

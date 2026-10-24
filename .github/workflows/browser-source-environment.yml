@@ -30,6 +30,29 @@ jobs:
           ffmpeg -version
           ffprobe -version
       - run: npm --prefix browser run build
+      - name: Record profiler CLI capability without requesting access
+        env:
+          RUSHES_ENVIRONMENT_PROOF: ${{ runner.temp }}/rushes-source-audio
+        run: |
+          node --input-type=module <<'JS'
+          import * as files from 'node:fs/promises';
+          import { spawnSync } from 'node:child_process';
+          const inspect = args => {
+            const result = spawnSync('/usr/bin/xcrun', ['xctrace', ...args], { encoding: 'utf8', timeout: 5000, maxBuffer: 1024 * 1024 });
+            return { result, completed: !result.error && result.status !== null };
+          };
+          const version = inspect(['version']), templates = inspect(['list', 'templates']);
+          const numbers = version.result.status === 0 ? version.result.stdout.match(/xctrace version (\d+)(?:\.(\d+))?/i) : null;
+          const snapshot = { schema: 1, scope: 'CLI discovery only; profiling access and scheduler schema remain unmeasured',
+            versionCompleted: version.completed, versionExit: version.result.status,
+            versionMajor: numbers ? Number(numbers[1]) : null, versionMinor: numbers?.[2] ? Number(numbers[2]) : null,
+            templatesCompleted: templates.completed, templatesExit: templates.result.status,
+            systemTraceListed: templates.result.status === 0 && /^\s*System Trace\s*$/m.test(templates.result.stdout),
+            profilingAttempted: false, profilingPermissionMeasured: false, schedulerRowsAccepted: 0 };
+          await files.mkdir(process.env.RUSHES_ENVIRONMENT_PROOF, { recursive: true, mode: 0o700 });
+          await files.writeFile(`${process.env.RUSHES_ENVIRONMENT_PROOF}/profiler-capability.json`, JSON.stringify(snapshot, null, 2), { flag: 'wx' });
+          console.log(JSON.stringify(snapshot));
+          JS
       - name: Prepare one immutable generated input
         id: media
         env:
@@ -120,6 +143,7 @@ jobs:
           path: |
             ${{ runner.temp }}/rushes-environment-chrome/release.json
             ${{ runner.temp }}/rushes-environment-input/pins.json
+            ${{ runner.temp }}/rushes-source-audio/profiler-capability.json
             ${{ runner.temp }}/rushes-source-audio/host-before.json
             ${{ runner.temp }}/rushes-source-audio/host-after.json
             ${{ runner.temp }}/rushes-source-audio/host-after.exit

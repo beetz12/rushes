@@ -26,6 +26,25 @@ export function lateAudioMetadata(value) {
   if (value.event === 'error' && keys === 'afterMs,event,message' && typeof value.message === 'string' && value.message.length <= 512) return value;
   if (value.event === 'stopped' && keys === 'afterMs,event') return value;
 }
+export function encoderStartMetadata(value) {
+  if (!value || Array.isArray(value) || typeof value !== 'object'
+    || Object.keys(value).sort().join(',') !== 'atMs,audio,elapsedMs,encoders,released,role,schema,tracks,type') return;
+  if (value.type !== 'encoder-start' || value.schema !== 1 || !roles.includes(value.role)
+    || !scalarCount(value.atMs) || !scalarCount(value.elapsedMs) || typeof value.released !== 'boolean') return;
+  if (!Array.isArray(value.encoders) || value.encoders.length < 1 || value.encoders.length > roles.length) return;
+  if (!value.encoders.every(row => Array.isArray(row) && row.length === 8 && roles.includes(row[0])
+    && ['inactive', 'recording', 'paused'].includes(row[1]) && row.slice(2).every(scalarCount))) return;
+  if (new Set(value.encoders.map(row => row[0])).size !== value.encoders.length || !value.encoders.some(row => row[0] === value.role)) return;
+  const trackRoles = [...roles.slice(0, 4), 'preview-video', 'preview-audio'];
+  if (!Array.isArray(value.tracks) || value.tracks.length > 6 || !value.tracks.every(row => Array.isArray(row) && row.length === 4
+    && trackRoles.includes(row[0]) && ['live', 'ended'].includes(row[1]) && row.slice(2).every(flag => typeof flag === 'boolean'))
+    || new Set(value.tracks.map(row => row[0])).size !== value.tracks.length) return;
+  if (value.audio !== null) {
+    if (!value.audio || Object.keys(value.audio).sort().join(',') !== 'closed,consumed,lastAgeMs,lastKind,messages,output,pending,posted,quiesced,readied,writeAgeMs,writing'
+      || !audioFailureMetadata({ schema: 1, edge: 'other', input: null, waitMs: null, ...value.audio })) return;
+  }
+  return value;
+}
 export function startupMetadata(text) {
   if (typeof text !== 'string' || text.length > 4096 || !text.startsWith(startupPrefix)) return;
   let row; try { row = JSON.parse(text.slice(startupPrefix.length)); } catch { return; }
@@ -37,6 +56,7 @@ export function startupMetadata(text) {
     && ['ready', 'recording', 'paused', 'stopping', 'complete', 'interrupted', 'failed'].includes(row.state)
     && typeof row.message === 'string' && row.message.length <= 512
     && (!Object.hasOwn(row, 'audio') || audioFailureMetadata(row.audio))) return row;
+  if (row.kind === 'encoder-timeout' && keys === 'detail,index,kind,takeId,timeMs' && encoderStartMetadata(row.detail)) return row;
   if (row.kind === 'audio-late' && row.workerId === 0) {
     const { takeId, index, timeMs, kind, workerId, ...detail } = row;
     if (lateAudioMetadata(detail)) return row;
@@ -50,6 +70,7 @@ export function collectStartupMetadata(evidence, text) {
   if (!text.startsWith(startupPrefix)) return;
   const row = startupMetadata(text);
   if (!row) { evidence.invalidStartupObservations++; return; }
+  if (row.kind === 'encoder-timeout' && evidence.firstEncoderTimeout === undefined) evidence.firstEncoderTimeout = row;
   if (row.kind === 'warning' && evidence.firstStartupWarning === undefined) evidence.firstStartupWarning = row;
   const takeId = evidence.startupObservationTakeId;
   if (takeId === undefined) evidence.startupObservationTakeId = row.takeId;

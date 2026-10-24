@@ -1,5 +1,5 @@
 import { BROWSER_LIMITS, type BubblePlacement, type CaptureInputs, type CaptureSession, type CaptureState,
-  type DraftManifest, type DraftSnapshot, type TrackKind } from '../contracts';
+  type DraftManifest, type DraftSnapshot, type TrackKind, type WarningDetails, type EncoderStartFailureDetails } from '../contracts';
 
 import { composedAudio } from './audio';
 
@@ -9,7 +9,7 @@ type FrameAPIs = {
   MediaStreamTrackProcessor?: new (options: { track: MediaStreamTrack; maxBufferSize: number }) => FrameProcessor;
   MediaStreamTrackGenerator?: new (options: { kind: 'video' }) => FrameGenerator;
 };
-type RecorderSlot = { kind: TrackKind; recorder: MediaRecorder; sequence: number; ended: Promise<void>; started: boolean };
+type RecorderSlot = { kind: TrackKind; recorder: MediaRecorder; sequence: number; ended: Promise<void>; started: boolean; startCalls: number; startReturns: number; startEvents: number; errors: number; bytes: number };
 async function limited<T>(operation: Promise<T>, milliseconds: number, message: string): Promise<T> {
   let deadline: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
@@ -145,7 +145,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
     manifest.events.push({ timeMs: startedAt ? performance.now() - startedAt : 0, kind, ...(message ? { message } : {}) });
   };
   const notify = (next: CaptureState) => { state = next; manifest.state = next; inputs.onState?.(next); };
-  const warn = (message: string) => inputs.onWarning?.(message, audio?.diagnostics?.parentFailure);
+  const warn = (message: string, details?: WarningDetails) => inputs.onWarning?.(message, details ?? audio?.diagnostics?.parentFailure);
   function release() {
     if (released) return; released = true;
     if (timer) clearInterval(timer);
@@ -194,11 +194,11 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
       ...(hasAudio ? { audioBitsPerSecond: 128_000 } : {}),
     });
     const ended = new Promise<void>(resolve => recorder.addEventListener('stop', () => resolve(), { once: true }));
-    const slot = { kind, recorder, sequence: 0, ended, started: false }; slots.push(slot);
+    const slot = { kind, recorder, sequence: 0, ended, started: false, startCalls: 0, startReturns: 0, startEvents: 0, errors: 0, bytes: 0 }; slots.push(slot);
     manifest.tracks.push({ kind, mimeType: recorder.mimeType, startOffsetMs: 0, startOffsetTimeBasis: 'media-recorder-start-event', chunks: [], bytes: 0 });
     recorder.addEventListener('dataavailable', eventValue => {
       if (!eventValue.data.size || canceled) return;
-      const data = eventValue.data, sequence = slot.sequence++, checkpointMs = elapsed();
+      const data = eventValue.data, sequence = slot.sequence++, checkpointMs = elapsed(); slot.bytes += data.size;
       pendingBytes += data.size;
       saveTail = saveTail.then(async () => {
         try {
@@ -214,7 +214,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
       if (pendingBytes > 32 * 1024 ** 2) fail('The storage writer fell behind. Finalizing the saved portion to protect this take.');
       if (checkpointMs >= BROWSER_LIMITS.maxTakeSeconds * 1000 && !ending) { event('take-limit'); void finish(); }
     });
-    recorder.addEventListener('error', () => fail(`The ${kind} encoder failed. Saved chunks remain recoverable.`));
+    recorder.addEventListener('error', () => { slot.errors++; fail(`The ${kind} encoder failed. Saved chunks remain recoverable.`); });
     return slot;
   }
   async function save() { manifest.durationMs = elapsed(); await inputs.store.save(structuredClone(manifest)); }
@@ -397,6 +397,7 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
       async start() {
         if (state !== 'ready' || starting || released) throw new Error('This recording session has already been used.');
         starting = true;
+        let startTimeout: EncoderStartFailureDetails | undefined;
         try {
           await audio?.start();
           if (released) throw new Error('The recording was canceled during startup.');
@@ -407,15 +408,26 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
           }
           startedAt = performance.now(); manifest.epochMs = startedAt; notify('recording');
           const starts = slots.map(slot => new Promise<void>((resolve, reject) => {
-            const startedTimer = setTimeout(() => reject(new Error(`The ${slot.kind} encoder did not start.`)), 10_000);
+            const startedTimer = setTimeout(() => {
+              const at = performance.now();
+              const held = [['screen', screen], ['camera', camera], ['microphone', inputs.microphone?.getAudioTracks()[0]],
+                ['tab-audio', inputs.screen?.getAudioTracks()[0]], ['preview-video', generator], ['preview-audio', audio?.track]] as const;
+              startTimeout ??= Object.freeze({ type: 'encoder-start', schema: 1, role: slot.kind, atMs: Math.ceil(at),
+                elapsedMs: Math.ceil(at - startedAt), released,
+                encoders: Object.freeze(slots.map(value => Object.freeze([value.kind, value.recorder.state, value.startCalls,
+                  value.startReturns, value.startEvents, value.errors, value.sequence, value.bytes] as const))),
+                tracks: Object.freeze(held.flatMap(([role, track]) => track ? [Object.freeze([role, track.readyState, track.enabled, track.muted] as const)] : [])),
+                audio: audio?.status?.() ?? null });
+              reject(new Error(`The ${slot.kind} encoder did not start.`));
+            }, 10_000);
             slot.recorder.addEventListener('error', () => { clearTimeout(startedTimer); reject(new Error(`The ${slot.kind} encoder failed during startup.`)); }, { once: true });
             const start = () => {
-              clearTimeout(startedTimer);
+              slot.startEvents++; clearTimeout(startedTimer);
               manifest.tracks.find(track => track.kind === slot.kind)!.startOffsetMs = performance.now() - startedAt;
               event(`start-${slot.kind}`); resolve();
             };
             slot.recorder.addEventListener('start', start, { once: true });
-            try { slot.recorder.start(2000); slot.started = true; } catch (error) { clearTimeout(startedTimer); reject(error); }
+            try { slot.startCalls++; slot.recorder.start(2000); slot.startReturns++; slot.started = true; } catch (error) { clearTimeout(startedTimer); reject(error); }
           }));
           worker.postMessage({ kind: 'start' }); await Promise.all(starts); await save();
           armTakeDeadline();
@@ -426,6 +438,10 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
           }, 1000);
         } catch (error) {
           release();
+          if (startTimeout) {
+            try { warn(messageOf(error), startTimeout); }
+            catch (refused) { event('startup-warning-refused', messageOf(refused)); }
+          }
           // A folder failure can reject create after OPFS and its lease commit.
           // Inspect that primary draft so terminal cleanup releases the live lease.
           if (!created && (error as { code?: unknown } | null)?.code !== 'DRAFT_EXISTS') {

@@ -296,3 +296,20 @@ test('capacity failure snapshots a pending output write before its separate one-
     assert.ok(f.sources.every(track => track.readyState === 'live'));
   } finally { release(); await f.close(); }
 });
+
+test('nonfatal transport status is frozen at observation without inventing a failure', async () => {
+  let now = 0; const f = transport({ hold: true, now: () => now });
+  try {
+    await f.mix.start(); const before = f.mix.status();
+    assert.equal(before.readied, true); assert.deepEqual(before.pending, [0, 0]); assert.equal(before.lastAgeMs, 0);
+    f.burst(); await bounded(f.full); await task(); now = 100;
+    const current = f.mix.status();
+    assert.deepEqual(current.pending, [12000, 12000]); assert.deepEqual(current.posted, [15, 15]);
+    assert.deepEqual(current.consumed, [0, 0]); assert.equal(current.lastAgeMs, 100);
+    assert.equal(current.closed, false); assert.equal(current.quiesced, false);
+    assert.deepEqual(before.pending, [0, 0]); assert.deepEqual(before.posted, [0, 0]);
+    assert.ok(Object.isFrozen(current) && Object.isFrozen(current.pending) && Object.isFrozen(current.output));
+    assert.equal(f.mix.diagnostics?.parentFailure, undefined); assert.deepEqual(f.failures, []);
+    f.mix.close(); assert.equal(f.mix.status().closed, true); assert.equal(current.closed, false);
+  } finally { await f.close(); }
+});

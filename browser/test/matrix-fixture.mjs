@@ -1,4 +1,4 @@
-import { audioFailureMetadata, lateAudioMetadata } from './startup-metadata.mjs';
+import { audioFailureMetadata, lateAudioMetadata, encoderStartMetadata } from './startup-metadata.mjs';
 import { nativeReferenceClock } from './native-reference-clock.mjs';
 import { nativeReferenceWitness, SOURCE_PCM_GUARD_MS } from './native-reference-witness.mjs';
 export async function directContainerControl(durationMs) {
@@ -384,8 +384,10 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
     onWarning: (message, details) => {
       metrics.warnings.push(message);
       const audio = startupObservation ? audioFailureMetadata(details) : undefined;
-      if (startupObservation && details !== undefined && !audio) metrics.audioFailureDetailsInvalid++;
-      if (audio && audioFailureAt === undefined) audioFailureAt = performance.now();
+      const encoder = startupObservation ? encoderStartMetadata(details) : undefined;
+      if (startupObservation && details !== undefined && !audio && !encoder) metrics.audioFailureDetailsInvalid++;
+      if ((audio || encoder) && audioFailureAt === undefined) audioFailureAt = performance.now();
+      if (encoder) startup({ kind: 'encoder-timeout', detail: encoder });
       startup({ kind: 'warning', state: metrics.states.at(-1)?.state ?? 'ready', message: String(message).slice(0, 512),
         ...(audio ? { audio } : {}) });
     },
