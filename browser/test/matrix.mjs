@@ -283,12 +283,20 @@ async function launch(media) {
 }
 async function killAbruptly() {
   const child = processHandle; if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  if (process.platform === 'win32') await run('taskkill', ['/PID', String(child.pid), '/T', '/F'], { timeout: 5000 });
-  else process.kill(-child.pid, 'SIGKILL');
-  await bounded(new Promise(resolve => { if (child.exitCode !== null || child.signalCode !== null) resolve(); else child.once('exit', resolve); }), 5000, 'Owned matrix process exit');
+  const failures = [];
+  try {
+    if (process.platform === 'win32') await run('taskkill', ['/PID', String(child.pid), '/T', '/F'], { timeout: 5000 });
+    else process.kill(-child.pid, 'SIGKILL');
+  } catch (error) { failures.push(error); }
+  try {
+    await bounded(new Promise(resolve => { if (child.exitCode !== null || child.signalCode !== null) resolve(); else child.once('exit', resolve); }), 5000, 'Owned matrix process exit');
+  } catch (error) { failures.push(error); }
+  if (failures.length > 1) throw new AggregateError(failures, 'Owned kill command and process exit confirmation failed');
+  if (failures.length) throw failures[0];
   evidence.actions.push({ kind: 'abrupt-process-kill', pid: child.pid, at: new Date().toISOString() });
   browser = undefined; processHandle = undefined;
 }
+
 async function rss() {
   const pid = processHandle?.pid; if (!pid) return null;
   if (process.platform === 'win32') {
