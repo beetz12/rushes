@@ -1339,3 +1339,92 @@ test('native startup timeout freezes before cleanup and reports after release ev
     assert.equal(row.refusalRetained, row.refuse); assert.equal(row.frozen, true); assert.equal(row.allInactive, true);
   }
 }));
+
+test('a source failure before native start events rejects startup after actual terminal persistence', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const NativeWorker = Worker; let failedSource, value;
+    globalThis.Worker = class extends NativeWorker {
+      constructor(url, options) { super(url, options); this.compositor = String(url).includes('composition.worker'); }
+      postMessage(message, ...rest) {
+        const result = super.postMessage(message, ...rest);
+        if (this.compositor && message.kind === 'start') queueMicrotask(() => failedSource.dispatchEvent(new Event('ended')));
+        return result;
+      }
+    };
+    try {
+      const { fixture } = await import('/test/capture-fixture.mjs'); value = await fixture('screen', false);
+      failedSource = value.feeds[0].getVideoTracks()[0];
+      const error = await value.session.start().then(() => undefined, error => error.message);
+      const manifest = await value.store.load(value.id);
+      return { error, manifest, states: [...value.states], released: [failedSource, ...value.session.preview.getTracks()].every(track => track.readyState === 'ended') };
+    } finally { if (value) { await value.session.cancel(); await value.cleanup(); } globalThis.Worker = NativeWorker; }
+  });
+  assert.match(result.error ?? '', /video source ended/); assert.equal(result.manifest.state, 'interrupted');
+  assert.match(result.manifest.recoveryNote, /video source ended/); assert.equal(result.released, true);
+  assert.deepEqual(result.states, ['recording', 'stopping', 'interrupted']);
+}));
+
+test('Stop during the initial checkpoint stays playable while the obsolete start operation rejects', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { fixture, inspectVideo } = await import('/test/capture-fixture.mjs');
+    const value = await fixture('screen', false), save = value.store.save;
+    let entered, release, held = false;
+    const ready = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
+    value.store.save = async manifest => {
+      if (!held && manifest.state === 'recording') { held = true; entered(); await gate; }
+      return save(manifest);
+    };
+    try {
+      const starting = value.session.start().then(() => undefined, error => error.message); await ready;
+      await new Promise(resolve => setTimeout(resolve, 1400));
+      const stopping = value.session.stop(); release();
+      const [error, manifest] = await Promise.all([starting, stopping]);
+      const decoded = [];
+      for (const track of manifest.tracks) decoded.push({ kind: track.kind, ...await inspectVideo(await value.store.trackBlob(value.id, track.kind)) });
+      return { error, manifest, decoded, durableState: (await value.store.load(value.id)).state,
+        states: [...value.states], released: [value.feeds[0].getVideoTracks()[0], ...value.session.preview.getTracks()].every(track => track.readyState === 'ended') };
+    } finally { release(); await value.session.cancel(); await value.cleanup(); }
+  });
+  assert.match(result.error ?? '', /ended during startup/); assert.equal(result.manifest.state, 'complete');
+  assert.equal(result.durableState, 'complete'); assert.equal(result.manifest.recoveryNote, undefined);
+  assert.deepEqual(result.states, ['recording', 'stopping', 'complete']); assert.equal(result.released, true);
+  assert.deepEqual(result.decoded.map(value => value.kind), ['screen', 'composed']);
+  for (const value of result.decoded) {
+    assert.deepEqual([value.width, value.height], value.kind === 'screen' ? [640, 360] : [1280, 720]);
+    assert.ok(Math.abs(value.duration * 1000 - result.manifest.durationMs) < 250);
+  }
+  assert.ok(result.manifest.tracks.every(value => value.bytes > 0));
+}));
+
+test('fatal producer shutdown preserves each previously acknowledged original chunk byte', { timeout: 30000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { fixture, inspectVideo, waitForActiveTime } = await import('/test/capture-fixture.mjs');
+    const value = await fixture('screen', false);
+    try {
+      await value.session.start(); await waitForActiveTime(value.store, value.id, 2300);
+      const before = await value.store.load(value.id), originals = [];
+      for (const track of before.tracks) {
+        if (!track.chunks.length) throw new Error('The control did not obtain an acknowledged chunk');
+        for (const chunk of track.chunks) originals.push({ kind: track.kind, chunk,
+          bytes: [...new Uint8Array(await (await value.store.readChunk(value.id, chunk)).arrayBuffer())] });
+      }
+      value.feeds[0].getVideoTracks()[0].dispatchEvent(new Event('ended'));
+      const manifest = await value.session.stop(), retained = [], decoded = [];
+      for (const item of originals) {
+        const chunk = manifest.tracks.find(track => track.kind === item.kind).chunks.find(chunk => chunk.sequence === item.chunk.sequence);
+        const bytes = new Uint8Array(await (await value.store.readChunk(value.id, chunk)).arrayBuffer());
+        retained.push({ descriptor: JSON.stringify(chunk) === JSON.stringify(item.chunk),
+          bytes: bytes.length === item.bytes.length && bytes.every((value, index) => value === item.bytes[index]) });
+      }
+      for (const track of manifest.tracks) decoded.push({ kind: track.kind, ...await inspectVideo(await value.store.trackBlob(value.id, track.kind)) });
+      return { manifest, retained, decoded, released: [value.feeds[0].getVideoTracks()[0], ...value.session.preview.getTracks()].every(track => track.readyState === 'ended') };
+    } finally { await value.session.cancel(); await value.cleanup(); }
+  });
+  assert.equal(result.manifest.state, 'interrupted'); assert.match(result.manifest.recoveryNote, /video source ended/);
+  assert.ok(result.retained.length >= 2 && result.retained.every(value => value.descriptor && value.bytes));
+  assert.equal(result.released, true); assert.deepEqual(result.decoded.map(value => value.kind), ['screen', 'composed']);
+  for (const value of result.decoded) {
+    assert.deepEqual([value.width, value.height], value.kind === 'screen' ? [640, 360] : [1280, 720]);
+    assert.ok(value.duration > 1);
+  }
+}));

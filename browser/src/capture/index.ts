@@ -294,6 +294,10 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
         try { await drainCoverage(duration, encoderExpires); }
         catch (error) { failure ??= messageOf(error); }
       }
+      // Fatal takes no longer need producers; native stop acknowledgements still apply.
+      if (failure) {
+        try { release(); } catch (error) { event('producer-shutdown-error', messageOf(error)); }
+      }
       const waiting: Promise<void>[] = [];
       for (const slot of slots) {
         if (slot.started || slot.recorder.state !== 'inactive') waiting.push(slot.ended);
@@ -398,6 +402,13 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
         if (state !== 'ready' || starting || released) throw new Error('This recording session has already been used.');
         starting = true;
         let startTimeout: EncoderStartFailureDetails | undefined;
+        let terminalOwnerObserved = false;
+        const requireStartupOwner = () => {
+          if (failure || ending || released || canceled) {
+            terminalOwnerObserved = true;
+            throw new Error(failure ?? 'The recording ended during startup.');
+          }
+        };
         try {
           await audio?.start();
           if (released) throw new Error('The recording was canceled during startup.');
@@ -429,14 +440,22 @@ export async function createCaptureSession(inputs: CaptureInputs): Promise<Captu
             slot.recorder.addEventListener('start', start, { once: true });
             try { slot.startCalls++; slot.recorder.start(2000); slot.startReturns++; slot.started = true; } catch (error) { clearTimeout(startedTimer); reject(error); }
           }));
-          worker.postMessage({ kind: 'start' }); await Promise.all(starts); await save();
-          armTakeDeadline();
+          worker.postMessage({ kind: 'start' }); await Promise.all(starts);
+          requireStartupOwner(); await save(); requireStartupOwner();
+          armTakeDeadline(); requireStartupOwner();
           if (!released && !ending) timer = setInterval(() => {
             if (state === 'recording' && elapsed() >= takeStopAtMs) stopAtLimit();
             else if (camera && state === 'recording' && performance.now() - lastProgress > 15_000)
               fail('Video frames stopped arriving. The saved portion is being finalized.');
           }, 1000);
         } catch (error) {
+          if (terminalOwnerObserved && (canceling || ending)) {
+            // Stop/Cancel already owns cleanup. Do not stop its sources or turn
+            // an intentional Stop into a recording failure while joining it.
+            let ownerError: unknown;
+            try { await (canceling ?? ending); } catch (value) { ownerError = value; }
+            throw new Error(failure ?? messageOf(ownerError ?? error), ownerError === undefined ? undefined : { cause: ownerError });
+          }
           release();
           if (startTimeout) {
             try { warn(messageOf(error), startTimeout); }
