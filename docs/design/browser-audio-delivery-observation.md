@@ -1,0 +1,7 @@
+# Supervised audio delivery observation
+
+The unchanged Windows native qualification still fails with a capacity-receipt timeout. A parent snapshot cannot distinguish Worker handling from delivery back to the Window. Add observation only to the existing supervised short diagnostic (durable checkpoint). Ordinary qualification and production keep their original Worker URL.
+
+A module statically imports the actual audio Worker, then wraps its existing handler and postMessage before queued setup messages dispatch. Attach generated scalar timing metadata to the existing ready/consumed/stopped messages; add no messages and preserve every functional field, transfer list, PCM value, and acknowledgement. FIFO source ordinals link Window successful input sends to Worker handler entry/consumed posting and Window receipt. Bounded Window records log only a short tail at the first observed warning and first late receipts. These are diagnostics, not an audio/video media epoch.
+
+HRTime origin+now can compare communicating realms. Keep raw stamps and passive normal-message roundtrip brackets; do not invent a clock-resolution bound, fit media timestamps, or infer CPU execution from an elapsed handler span. First observed warning occurs after producer close and is not the frozen failure-decision time. Missing, unmatched or invalid observations remain unmeasured; they never make recording or cleanup succeed. Additional fields are test metadata, not an unchanged byte-for-byte protocol claim.

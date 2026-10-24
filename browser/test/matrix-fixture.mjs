@@ -1,4 +1,5 @@
-import { audioFailureMetadata, lateAudioMetadata, encoderStartMetadata } from './startup-metadata.mjs';
+import { generatedAudioWorkerObserver } from './generated-audio-worker.mjs';
+import { audioFailureMetadata, encoderStartMetadata } from './startup-metadata.mjs';
 import { nativeReferenceClock } from './native-reference-clock.mjs';
 import { nativeReferenceWitness, SOURCE_PCM_GUARD_MS } from './native-reference-witness.mjs';
 export async function directContainerControl(durationMs) {
@@ -35,7 +36,7 @@ export async function directContainerControl(durationMs) {
 
 // Independent M1 instrumentation. Native Chrome fake media is supplied by the
 // runner; this page never requests a real screen or uses a timer as its video source.
-export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true, clockSeed, sourceOnly = false, sourceAudioFrames = 128, sourceAudioSink = 'none', startupObservation = false } = {}) {
+export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true, clockSeed, sourceOnly = false, sourceAudioFrames = 128, sourceAudioSink = 'none', startupObservation = false, audioTimingObservation = false } = {}) {
   if (typeof sourceOnly !== 'boolean' || (sourceOnly && (sourceMode !== 'native-reference' || diagnostic || !referenceWitness)))
     throw new Error('Source-only observation requires the ordinary native-reference witness');
   if (![128, 480].includes(sourceAudioFrames) || (sourceAudioFrames !== 128 && sourceMode !== 'native-reference'))
@@ -44,8 +45,10 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
     throw new Error('Default generated source sink requires explicit native-reference128 mode');
   if (typeof startupObservation !== 'boolean' || (startupObservation && (sourceMode !== 'native-reference' || sourceOnly || diagnostic)))
     throw new Error('Startup observations require an explicit generated full native-reference diagnostic');
-  let startup = () => undefined, audioFailureAt, observedAudioWorker;
-  const audioLateKinds = new Set();
+  if (typeof audioTimingObservation !== 'boolean' || (audioTimingObservation && (!startupObservation || sourceMode !== 'native-reference' || sourceOnly || diagnostic || !referenceWitness)))
+    throw new Error('Audio delivery timing requires the supervised initial native-reference diagnostic');
+  let audioObserver;
+  let startup = () => undefined, audioFailureAt;
   const { createCaptureSession } = await import('/src/capture/index.ts');
   const { createDraftStore } = await import('/src/capture/storage.ts');
   const nativeRecorder = globalThis.MediaRecorder;
@@ -64,25 +67,9 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
     }
   };
   if (startupObservation) {
-    metrics.audioLateDropped = 0; metrics.audioLateInvalid = 0; metrics.audioFailureDetailsInvalid = 0;
-    globalThis.Worker = class extends nativeWorker {
-      constructor(...args) {
-        super(...args);
-        if (new URL(args[0], location.href).pathname !== '/src/capture/audio.worker.ts') return;
-        if (observedAudioWorker) { metrics.observerErrors.push({ name: 'audio-worker-identity', message: 'Multiple generated audio workers' }); return; }
-        observedAudioWorker = this; metrics.audioWorkerIdentity = { id: 0, pathname: '/src/capture/audio.worker.ts' };
-        this.addEventListener('message', event => {
-          if (audioFailureAt === undefined || !['consumed', 'error', 'stopped'].includes(event.data?.kind)) return;
-          if (audioLateKinds.has(event.data.kind)) { metrics.audioLateDropped++; return; }
-          const candidate = { event: event.data.kind, afterMs: Math.ceil(performance.now() - audioFailureAt),
-            ...(event.data.kind === 'consumed' ? { source: event.data.source, frames: event.data.frames } : {}),
-            ...(event.data.kind === 'error' ? { message: typeof event.data.message === 'string' ? event.data.message.slice(0, 512) : event.data.message } : {}) };
-          const detail = lateAudioMetadata(candidate);
-          if (!detail) { metrics.audioLateInvalid++; return; }
-          audioLateKinds.add(detail.event); startup({ kind: 'audio-late', workerId: 0, ...detail });
-        });
-      }
-    };
+    audioObserver = generatedAudioWorkerObserver({ NativeWorker: nativeWorker, metrics, baseURL: location.href,
+      getTakeId: () => id, getFailureAt: () => audioFailureAt, startup: row => startup(row), audioTiming: audioTimingObservation });
+    globalThis.Worker = audioObserver.Worker;
   }
   const kinds = ['screen', 'camera', 'microphone', 'tab-audio', 'composed'];
   globalThis.MediaRecorder = class extends nativeRecorder {
@@ -387,6 +374,7 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
       const encoder = startupObservation ? encoderStartMetadata(details) : undefined;
       if (startupObservation && details !== undefined && !audio && !encoder) metrics.audioFailureDetailsInvalid++;
       if ((audio || encoder) && audioFailureAt === undefined) audioFailureAt = performance.now();
+      audioObserver?.flushDelivery();
       if (encoder) startup({ kind: 'encoder-timeout', detail: encoder });
       startup({ kind: 'warning', state: metrics.states.at(-1)?.state ?? 'ready', message: String(message).slice(0, 512),
         ...(audio ? { audio } : {}) });

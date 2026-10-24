@@ -1,4 +1,4 @@
-import * as workerFixtureFiles from 'node:fs';
+import { generatedAudioWorkerObserver } from './generated-audio-worker.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startupMetadata, startupPrefix, collectStartupMetadata, audioFailureMetadata, lateAudioMetadata, encoderStartMetadata } from './startup-metadata.mjs';
@@ -93,16 +93,13 @@ test('late audio rows accept only owned consumed/error/stopped scalars', () => {
     { event: 'stopped', afterMs: Infinity }, { event: 'stopped', afterMs: -1 }]) assert.equal(lateAudioMetadata(value), undefined);
 });
 test('actual generated Worker listener positively identifies audio and retains only three late kinds', () => {
-  const source = workerFixtureFiles.readFileSync(new URL('./matrix-fixture.mjs', import.meta.url), 'utf8');
-  const begin = source.indexOf('  if (startupObservation) {\n    metrics.audioLateDropped');
-  const end = source.indexOf("  const kinds = ['screen'", begin); assert.ok(begin >= 0 && end > begin);
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'Worker'), rows = [], metrics = { observerErrors: [] };
   class Endpoint extends EventTarget { emit(data) { this.dispatchEvent(new MessageEvent('message', { data })); } }
   try {
-    const actual = new Function('startupObservation', 'metrics', 'nativeWorker', 'location', 'startup', 'audioFailureAt',
-      'observedAudioWorker', 'audioLateKinds', 'performance', 'lateAudioMetadata', `${source.slice(begin, end)}\nreturn { Worker: globalThis.Worker, failed: value => audioFailureAt = value };`);
-    const f = actual(true, metrics, Endpoint, { href: 'http://generated.invalid/' }, row => rows.push(row), undefined,
-      undefined, new Set(), { now: () => 20 }, lateAudioMetadata);
+    let audioFailureAt;
+    const control = generatedAudioWorkerObserver({ NativeWorker: Endpoint, metrics, baseURL: 'http://generated.invalid/',
+      getTakeId: () => 'generated-take', getFailureAt: () => audioFailureAt, startup: row => rows.push(row), now: () => 20 });
+    const f = { Worker: control.Worker, failed: value => { audioFailureAt = value; } };
     const other = new f.Worker('http://generated.invalid/src/capture/compositor.worker.ts');
     const owned = new f.Worker('http://generated.invalid/src/capture/audio.worker.ts?worker_file&type=module');
     owned.emit({ kind: 'consumed', source: 0, frames: 480 }); assert.equal(rows.length, 0);

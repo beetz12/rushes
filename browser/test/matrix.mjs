@@ -23,6 +23,7 @@ import { macHostState, isVerifiedUnlockedMac, assertUnlockedMac, monitorMacLock 
 import { nativeClockSeed } from './native-clock-seed.mjs';
 import { beginColdTrace, requireNativeClockTrace, recorderCallMetadata, sourceTaskObservationWindow } from './cold-trace.mjs';
 import { collectStartupMetadata, startupPrefix, shouldObserveStartup } from './startup-metadata.mjs';
+import { deliveryPrefix, readDeliveryRow } from './audio-delivery-observation.mjs';
 import { requestCheckpoint } from './matrix-checkpoint-action.mjs';
 
 const run = promisify(execFile), sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -193,7 +194,7 @@ async function startMatrixTake(options = {}, beforeStart) {
   await bounded(page.evaluate(async options => {
     const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
     window.matrixTake = await prepareMatrix(options);
-  }, { ...options, sourceMode, sourceOnly, sourceAudioFrames, sourceAudioSink, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed, startupObservation: startupObservationRequested && !evidence.recording }), 30000, 'Matrix page preparation');
+  }, { ...options, sourceMode, sourceOnly, sourceAudioFrames, sourceAudioSink, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed, startupObservation: startupObservationRequested && !evidence.recording, audioTimingObservation: checkpointRequested && !evidence.recording }), 30000, 'Matrix page preparation');
   await stage('page-preparation-ready');
   if (beforeStart) {
     try { await beforeStart(); }
@@ -470,6 +471,16 @@ try {
   }
   if (startupObservationRequested) {
     evidence.startupObservations = []; evidence.droppedStartupObservations = 0; evidence.invalidStartupObservations = 0;
+    if (checkpointRequested) {
+      evidence.audioDeliveryRows = []; evidence.audioDeliveryInvalid = 0; evidence.audioDeliveryDropped = 0;
+      page.on('console', message => {
+        const text = message.text(); if (!text.startsWith(deliveryPrefix)) return;
+        let value; try { value = JSON.parse(text.slice(deliveryPrefix.length)); } catch { evidence.audioDeliveryInvalid++; return; }
+        const row = readDeliveryRow(value); if (!row) { evidence.audioDeliveryInvalid++; return; }
+        if (evidence.audioDeliveryRows.length >= 128) { evidence.audioDeliveryDropped++; return; }
+        evidence.audioDeliveryRows.push(row); console.log(deliveryPrefix + JSON.stringify(row));
+      });
+    }
     evidence.nextStartupObservationIndex = 0; evidence.startupObservationSequenceErrors = 0;
     page.on('console', message => {
       const text = message.text(); if (!text.startsWith(startupPrefix)) return;

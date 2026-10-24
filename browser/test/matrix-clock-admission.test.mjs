@@ -8,7 +8,7 @@ const end = runner.indexOf('\nasync function nativeAllocationProbe()', begin);
 assert.ok(begin >= 0 && end > begin);
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const actualStart = new AsyncFunction('requireUnlockedHost', 'stage', 'sourceMode', 'evidence', 'nativeClockSeed', 'page',
-  'bounded', 'sourceOnly', 'sourceAudioFrames', 'sourceAudioSink', 'startupObservationRequested', 'beforeStart', `${runner.slice(begin, end)}\nreturn startMatrixTake({}, beforeStart);`);
+  'bounded', 'sourceOnly', 'sourceAudioFrames', 'sourceAudioSink', 'startupObservationRequested', 'checkpointRequested', 'beforeStart', `${runner.slice(begin, end)}\nreturn startMatrixTake({}, beforeStart);`);
 
 function coldImportControl(seedRetirementMs = 0, importFailure = false, cleanupFailure) {
   let pageMs = 0;
@@ -43,7 +43,7 @@ function coldImportControl(seedRetirementMs = 0, importFailure = false, cleanupF
     pageMs += seedRetirementMs; return seed;
   };
   return { events, run: beforeStart => actualStart(async () => {}, async () => {}, 'native-reference', {}, clock, page,
-    async operation => operation, false, 128, 'none', false, beforeStart) };
+    async operation => operation, false, 128, 'none', false, false, beforeStart) };
 }
 
 test('actual matrix admission loads cold modules before sampling its1500ms clock seed', async () => {

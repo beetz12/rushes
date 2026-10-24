@@ -1463,3 +1463,47 @@ test('camera-only and screen-only portrait input keep decoded pixels and letterb
     }
   }
 }));
+
+
+test('supervised delivery wrapper forwards real mixer PCM and acknowledgements without extra protocol messages', { timeout: 15000 }, async () => pageFixture(async page => {
+  const result = await page.evaluate(async () => {
+    const { generatedAudioWorkerObserver } = await import('/test/generated-audio-worker.mjs');
+    const NativeWorker = Worker;
+    async function exercise(instrumented) {
+      const metrics = { observerErrors: [] };
+      const observer = instrumented ? generatedAudioWorkerObserver({ NativeWorker, metrics, baseURL: location.href,
+        getTakeId: () => 'generated-worker-smoke', getFailureAt: () => undefined, startup() {}, audioTiming: true }) : null;
+      const worker = new (observer?.Worker ?? NativeWorker)(new URL('/src/capture/audio.worker.ts', location.href), { type: 'module' });
+      const messages = []; let timer;
+      try {
+        await new Promise((resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('Generated mixer protocol did not finish')), 5000);
+          worker.onerror = error => reject(new Error(error.message));
+          worker.onmessage = event => {
+            const { generatedDelivery, ...message } = event.data;
+            messages.push(message.kind === 'packet' ? { ...message, data: Array.from(message.data) } : message);
+            if (message.kind === 'packet') worker.postMessage({ kind: 'written', sequence: message.sequence });
+            if (message.kind === 'ready') worker.postMessage({ kind: 'stop' });
+            if (message.kind === 'error') reject(new Error(message.message));
+            if (message.kind === 'stopped') resolve();
+          };
+          worker.postMessage({ kind: 'setup' });
+          for (const source of [0, 1]) {
+            const left = new Float32Array(480).fill(source ? .6 : .2), right = new Float32Array(480).fill(source ? -.2 : .4);
+            worker.postMessage({ kind: 'input', source, rate: 48000, timestamp: 1000000, left, right }, [left.buffer, right.buffer]);
+          }
+        });
+      } finally { clearTimeout(timer); worker.terminate(); }
+      return { messages, metrics };
+    }
+    return { plain: await exercise(false), observed: await exercise(true) };
+  });
+  assert.deepEqual(result.observed.messages, result.plain.messages);
+  assert.equal(result.plain.messages.filter(value => value.kind === 'packet').length, 1);
+  assert.equal(result.plain.messages.filter(value => value.kind === 'consumed').length, 2);
+  assert.ok(result.plain.messages.some(value => value.kind === 'ready'));
+  assert.ok(result.plain.messages.some(value => value.kind === 'stopped'));
+  assert.equal(result.observed.metrics.audioDelivery.invalid, 0); assert.equal(result.observed.metrics.audioDelivery.sequenceErrors, 0);
+  assert.equal(result.observed.metrics.audioDelivery.rows.filter(value => value.kind === 'consumed' && value.matched).length, 2);
+  assert.deepEqual(result.observed.metrics.observerErrors, []);
+}));
