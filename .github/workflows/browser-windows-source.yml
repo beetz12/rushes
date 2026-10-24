@@ -40,16 +40,26 @@ jobs:
           import * as files from 'node:fs/promises';
           import { join } from 'node:path';
           import { createHash } from 'node:crypto';
+          import { execFileSync } from 'node:child_process';
           import assert from 'node:assert/strict';
           import { matrixMedia } from './browser/test/matrix-media.mjs';
           const root = join(process.env.RUNNER_TEMP, 'rushes-windows-source-input');
           await files.mkdir(root, {recursive:true});
           const media = await matrixMedia(root), pins = {};
-          for (const [kind, path] of Object.entries(media))
-            pins[kind] = {path, sha256:createHash('sha256').update(await files.readFile(path)).digest('hex')};
-          assert.equal(pins.video.sha256, 'd22a5584ff810ab9483cc69e93f7b7f63812a497ca01ffeb5902bb9d22d239dc');
-          assert.equal(pins.audio.sha256, '5631af0475cc31f063c9500f65bb085ea8f75158d12609ba737490acc6aecee7');
+          for (const [kind, path] of Object.entries(media)) {
+            const bytes = await files.readFile(path);
+            pins[kind] = {path, bytes:bytes.length, sha256:createHash('sha256').update(bytes).digest('hex')};
+          }
+          pins.generator = {platform:process.platform, arch:process.arch, node:process.version,
+            ffmpeg:execFileSync('ffmpeg', ['-version'], {encoding:'utf8', timeout:5000}).split(/\r?\n/)[0],
+            sourceSHA256:createHash('sha256').update(await files.readFile('./browser/test/matrix-media.mjs')).digest('hex')};
           await files.writeFile(join(root, 'pins.json'), JSON.stringify(pins, null, 2), {flag:'wx'});
+          // The held Windows FFmpeg9.0.2 inputs share these bytes across both
+          // Chrome generations. The Mac-generated MJPEG has a different hash.
+          assert.equal(pins.video.sha256, 'cb16f489fa2cbd564dc781a18f778124d77bf530bccbcde75a9a403de2cb251b');
+          assert.equal(pins.video.bytes, 40621116);
+          assert.equal(pins.audio.sha256, '5631af0475cc31f063c9500f65bb085ea8f75158d12609ba737490acc6aecee7');
+          assert.equal(pins.audio.bytes, 192044);
           await files.appendFile(process.env.GITHUB_ENV,
             'RUSHES_M1_SOURCE_FILE='+media.video+'\nRUSHES_MATRIX_NODE='+process.execPath+
             '\nRUSHES_MATRIX_PS_MODULE_PATH='+(process.env.PSModulePath ?? '')+'\n');
