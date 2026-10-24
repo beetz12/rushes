@@ -1,5 +1,5 @@
 // Synthetic calibration only: no device permission or real screen/camera input.
-export async function fixture(mode = 'screen-camera', audioEnabled = true, calibration = false, cloudRecordingId, cameraDelayMs = 0, initialSaveDelayMs = 0, canvasBacking = 'cpu') {
+export async function fixture(mode = 'screen-camera', audioEnabled = true, calibration = false, cloudRecordingId, cameraDelayMs = 0, initialSaveDelayMs = 0, canvasBacking = 'cpu', portrait = false) {
   if (!['default', 'cpu'].includes(canvasBacking)) throw new Error('Unknown synthetic Canvas backing');
   const capture = await import('/src/capture/index.ts');
   const storage = await import('/src/capture/storage.ts');
@@ -8,7 +8,7 @@ export async function fixture(mode = 'screen-camera', audioEnabled = true, calib
   const canvases = [];
   const feeds = [];
   for (const name of ['screen', 'camera']) {
-    const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 360;
+    const canvas = document.createElement('canvas'); canvas.width = portrait ? 360 : 640; canvas.height = portrait ? 640 : 360;
     const context = canvas.getContext('2d', canvasBacking === 'cpu' ? { willReadFrequently: true } : undefined);
     const stream = canvas.captureStream(0), track = stream.getVideoTracks()[0];
     const tick = () => {

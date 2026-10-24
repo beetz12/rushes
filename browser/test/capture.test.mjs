@@ -1438,3 +1438,28 @@ test('fatal producer shutdown preserves each previously acknowledged original ch
     assert.ok(value.duration > 1);
   }
 }));
+
+
+test('camera-only and screen-only portrait input keep decoded pixels and letterbox after early input close', { timeout: 30000 }, async () => pageFixture(async page => {
+  const cases = await page.evaluate(async () => {
+    const { fixture, inspectVideo, waitForActiveTime } = await import('/test/capture-fixture.mjs');
+    const results = [];
+    for (const mode of ['camera', 'screen']) {
+      const value = await fixture(mode, false, false, undefined, 0, 0, 'cpu', true);
+      try {
+        await value.session.start(); await waitForActiveTime(value.store, value.id, 1200);
+        const manifest = await value.session.stop();
+        const media = await inspectVideo(await value.store.trackBlob(value.id, 'composed'), [[32, 360], [640, 360], [1248, 360]]);
+        results.push({ mode, manifest, media });
+      } finally { await value.session.cancel(); await value.cleanup(); }
+    }
+    return results;
+  });
+  for (const { mode, manifest, media } of cases) {
+    assert.equal(manifest.state, 'complete'); assert.deepEqual([media.width, media.height], [1280, 720]);
+    for (const row of media.samples) {
+      for (const side of [row[0], row[2]]) for (const [index, expected] of [16, 24, 32].entries()) assert.ok(Math.abs(side[index] - expected) < 16, `${mode} letterbox ${side}`);
+      assert.ok(mode === 'camera' ? row[1][0] > 160 && row[1][2] < 100 : row[1][2] > 160 && row[1][0] < 100, `${mode} center ${row[1]}`);
+    }
+  }
+}));
