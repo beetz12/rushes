@@ -4,6 +4,7 @@ All shell code is original. No reference repository code was copied. Versions ar
 
 | Package | Version | License | License file | Use |
 |---|---|---|---|---|
+| electron-updater | 6.8.11 | MIT | shell/licenses/electron-updater-6.8.11.txt | npm direct dependency; bundled when runtime |
 | lucide-react | 1.55.0 | ISC | shell/licenses/lucide-react-1.55.0.txt | npm direct dependency; bundled when runtime |
 | react | 19.3.0 | MIT | shell/licenses/react-19.3.0.txt | npm direct dependency; bundled when runtime |
 | react-dom | 19.3.0 | MIT | shell/licenses/react-dom-19.3.0.txt | npm direct dependency; bundled when runtime |

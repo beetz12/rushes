@@ -1,6 +1,6 @@
 {
   "name": "rushes-desktop",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "license": "MIT",
   "description": "Rushes native recording desktop shell",
@@ -20,6 +20,7 @@
     "licenses": "node scripts/licenses.mjs"
   },
   "dependencies": {
+    "electron-updater": "6.8.11",
     "lucide-react": "1.55.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -94,7 +95,8 @@
       "category": "public.app-category.video",
       "minimumSystemVersion": "26.4",
       "target": [
-        "dir"
+        "dmg",
+        "zip"
       ],
       "hardenedRuntime": true,
       "extendInfo": {

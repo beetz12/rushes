@@ -34,6 +34,7 @@ These build and runtime dependencies are included in acknowledgements.
 | npm: shell/@vitejs/plugin-react@6.1.2 | MIT | licenses/npm-vitejs-plugin-react-6.1.2.txt |
 | npm: shell/electron@44.7.0 | MIT | licenses/npm-electron-44.7.0.txt |
 | npm: shell/electron-builder@26.15.3 | MIT | licenses/npm-electron-builder-26.15.3.txt |
+| npm: shell/electron-updater@6.8.11 | MIT | licenses/npm-electron-updater-6.8.11.txt |
 | npm: shell/esbuild@0.28.2 | MIT | licenses/npm-esbuild-0.28.2.txt |
 | npm: shell/lucide-react@1.55.0 | ISC | licenses/npm-lucide-react-1.55.0.txt |
 | npm: shell/prettier@3.9.10 | MIT | licenses/npm-prettier-3.9.10.txt |
