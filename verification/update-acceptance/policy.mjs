@@ -237,7 +237,7 @@ export async function fileDigest(path, algorithm = "sha256") {
 }
 export async function tree(root) {
   const base = await disk.realpath(root),
-    result = {};
+    result = Object.create(null);
   let count = 0,
     total = 0;
   requireValue(
@@ -259,8 +259,13 @@ export async function tree(root) {
           "A tree symlink escapes its root.",
         );
         result[relative] = { kind: "link", target };
-      } else if (stat.isDirectory()) await visit(path);
-      else {
+      } else if (stat.isDirectory()) {
+        result[relative] = {
+          kind: "directory",
+          executable: !!(stat.mode & 0o111),
+        };
+        await visit(path);
+      } else {
         requireValue(stat.isFile(), "Special filesystem nodes are refused.");
         total += stat.size;
         requireValue(total <= 8 * 1024 ** 3, "Tree size bound exceeded.");
@@ -274,8 +279,59 @@ export async function tree(root) {
     }
   }
   await visit(base);
+  validateSnapshotLinks(result);
   requireValue(Object.keys(result).length > 0, "An empty tree cannot qualify.");
   return result;
+}
+export function validateSnapshotLinks(inventory) {
+  const key = (path) => path.normalize("NFC").toLowerCase();
+  const links = new Map(),
+    names = new Set();
+  for (const [relative, entry] of Object.entries(inventory)) {
+    const normalized = relative.split(locations.sep).join("/");
+    requireValue(
+      !names.has(key(normalized)),
+      "Filesystem case/normalization aliases are refused.",
+    );
+    names.add(key(normalized));
+    if (entry.kind === "link")
+      links.set(key(normalized), entry.target.split(locations.sep).join("/"));
+  }
+  let operations = 0;
+  for (const relative of links.keys()) {
+    const pending = relative.split("/"),
+      resolved = [];
+    let hops = 0;
+    while (pending.length) {
+      requireValue(
+        ++operations <= 1000000 && pending.length <= 8192,
+        "Symlink resolution bound exceeded.",
+      );
+      const part = pending.shift();
+      if (!part || part === ".") continue;
+      if (part === "..") {
+        requireValue(
+          resolved.length > 0,
+          "A chained symlink escapes its root.",
+        );
+        resolved.pop();
+        continue;
+      }
+      const selected = key([...resolved, part].join("/"));
+      if (links.has(selected)) {
+        const target = links.get(selected);
+        requireValue(
+          !target.startsWith("/") && ++hops <= 40,
+          "Absolute/cyclic symlink refused.",
+        );
+        pending.unshift(...target.split("/"));
+      } else resolved.push(part);
+    }
+    requireValue(
+      resolved.length > 0,
+      "Symlink resolves outside the measured tree.",
+    );
+  }
 }
 export function sameTree(expected, observed) {
   requireValue(

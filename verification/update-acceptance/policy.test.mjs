@@ -258,3 +258,23 @@ harnessCases.test(
     );
   },
 );
+
+harnessCases.test(
+  "payload dictionaries retain special filenames, empty directories and chained link safety",
+  async (t) => {
+    const root = await disk.mkdtemp(
+      testPaths.join(testHost.tmpdir(), "payload-links-"),
+    );
+    t.after(() => disk.rm(root, { recursive: true, force: true }));
+    await disk.writeFile(testPaths.join(root, "__proto__"), "original");
+    await disk.mkdir(testPaths.join(root, "empty"));
+    const before = await tree(root);
+    assertions.equal(before["__proto__"].kind, "file");
+    assertions.equal(before.empty.kind, "directory");
+    await disk.mkdir(testPaths.join(root, "A"));
+    await disk.mkdir(testPaths.join(root, "dir"));
+    await disk.symlink("../dir", testPaths.join(root, "A/B"));
+    await disk.symlink("A/B/../../outside", testPaths.join(root, "escape"));
+    await assertions.rejects(tree(root), /escape/);
+  },
+);
