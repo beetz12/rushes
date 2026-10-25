@@ -12,7 +12,7 @@ import {fileURLToPath} from 'node:url';
 import {createRequire} from 'node:module';
 import {tree, executableContent} from './update-acceptance/policy.mjs';
 import {setTimeout as delay} from 'node:timers/promises';
-import {requiredPhysicalRoles, inspectPhysicalDecode, inspectPhysicalSelection, inspectOnsets, risingEdges, codedTonePoints} from './recording-acceptance/physical-oracle.mjs';
+import {requiredPhysicalRoles, inspectPhysicalDecode, inspectPhysicalSelection, inspectRecordedIdentity, inspectOnsets, risingEdges, codedTonePoints} from './recording-acceptance/physical-oracle.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const {values} = parseArgs({options:{exercise:{type:'boolean'},recheck:{type:'boolean'},'calibration-only':{type:'boolean'},'signal-only':{type:'boolean'},'allow-local-physical':{type:'boolean'},'input-override':{type:'boolean'},'evidence-root':{type:'string'},app:{type:'string'},'source-proof':{type:'string'},ffmpeg:{type:'string'},ffprobe:{type:'string'}},strict:true});
@@ -108,7 +108,7 @@ async function recheck() {
   report=JSON.parse(await readFile(join(evidence,'report.json'),'utf8'));
   assert.equal(report.schema,'rushes.installed-physical/1');assert.equal(report.status,'verified');assert.equal(report.uploadAllowed,false);
   assert.equal(report.scope,'installed-real-source-capture');assert.equal(report.physicalCapture,true,'Generated calibration cannot qualify physical sources');
-  const actual=await identity(report.identity.app);assert.deepEqual(actual,report.identity,'Installed app, product source or verifier differs');
+  const actual=await identity(report.identity.app);inspectRecordedIdentity(actual,report.identity);
   assert(report.closed&&report.nativeExited&&report.patternClosed,'Owned sources were not confirmed closed');
   assert.deepEqual(report.takes.map(t=>t.mode),['display','window','area','camera-only']);
   const probe=await inside(report.probe);assert.equal(await digest(probe),report.probeSHA256,'Independent probe changed');

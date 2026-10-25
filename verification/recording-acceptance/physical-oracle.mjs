@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
 
+// Receipts use JSON: filesystem inventories have null prototypes in memory,
+// which cannot survive that wire format. Compare every recorded value while
+// leaving hashes, names and source/artifact identity fully significant.
+export function inspectRecordedIdentity(measured, recorded) {
+  assert.deepEqual(JSON.parse(JSON.stringify(measured)), recorded, 'Installed app, product source or verifier differs');
+}
+
 export function requiredPhysicalRoles(mode) {
   if (mode === 'signal-only') return ['screen', 'system'];
   if (mode === 'display') return ['screen', 'camera', 'mic', 'system'];

@@ -1,8 +1,16 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {requiredPhysicalRoles, inspectPhysicalDecode, inspectPhysicalSelection, inspectOnsets, risingEdges, codedTonePoints} from './physical-oracle.mjs';
+import {requiredPhysicalRoles, inspectPhysicalDecode, inspectPhysicalSelection, inspectRecordedIdentity, inspectOnsets, risingEdges, codedTonePoints} from './physical-oracle.mjs';
 
 const valid = () => ({ok:true,duration:4,decodedTracks:[{type:'vide',samples:120,firstPTS:0,sampleEnd:4,maximumGap:0.01}]});
+test('persisted build identity survives JSON but changed source, payload or inventory cannot pass',()=>{
+  const inventory=Object.assign(Object.create(null),{'main.cjs':{kind:'file',size:3,sha256:'original',executable:false}});
+  const measured={asarSHA256:'asar',engineSHA256:'engine',verifierSHA256:'oracle',productSources:{'source.swift':'source'},buildBinding:{outputs:{'shell/dist':inventory}}};
+  inspectRecordedIdentity(measured,JSON.parse(JSON.stringify(measured)));
+  for(const mutate of [m=>{m.asarSHA256='changed';},m=>{m.engineSHA256='changed';},m=>{m.verifierSHA256='changed';},m=>{m.productSources['source.swift']='changed';},m=>{m.buildBinding.outputs['shell/dist']['main.cjs'].sha256='changed';},m=>{delete m.buildBinding.outputs['shell/dist']['main.cjs'];}]){
+    const changed=structuredClone(measured);mutate(changed);assert.throws(()=>inspectRecordedIdentity(changed,JSON.parse(JSON.stringify(measured))));
+  }
+});
 test('all physical source modes have explicit separate-original requirements', () => {
   assert.deepEqual(requiredPhysicalRoles('display'), ['screen','camera','mic','system']);
   assert.deepEqual(requiredPhysicalRoles('camera-only'), ['camera','mic']);
