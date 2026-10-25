@@ -96,6 +96,9 @@ do {
         permissionAdvisor: flags.captureStub ? .allAllowed : SystemPermissions.advisor,
         permissionRequester: { kind in await SystemPermissions.request(kind) },
         shellBundleID: flags.shellBundleID,
+        updateOwner: flags.shellBundleID == nil ? nil : NativeUpdateOwner(parentPID: getppid(), requestTermination: {
+            _ = kill(getpid(), SIGTERM)
+        }),
         captureRigs: flags.captureStub
             ? StubCaptureRigFactory()
             : ProductionCaptureRigFactory(),

@@ -51,7 +51,7 @@ public struct StoppedRecording: Codable, Equatable, Sendable {
 #if DEBUG
 /// Deterministic debug-only scheduling at existing asynchronous boundaries.
 /// No release command, configuration option, payload or capture source uses it.
-internal enum ControllerCheckpoint: Sendable { case cancelStateRead, maintenanceSnapshotRead, discardStopped, startIndexed, streamFailureHandled }
+internal enum ControllerCheckpoint: Sendable { case cancelStateRead, maintenanceSnapshotRead, discardStopped, startIndexed, streamFailureHandled, startCaptureMarked, shutdownBarrier, updateIdleChecked }
 #endif
 
 /// Everything `EngineController` runs on; every seam is injectable so the
@@ -69,6 +69,7 @@ public struct EngineControllerConfig: Sendable {
     public var permissionAdvisor: PermissionAdvisor
     public var permissionRequester: @Sendable (PermissionKind) async -> PermissionStatus
     public var shellBundleID: String?
+    public var updateOwner: NativeUpdateOwner?
     public var makeWriter: TrackWriterOpener
     public var captureRigs: CaptureRigFactory
     public var capturePreflightMode: CapturePreflightMode
@@ -94,6 +95,7 @@ public struct EngineControllerConfig: Sendable {
         permissionAdvisor: PermissionAdvisor = .allAllowed,
         permissionRequester: @escaping @Sendable (PermissionKind) async -> PermissionStatus = { SystemPermissions.check($0) },
         shellBundleID: String? = nil,
+        updateOwner: NativeUpdateOwner? = nil,
         makeWriter: @escaping TrackWriterOpener = { configuration, clock in
             try TrackWriter(configuration: configuration, clock: clock)
         },
@@ -114,6 +116,7 @@ public struct EngineControllerConfig: Sendable {
         self.permissionAdvisor = permissionAdvisor
         self.permissionRequester = permissionRequester
         self.shellBundleID = shellBundleID
+        self.updateOwner = updateOwner
         self.makeWriter = makeWriter
         self.captureRigs = captureRigs
         self.capturePreflightMode = capturePreflightMode
@@ -163,8 +166,15 @@ public actor EngineController: ControlHandling {
     private var startupWarnings: [String] = []
 
     private var active: ActiveRecording?
+    private var stopping = false
+    private var updateToken: String?
+    private var updateReserved = false
+    private var updateTerminationRequested = false
+    private var updateOwnerTimer: Task<Void, Never>?
+    private var preflightAcquisitions = 0
     private let previewPublication = PreviewPublication()
     private var previewOwner: String?
+    private var previewStopping = 0
     private var previewStarting = false
     private var previewGeneration = UUID()
     private var previewEnabled = false
@@ -262,6 +272,12 @@ public actor EngineController: ControlHandling {
     /// losing footage.
     @discardableResult
     public func shutdown() async -> StoppedRecording? {
+        stopping = true
+        startGeneration = UUID()
+        updateOwnerTimer?.cancel()
+#if DEBUG
+        if let checkpoint = config.lifecycleCheckpoint { await checkpoint(.shutdownBarrier, "", nil) }
+#endif
         previewPublication.invalidate()
         do { try await capturePreflight.stopAll() } catch { startupWarnings.append("Preview cleanup pending: \(error)") }
         let result = active != nil ? try? await stopActive() : nil
@@ -303,7 +319,9 @@ public actor EngineController: ControlHandling {
         previewPublication.setEnabled(false)
         if active == nil, !starting, attachingRecordingID == nil {
             previewPublication.invalidate()
+            previewStopping += 1
             await config.captureRigs.stopPreview()
+            previewStopping -= 1
         }
     }
 
@@ -341,6 +359,10 @@ public actor EngineController: ControlHandling {
             let guide = ControlGuide.make(
                 version: config.version, socketPath: config.socketPath)
             return .success(id: request.id, result: try JSONValue(encoding: guide))
+        case "update.hold.acquire":
+            return .success(id: request.id, result: try await acquireUpdateHold(request, context: context))
+        case "update.hold.release":
+            return .success(id: request.id, result: try releaseUpdateHold(request, context: context))
         case "status":
             return .success(id: request.id, result: try await statusResult())
         case "targets":
@@ -355,9 +377,11 @@ public actor EngineController: ControlHandling {
             return .success(id: request.id, result: .object(["url": .string(SystemPermissions.settingsURL(try permissionKind(request)))]))
         case "capture.preflight.start":
             guard let owner = context.connectionID else { throw ControlFailure(code: "connection-required", message: "Input checks need a connected owner.") }
-            guard context.isConnected(), !starting, !finishing, !discarding, !nativeFinalizationPending, active == nil else {
+            guard context.isConnected(), !stopping, updateToken == nil, !starting, !finishing, !discarding, !nativeFinalizationPending, active == nil else {
                 throw ControlFailure(code: "wrong-state", message: "Input checks are available only while idle.")
             }
+            preflightAcquisitions += 1
+            defer { preflightAcquisitions -= 1 }
             return .success(id: request.id, result: try await capturePreflight.start(request.params,
                 owner: owner, connected: context.isConnected))
         case "capture.preflight.stop":
@@ -368,9 +392,11 @@ public actor EngineController: ControlHandling {
             return .success(id: request.id, result: .object(["quiescent": .bool(quiescent)]))
         case "capture.preflight.snapshot":
             guard let owner = context.connectionID else { throw ControlFailure(code: "connection-required", message: "Input checks need a connected owner.") }
-            guard context.isConnected(), !starting, !finishing, !discarding, active == nil else {
+            guard context.isConnected(), !stopping, updateToken == nil, !starting, !finishing, !discarding, active == nil else {
                 throw ControlFailure(code: "wrong-state", message: "Screen checks are available only while idle.")
             }
+            preflightAcquisitions += 1
+            defer { preflightAcquisitions -= 1 }
             return .success(id: request.id, result: try await capturePreflight.snapshot(owner: owner,
                 token: CapturePreflight.token(request.param("previewToken"))))
         case "camera.preview.subscribe":
@@ -395,7 +421,7 @@ public actor EngineController: ControlHandling {
             ]))
         case "camera.preview.start":
             guard context.isConnected() else { throw ControlFailure(code: "connection-closed", message: "preview owner disconnected before warm-up") }
-            guard !starting, !previewStarting, !finishing, !discarding, !nativeFinalizationPending, active == nil else { throw ControlFailure(code: "wrong-state", message: "preview selection cannot change during recording startup or cleanup") }
+            guard !stopping, updateToken == nil, !starting, !previewStarting, !finishing, !discarding, !nativeFinalizationPending, active == nil else { throw ControlFailure(code: "wrong-state", message: "preview selection cannot change during recording startup or cleanup") }
             previewOwner = context.connectionID
             previewStarting = true
             let generation = UUID()
@@ -437,7 +463,9 @@ public actor EngineController: ControlHandling {
             previewEnabled = false
             previewPublication.setEnabled(false)
             previewPublication.invalidate()
+            previewStopping += 1
             await config.captureRigs.stopPreview()
+            previewStopping -= 1
             return .success(id: request.id)
         case "record.mute":
             let recording = try requireActive()
@@ -676,7 +704,7 @@ public actor EngineController: ControlHandling {
     private func automationTools() -> [MCPTool] {
         let reads: Set<String> = ["ping", "version", "guide", "status", "targets", "permissions.check",
             "permissions.settings", "list", "show", "verify", "edit.get", "transcript.get", "meta.get", "share.status", "share.policy.get", "share.feedback", "jobs.list", "teleprompter.get", "camera.blur.get", "record.geometry", "drawing.status"]
-        let excluded = LocalAutomationService.commands.union(["preview.subscribe", "permissions.request", "camera.preview.start", "camera.preview.stop", "camera.preview.subscribe", "capture.preflight.start", "capture.preflight.stop", "capture.preflight.snapshot", "url.open"])
+        let excluded = LocalAutomationService.commands.union(["update.hold.acquire", "update.hold.release", "preview.subscribe", "permissions.request", "camera.preview.start", "camera.preview.stop", "camera.preview.subscribe", "capture.preflight.start", "capture.preflight.stop", "capture.preflight.snapshot", "url.open"])
         return ControlGuide.make(version: config.version, socketPath: config.socketPath).commands
             .filter { !excluded.contains($0.name) }.map { doc in
                 var properties: [String: JSONValue] = [:]
@@ -1043,11 +1071,113 @@ public actor EngineController: ControlHandling {
         return try JSONValue(encoding: analysis)
     }
 
+    // MARK: - Native update reservation
+
+    private func requireCaptureAdmission() throws {
+        guard !stopping else { throw ControlFailure(code: "engine-stopping", message: "The native engine is shutting down.") }
+        guard updateToken == nil else { throw ControlFailure(code: "update-held", message: "A native app update is pending.") }
+    }
+
+    private func updateRequestToken(_ request: ControlRequest) throws -> String {
+        guard request.params.count == 1, let token = request.param("token")?.string,
+              let uuid = UUID(uuidString: token), uuid.uuidString.lowercased() == token else {
+            throw ControlFailure(code: "invalid-params", message: "Update hold needs a canonical lowercase UUID token.")
+        }
+        return token
+    }
+
+    private func updateResult(held: Bool) -> JSONValue {
+        .object(["pid": .int(Int64(getpid())), "held": .bool(held)])
+    }
+
+    private var updateBusy: Bool {
+        stopping || starting || previewStarting || previewStopping > 0 || previewEnabled || finishing || discarding
+            || active != nil || attachingRecordingID != nil || nativeFinalizationPending || preflightAcquisitions > 0
+    }
+
+    private func acquireUpdateHold(_ request: ControlRequest, context: ControlCommandContext) async throws -> JSONValue {
+        let token = try updateRequestToken(request)
+        guard let owner = config.updateOwner, owner.isAlive() else {
+            throw ControlFailure(code: "update-owner-unavailable", message: "A live owning shell is required for native updates.")
+        }
+        guard context.connectionID != nil, context.isConnected() else {
+            throw ControlFailure(code: "connection-closed", message: "Update hold requester disconnected.")
+        }
+        if updateToken == token, !updateReserved, !stopping, !updateTerminationRequested { return updateResult(held: true) }
+        guard updateToken == nil, !updateBusy else {
+            throw ControlFailure(code: "update-busy", message: "Capture or input cleanup must finish before updating.")
+        }
+        // Reserve before the actor hop. Any capture/preview request that arrives
+        // while quiescence is checked sees the same barrier as a completed hold.
+        updateToken = token
+        updateReserved = true
+        startUpdateOwnerWatch()
+        let quiescent = await capturePreflight.quiescent
+#if DEBUG
+        if let checkpoint = config.lifecycleCheckpoint { await checkpoint(.updateIdleChecked, "", nil) }
+#endif
+        checkUpdateOwner()
+        guard quiescent, !updateBusy, context.isConnected(), owner.isAlive(), !updateTerminationRequested else {
+            if !updateTerminationRequested { clearUpdateHold() }
+            throw ControlFailure(code: "update-busy", message: "Native update idle ownership could not be confirmed.")
+        }
+        updateReserved = false
+        return updateResult(held: true)
+    }
+
+    private func releaseUpdateHold(_ request: ControlRequest, context: ControlCommandContext) throws -> JSONValue {
+        let token = try updateRequestToken(request)
+        checkUpdateOwner()
+        guard context.connectionID != nil, context.isConnected() else {
+            throw ControlFailure(code: "connection-closed", message: "Update release requester disconnected.")
+        }
+        guard updateToken == nil || updateToken == token else {
+            throw ControlFailure(code: "update-token-mismatch", message: "The update hold token did not match.")
+        }
+        guard !updateReserved, !updateTerminationRequested, !stopping else {
+            throw ControlFailure(code: "update-busy", message: "The native update reservation is still pending or shutting down.")
+        }
+        clearUpdateHold()
+        return updateResult(held: false)
+    }
+
+    private func clearUpdateHold() {
+        updateToken = nil
+        updateReserved = false
+        updateOwnerTimer?.cancel()
+        updateOwnerTimer = nil
+    }
+
+    private func startUpdateOwnerWatch() {
+        guard let owner = config.updateOwner else { return }
+        updateOwnerTimer = Task { [weak self] in
+            while !Task.isCancelled {
+                do { try await Task.sleep(nanoseconds: owner.pollIntervalNs) } catch { return }
+                await self?.checkUpdateOwner()
+            }
+        }
+    }
+
+    internal func checkUpdateOwner() {
+        guard updateToken != nil, !updateTerminationRequested,
+              let owner = config.updateOwner, !owner.isAlive() else { return }
+        updateTerminationRequested = true
+        // Never unlock before the queued signal is handled. The same process
+        // exits gracefully; no later recording can race a pending termination.
+        owner.requestTermination()
+    }
+
     // MARK: - record.start
 
     private func recordStart(_ request: ControlRequest) async throws -> ControlResponse? {
+        try requireCaptureAdmission()
         try await extended.setCaptureActive(true)
-        do { return try await recordStartPerform(request) }
+        do {
+#if DEBUG
+            if let checkpoint = config.lifecycleCheckpoint { await checkpoint(.startCaptureMarked, request.id, nil) }
+#endif
+            return try await recordStartPerform(request)
+        }
         catch {
             if active == nil { try? await extended.setCaptureActive(false) }
             throw error
@@ -1055,6 +1185,7 @@ public actor EngineController: ControlHandling {
     }
 
     private func recordStartPerform(_ request: ControlRequest) async throws -> ControlResponse? {
+        try requireCaptureAdmission()
         if let productionSettingsError {
             throw ControlFailure(code: "invalid-production-settings", message: "Reset or save valid production settings before recording: \(productionSettingsError)")
         }

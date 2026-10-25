@@ -178,6 +178,18 @@ public struct ControlGuide: Codable, Equatable, Sendable {
                     + " windows: [{id, title, owningApplication, displayID}],"
                     + " cameras: [{id, name}], microphones: [{id, name}]}"),
             CommandDoc(
+                name: "update.hold.acquire", cli: [],
+                summary: "Reserve confirmed native idle for a live owning shell's app update. Blocks capture and input acquisition until matching release or engine exit; socket disconnect never releases it.",
+                usage: "socket: update.hold.acquire",
+                params: [ParamDoc(name: "token", type: "string", required: true, description: "Canonical lowercase UUID. The same held token is idempotent.")],
+                result: "{pid, held: true}. Refuses unowned engines, disconnected requesters, active/preparing/finalizing capture, pending native writers and input previews."),
+            CommandDoc(
+                name: "update.hold.release", cli: [],
+                summary: "Release the matching update token, including from a reconnected socket. Owner loss retains the hold while the same engine terminates gracefully.",
+                usage: "socket: update.hold.release",
+                params: [ParamDoc(name: "token", type: "string", required: true, description: "The acquire token. A different token cannot release an existing hold.")],
+                result: "{pid, held: false}"),
+            CommandDoc(
                 name: "record.start",
                 cli: ["record start"],
                 summary: "Preflight, create the package, arm capture behind the gate,"

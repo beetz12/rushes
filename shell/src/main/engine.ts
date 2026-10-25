@@ -215,6 +215,8 @@ class PreviewConnection {
   }
 }
 
+export type NativeUpdateHold = Readonly<{ token: string; pid: number }>;
+
 export class EngineSupervisor {
   readonly client = new EngineClient();
   child?: ChildProcess;
@@ -227,6 +229,8 @@ export class EngineSupervisor {
   private stateRevision = 0;
   private lifecycleRevision = 0;
   private readonly previews: PreviewConnection;
+  private updatePending = false;
+  private updateHold?: NativeUpdateHold;
   constructor(
     readonly enginePath: string,
     readonly socketPath: string,
@@ -252,7 +256,12 @@ export class EngineSupervisor {
       this.scheduleRestart();
     });
   }
+  get updateHoldPending() {
+    return this.updatePending;
+  }
   async start() {
+    if (this.updatePending)
+      throw Object.assign(new Error('A native app update is pending.'), { code: 'update-held' });
     if (this.closing)
       throw Object.assign(new Error('The engine is closing.'), { code: 'engine-closing' });
     return this.ensureStarted();
@@ -261,7 +270,7 @@ export class EngineSupervisor {
     if (this.starting) return this.starting;
     const operation = this.boot()
       .then(() => {
-        if (!this.closing && !this.quitting) this.previews.start();
+        if (!this.closing && !this.quitting && !this.updatePending) this.previews.start();
       })
       .finally(() => {
         this.starting = undefined;
@@ -273,6 +282,7 @@ export class EngineSupervisor {
     if (
       this.closing ||
       this.quitting ||
+      this.updatePending ||
       this.restartTimer ||
       this.client.connected ||
       this.restartCount >= 3
@@ -281,7 +291,7 @@ export class EngineSupervisor {
     this.restartCount++;
     this.restartTimer = setTimeout(() => {
       this.restartTimer = undefined;
-      if (this.closing || this.quitting || this.client.connected) return;
+      if (this.closing || this.quitting || this.updatePending || this.client.connected) return;
       // A lost connection can miss Stop. Reconcile the cache with the same
       // socket first; a cached active take must never launch another engine.
       const lifecycle = this.lifecycleRevision;
@@ -306,7 +316,7 @@ export class EngineSupervisor {
         throw Object.assign(new Error('Recovered engine returned invalid status.'), {
           code: 'engine-status-invalid',
         });
-      if (this.closing || lifecycle !== this.lifecycleRevision) return;
+      if (this.closing || this.updatePending || lifecycle !== this.lifecycleRevision) return;
       // A reply and newer events can share one packet. Never overwrite those events.
       if (revision !== this.stateRevision) continue;
       this.active = ['preparing', 'armed', 'recording', 'paused', 'finishing'].includes(
@@ -421,6 +431,112 @@ export class EngineSupervisor {
       });
     });
     await this.client.connect(this.socketPath);
+  }
+  private ownedUpdateChild(expected?: ChildProcess): ChildProcess & { pid: number } {
+    const child = this.child;
+    if (!child || (expected && child !== expected) || !Number.isSafeInteger(child.pid) ||
+        child.pid! <= 1 || child.exitCode !== null || child.signalCode !== null)
+      throw Object.assign(new Error('Native updates require the live engine launched by this app.'), {
+        code: 'update-engine-unowned',
+      });
+    try { process.kill(child.pid!, 0); }
+    catch {
+      throw Object.assign(new Error('The owned native engine is no longer running.'), {
+        code: 'update-engine-unowned',
+      });
+    }
+    return child as ChildProcess & { pid: number };
+  }
+  private updateReply(result: any, pid: number, held: boolean) {
+    if (result?.pid !== pid || result?.held !== held)
+      throw Object.assign(new Error('The native update hold identity was not confirmed.'), {
+        code: 'update-hold-invalid',
+      });
+  }
+  private async reconnectUpdateChild(child: ChildProcess & { pid: number }) {
+    this.ownedUpdateChild(child);
+    await this.client.connect(this.socketPath);
+    this.ownedUpdateChild(child);
+    const status = await this.client.request('status', {}, 3000);
+    this.ownedUpdateChild(child);
+    if (status?.pid !== child.pid || status?.state !== 'idle')
+      throw Object.assign(new Error('The original native engine could not be confirmed idle.'), {
+        code: 'update-engine-mismatch',
+      });
+  }
+  async acquireUpdateHold(token: string): Promise<NativeUpdateHold> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(token))
+      throw Object.assign(new Error('Update hold needs a canonical lowercase UUID token.'), {
+        code: 'invalid-params',
+      });
+    if (this.closing || this.quitting || this.updatePending)
+      throw Object.assign(new Error('Native update ownership is already pending or closing.'), {
+        code: 'update-busy',
+      });
+    const child = this.ownedUpdateChild();
+    this.updatePending = true;
+    const hold: NativeUpdateHold = Object.freeze({ token, pid: child.pid });
+    this.updateHold = hold;
+    this.previews.stop();
+    clearTimeout(this.restartTimer);
+    this.restartTimer = undefined;
+    try {
+      if (!this.client.connected) await this.reconnectUpdateChild(child);
+      this.ownedUpdateChild(child);
+      const result = await this.client.request('update.hold.acquire', { token }, 3000);
+      this.ownedUpdateChild(child);
+      this.updateReply(result, child.pid, true);
+      return hold;
+    } catch (cause) {
+      // The native command may complete after its response budget. Invalidate
+      // that connection before cleanup so queued disconnected acquires refuse.
+      this.client.close();
+      try {
+        await this.reconnectUpdateChild(child);
+        const result = await this.client.request('update.hold.release', { token }, 3000);
+        this.ownedUpdateChild(child);
+        this.updateReply(result, child.pid, false);
+        this.clearUpdatePending();
+      } catch (cleanup) {
+        this.client.close();
+        throw Object.assign(new Error('Native update hold cleanup is unconfirmed. Keep Rushes open and retry release.'), {
+          code: 'update-hold-cleanup-unknown', cause, cleanup, hold,
+        });
+      }
+      throw cause;
+    }
+  }
+  async releaseUpdateHold(hold: NativeUpdateHold): Promise<void> {
+    if (!this.updatePending || this.updateHold?.token !== hold.token || this.updateHold.pid !== hold.pid)
+      throw Object.assign(new Error('The native update hold token did not match.'), {
+        code: 'update-token-mismatch',
+      });
+    try {
+      const child = this.ownedUpdateChild();
+      if (child.pid !== hold.pid)
+        throw Object.assign(new Error('The original held native engine is no longer tracked.'), {
+          code: 'update-engine-mismatch',
+        });
+      if (!this.client.connected) await this.reconnectUpdateChild(child);
+      this.ownedUpdateChild(child);
+      const result = await this.client.request('update.hold.release', { token: hold.token }, 3000);
+      this.ownedUpdateChild(child);
+      this.updateReply(result, hold.pid, false);
+      this.clearUpdatePending();
+    } catch (cause) {
+      this.client.close();
+      throw Object.assign(new Error('Native update hold release is unconfirmed. Keep Rushes open and retry release.'), {
+        code: 'update-hold-cleanup-unknown', cause, hold,
+      });
+    }
+  }
+  private clearUpdatePending() {
+    this.updateHold = undefined;
+    this.updatePending = false;
+    if (!this.closing && !this.quitting) {
+      if (this.client.connected) this.previews.start();
+      else this.scheduleRestart();
+    }
   }
   async quit() {
     if (this.quitting) return this.quitting;
