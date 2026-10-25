@@ -1,0 +1,192 @@
+name: browser-encoder-fanout
+# Explicit generated8s diagnostic: one, two and three raw video-only native VP8
+# encoders over clones of one qualified source, after unchanged source-only and
+# raw-single positive controls. It cannot qualify product recording. Each arm is a
+# fresh owned browser; the next arm runs only after independent retirement.
+on:
+  push:
+    branches: [codex/browser-production-20261022]
+    paths:
+      - '.github/workflows/browser-encoder-fanout.yml'
+      - 'browser/test/matrix-native-encoder-fanout.mjs'
+      - 'browser/test/matrix-native-encoder-control.mjs'
+      - 'browser/test/matrix-fixture.mjs'
+      - 'browser/test/matrix.mjs'
+      - 'verification/browser-retirement.mjs'
+permissions:
+  contents: read
+jobs:
+  fanout:
+    if: github.event.repository.private == false
+    name: Windows / current Chrome raw encoder fanout / ${{ matrix.order }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        # Counterbalanced arm order on separate fresh hosts; order, cache and host
+        # load remain confounders and are not removed by this contrast.
+        include:
+          - order: ascending
+            first: '1'
+            second: '2'
+            third: '3'
+          - order: descending
+            first: '3'
+            second: '2'
+            third: '1'
+    env:
+      RUSHES_M1_SOURCE_MODE: native-reference
+      RUSHES_M1_BROWSER_MODE: headful
+      RUSHES_M1_VIDEO_BUFFER: default
+      RUSHES_M1_SOURCE_AUDIO_FRAMES: '128'
+      RUSHES_M1_SOURCE_AUDIO_SINK: none
+      RUSHES_M1_NATIVE_SOURCE_ONLY: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.22.0
+      - run: npm --prefix browser ci --no-audit --no-fund
+      - run: node scripts/install-test-chrome.mjs --generation current --destination "${{ runner.temp }}/rushes-test-chrome"
+      - run: choco install ffmpeg --no-progress -y
+      - name: Confirm actual media tools
+        run: |
+          ffmpeg -version
+          ffprobe -version
+      - name: Prepare one immutable native input
+        id: media
+        env:
+          RUSHES_CONTROL_MEDIA: ${{ runner.temp }}/rushes-fanout-media
+        run: |
+          node --input-type=module <<'JS'
+          import * as files from 'node:fs/promises';
+          import { createHash } from 'node:crypto';
+          import { matrixMedia } from './browser/test/matrix-media.mjs';
+          const root = process.env.RUSHES_CONTROL_MEDIA;
+          await files.mkdir(root, { mode: 0o700 });
+          const media = await matrixMedia(root), pins = {};
+          for (const [kind, path] of Object.entries(media))
+            pins[kind] = { path, sha256: createHash('sha256').update(await files.readFile(path)).digest('hex') };
+          await files.writeFile(`${root}/pins.json`, JSON.stringify(pins, null, 2), { flag: 'wx' });
+          JS
+          echo "RUSHES_M1_SOURCE_FILE=${{ runner.temp }}/rushes-fanout-media/timecoded.mjpeg" >> "$GITHUB_ENV"
+      - name: Source-only positive control
+        id: source
+        if: ${{ !cancelled() && steps.media.conclusion == 'success' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-fanout-source
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          echo "$verdict" > "$RUSHES_M1_PROOF/command.exit"
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Raw-single positive control
+        id: raw
+        if: ${{ !cancelled() && steps.source.outputs.retired == 'true' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-fanout-raw-single
+          RUSHES_M1_NATIVE_ENCODER_CONTROL: '1'
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          echo "$verdict" > "$RUSHES_M1_PROOF/command.exit"
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Fanout arm 1 of 3 (x${{ matrix.first }})
+        id: arm1
+        if: ${{ !cancelled() && steps.raw.outputs.retired == 'true' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-fanout-arm1-x${{ matrix.first }}
+          RUSHES_M1_NATIVE_ENCODER_FANOUT: ${{ matrix.first }}
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          echo "$verdict" > "$RUSHES_M1_PROOF/command.exit"
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Fanout arm 2 of 3 (x${{ matrix.second }})
+        id: arm2
+        if: ${{ !cancelled() && steps.arm1.outputs.retired == 'true' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-fanout-arm2-x${{ matrix.second }}
+          RUSHES_M1_NATIVE_ENCODER_FANOUT: ${{ matrix.second }}
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          echo "$verdict" > "$RUSHES_M1_PROOF/command.exit"
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Fanout arm 3 of 3 (x${{ matrix.third }})
+        id: arm3
+        if: ${{ !cancelled() && steps.arm2.outputs.retired == 'true' }}
+        timeout-minutes: 3
+        env:
+          RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-fanout-arm3-x${{ matrix.third }}
+          RUSHES_M1_NATIVE_ENCODER_FANOUT: ${{ matrix.third }}
+        run: |
+          mkdir -p "$RUSHES_M1_PROOF"
+          set +e
+          node browser/test/matrix.mjs
+          verdict=$?
+          set -e
+          echo "$verdict" > "$RUSHES_M1_PROOF/command.exit"
+          node verification/browser-retirement.mjs "$RUSHES_M1_PROOF/owned-browser-pid.json" "$RUSHES_M1_PROOF/retirement.json"
+          echo "retired=true" >> "$GITHUB_OUTPUT"
+          exit "$verdict"
+      - name: Verify immutable inputs
+        if: ${{ !cancelled() && steps.media.conclusion == 'success' }}
+        env:
+          RUSHES_CONTROL_MEDIA: ${{ runner.temp }}/rushes-fanout-media
+        run: |
+          node --input-type=module <<'JS'
+          import * as files from 'node:fs/promises';
+          import assert from 'node:assert/strict';
+          import { createHash } from 'node:crypto';
+          const pins = JSON.parse(await files.readFile(`${process.env.RUSHES_CONTROL_MEDIA}/pins.json`, 'utf8'));
+          for (const row of Object.values(pins))
+            assert.equal(createHash('sha256').update(await files.readFile(row.path)).digest('hex'), row.sha256);
+          console.log('Generated native inputs match their pinned hashes.');
+          JS
+      - name: Retain generated fanout arms, including failed arms
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: encoder-fanout-windows-${{ matrix.order }}
+          retention-days: 1
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/rushes-test-chrome/release.json
+            ${{ runner.temp }}/rushes-test-chrome/windows-sandbox-access.json
+            ${{ runner.temp }}/rushes-fanout-media/pins.json
+            ${{ runner.temp }}/rushes-fanout-*/metrics.json
+            ${{ runner.temp }}/rushes-fanout-*/command.exit
+            ${{ runner.temp }}/rushes-fanout-*/retirement.json
+            ${{ runner.temp }}/rushes-fanout-*/owned-browser-pid.json
+            ${{ runner.temp }}/rushes-fanout-*/raw-native*.webm
+            ${{ runner.temp }}/rushes-fanout-*/supplied-reference.f32le
+            ${{ runner.temp }}/rushes-fanout-*/chrome-stderr.log

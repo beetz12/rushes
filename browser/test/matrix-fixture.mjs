@@ -1,4 +1,5 @@
 import { createNativeEncoderControl } from './matrix-native-encoder-control.mjs';
+import { createNativeEncoderFanout } from './matrix-native-encoder-fanout.mjs';
 import { generatedAudioWorkerObserver } from './generated-audio-worker.mjs';
 import { audioFailureMetadata, encoderStartMetadata, frameFormatName } from './startup-metadata.mjs';
 import { nativeReferenceClock } from './native-reference-clock.mjs';
@@ -72,9 +73,48 @@ export function withNativeEncoderControl(observation, source, NativeRecorder, me
   };
 }
 
+// Explicit raw encoder fanout, layered on the same source observation as the single control.
+// It never reuses the single-control metrics, rows or schema.
+export async function withNativeEncoderFanout(observation, source, NativeRecorder, metrics, count, dependencies = {}) {
+  const fanout = await createNativeEncoderFanout(source, count, { ...dependencies, Recorder: NativeRecorder });
+  let stopping, finished;
+  const update = () => { metrics.nativeEncoderFanout = fanout.snapshot(); };
+  const emit = phase => {
+    update(); const group = metrics.nativeEncoderFanout, field = key => group.encoders.map(encoder => encoder[key]);
+    try { (dependencies.emit ?? (row => console.info('GENERATED_NATIVE_ENCODER_FANOUT ' + JSON.stringify(row))))({
+      schema: 'rushes.raw-native-vp8-fanout-row/1', takeId: observation.id, phase, count, atMs: (dependencies.now ?? (() => performance.now()))(),
+      startCalls: field('startCalls'), startReturns: field('startReturns'), startEvents: field('startEvents'), firstStartMs: field('firstStartMs'),
+      stopCalls: field('stopCalls'), stopReturns: field('stopReturns'), stopEvents: field('stopEvents'), bytes: field('bytes'),
+      failures: group.encoders.map(encoder => encoder.failures.length) }); }
+    catch { metrics.nativeEncoderFanoutObservationErrors = (metrics.nativeEncoderFanoutObservationErrors ?? 0) + 1; }
+  };
+  update();
+  const stop = () => stopping ??= (async () => {
+    const observed = observation.session.stop(); emit('before-stop');
+    try { await fanout.stop(); }
+    catch (error) { metrics.nativeEncoderFanoutRetirementError = String(error).slice(0, 256); }
+    finally { emit('stop-settled'); await observed; }
+  })();
+  return { ...observation, session: { stop },
+    async start() {
+      const started = fanout.start(); observation.start(); emit('after-start-call');
+      // Epoch follows every actual native Start call, before waiting for their events.
+      try { await started; } finally { emit('startup-settled'); }
+    },
+    pause() { if (!stopping) { fanout.pause(); observation.pause(); update(); } },
+    resume() { if (!stopping) { fanout.resume(); observation.resume(); update(); } },
+    snapshot() { update(); return observation.snapshot(); },
+    finish() { return finished ??= (async () => { try { await stop(); return await observation.finish(); } finally { update(); } })(); },
+    async downloadNativeEncoderFanout(index) {
+      const url = URL.createObjectURL(fanout.blob(index)), link = document.createElement('a');
+      link.href = url; link.download = `raw-native-fanout-${index}.webm`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+    },
+  };
+}
+
 // Independent M1 instrumentation. Native Chrome fake media is supplied by the
 // runner; this page never requests a real screen or uses a timer as its video source.
-export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true, clockSeed, sourceOnly = false, nativeEncoderControl = false, sourceAudioFrames = 128, sourceAudioSink = 'none', startupObservation = false, audioTimingObservation = false } = {}) {
+export async function prepareMatrix({ backup = true, diagnostic = false, sourceMode = 'native-feedback', referenceWitness = true, clockSeed, sourceOnly = false, nativeEncoderControl = false, nativeEncoderFanout = 0, sourceAudioFrames = 128, sourceAudioSink = 'none', startupObservation = false, audioTimingObservation = false } = {}) {
   if (typeof sourceOnly !== 'boolean' || (sourceOnly && (sourceMode !== 'native-reference' || diagnostic || !referenceWitness)))
     throw new Error('Source-only observation requires the ordinary native-reference witness');
   if (![128, 480].includes(sourceAudioFrames) || (sourceAudioFrames !== 128 && sourceMode !== 'native-reference'))
@@ -87,6 +127,8 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
     throw new Error('Audio delivery timing requires the supervised initial native-reference diagnostic');
   if (typeof nativeEncoderControl !== 'boolean' || (nativeEncoderControl && (!sourceOnly || sourceMode !== 'native-reference' || diagnostic || !referenceWitness || sourceAudioFrames !== 128 || sourceAudioSink !== 'none')))
     throw new Error('Raw native encoder control requires its explicit native-reference128 source-only diagnostic');
+  if (![0, 1, 2, 3].includes(nativeEncoderFanout) || (nativeEncoderFanout && (nativeEncoderControl || !sourceOnly || sourceMode !== 'native-reference' || diagnostic || !referenceWitness || sourceAudioFrames !== 128 || sourceAudioSink !== 'none')))
+    throw new Error('Raw native encoder fanout requires its own explicit native-reference128 source-only diagnostic');
   let audioObserver;
   let startup = () => undefined, audioFailureAt;
   const { createCaptureSession } = await import('/src/capture/index.ts');
@@ -405,6 +447,14 @@ export async function prepareMatrix({ backup = true, diagnostic = false, sourceM
         setTimeout(() => URL.revokeObjectURL(url), 30000);
       },
     };
+    if (nativeEncoderFanout) {
+      try { return await withNativeEncoderFanout(observation, source.getVideoTracks()[0], nativeRecorder, metrics, nativeEncoderFanout); }
+      catch (error) {
+        try { await observation.finish(); }
+        catch (cleanup) { throw new AggregateError([error, cleanup], 'Raw encoder fanout attachment and source retirement failed'); }
+        throw error;
+      }
+    }
     if (!nativeEncoderControl) return observation;
     try { return withNativeEncoderControl(observation, source.getVideoTracks()[0], nativeRecorder, metrics); }
     catch (error) {
