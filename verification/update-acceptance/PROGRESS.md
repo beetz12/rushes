@@ -25,7 +25,7 @@ All real Developer ID, notarized DMG/ZIP, feed staging, dedicated acceptance acc
 
 ## First unfinished
 
-Final scoped calibration/scans, DCO commits and stable-source non-writer remeasurement. All real signing/install/update acceptance remains external and unverified.
+Parent integration/full declared source umbrella gates, followed by an explicit real authorized signed --exercise run. Developer ID/notary prerequisites and all actual installed transition acceptance remain external and unverified.
 
 - Clean-room research: scanner uses12 consecutive word tokens, including regex/import tokens across lines. Common independently authored semver regex/import windows overlapped; reused the existing owned releaseVersion validator and rewrote own import aliases. Scanner and forbidden-source boundary remain unchanged; no forbidden source was opened.
 
@@ -42,3 +42,5 @@ Final scoped calibration/scans, DCO commits and stable-source non-writer remeasu
 - Final current32-test matrix, scoped clean-room first line0 and diff check0. Preservation and sealed-payload guards were separately removed in owned temporary mutations: each produced named RED, then restored source GREEN. Stable-source review refresh is next.
 
 - Final review residuals repaired: all evidence/binary readers use no-follow/nonblocking regular-file opens and pre-allocation bounds; ignored generated output ancestors/contents must be checkout-owned and cannot point outside before build gates; launch/case cleanup failures are retained and visible in CLI error fields. Generated FIFO, cleanup-detail and output-link controls pass. No real installed transition qualified.
+
+- Fresh non-writer review ACCEPTED source preparation at5d81b6d after independently32/32 generated tests and resolution of all eight findings. Review and exact hashes are retained in the private run evidence. This acceptance covers code preparation only, not production signing, a real installed update or whole-product release readiness.
