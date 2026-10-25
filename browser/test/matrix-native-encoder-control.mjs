@@ -5,6 +5,8 @@ export function createNativeEncoderControl(source, dependencies = {}) {
   const Stream = dependencies.Stream ?? globalThis.MediaStream;
   const now = dependencies.now ?? (() => performance.now());
   const schedule = dependencies.schedule ?? setTimeout, unschedule = dependencies.unschedule ?? clearTimeout;
+  // A fanout group may supply one common Start and finalize expiry; one encoder alone keeps its own10s/15s.
+  const commonStartExpiry = dependencies.startExpiresAtMs ?? (() => null), commonStopExpiry = dependencies.stopExpiresAtMs ?? (() => null);
   if (source?.kind !== 'video' || source.readyState !== 'live') throw new Error('Raw control requires a live native video source');
   if (!Recorder?.isTypeSupported(MIME)) throw new Error('Raw native VP8 control is unsupported');
   const track = source.clone(); let recorder;
@@ -13,7 +15,7 @@ export function createNativeEncoderControl(source, dependencies = {}) {
   const chunks = [], rows = [], failures = [];
   let bytes = 0, droppedRows = 0, startCalls = 0, startReturns = 0, startEvents = 0;
   let stopCalls = 0, stopReturns = 0, stopEvents = 0, emptyChunks = 0;
-  let starting, retiring, startTimer, stopTimer, firstStartMs = null, startRequestedMs = null, stopRequestedMs = null;
+  let starting, retiring, startTimer, stopTimer, firstStartMs = null, startRequestedMs = null, stopRequestedMs = null, startExpiresAtMs = null, stopExpiresAtMs = null;
   let startResolve, startReject, stopResolve;
   const stopped = new Promise(resolve => { stopResolve = resolve; });
   function observe(kind, detail = {}) {
@@ -25,7 +27,7 @@ export function createNativeEncoderControl(source, dependencies = {}) {
     startEvents++; observe('start-event');
     // Chromium can synthesize a first start event from Stop's empty WriteData.
     if (retiring || recorder.state !== 'recording' || failures.length) return;
-    if (startRequestedMs === null || now() - startRequestedMs >= 10_000) { fail('Raw native VP8 start acknowledgement arrived after its deadline'); return; }
+    if (startRequestedMs === null || now() >= startExpiresAtMs) { fail('Raw native VP8 start acknowledgement arrived after its deadline'); return; }
     firstStartMs = now(); unschedule(startTimer); startResolve?.();
   });
   recorder.addEventListener('stop', () => { stopEvents++; observe('stop-event'); stopResolve(); });
@@ -45,7 +47,8 @@ export function createNativeEncoderControl(source, dependencies = {}) {
       if (starting || retiring) throw new Error('Raw encoder control has already been used');
       starting = new Promise((resolve, reject) => {
         startResolve = resolve; startReject = reject; startRequestedMs = now();
-        startTimer = schedule(() => fail('Raw native VP8 encoder did not start within10000ms'), 10_000);
+        startExpiresAtMs = commonStartExpiry() ?? startRequestedMs + 10_000;
+        startTimer = schedule(() => fail('Raw native VP8 encoder did not start within10000ms'), Math.max(0, startExpiresAtMs - startRequestedMs));
         observe('start-call'); startCalls++;
         try { recorder.start(2000); startReturns++; observe('start-return'); }
         catch (error) { unschedule(startTimer); fail('Raw native VP8 start call failed'); reject(error); }
@@ -65,7 +68,7 @@ export function createNativeEncoderControl(source, dependencies = {}) {
       // Claim retirement before a synchronous native Stop or late start callback.
       retiring = Promise.resolve().then(async () => {
         unschedule(startTimer); stopRequestedMs = now();
-        const expires = stopRequestedMs + 15_000;
+        const expires = stopExpiresAtMs = commonStopExpiry() ?? stopRequestedMs + 15_000;
         if (firstStartMs === null) fail('Raw encoder stopped without a live start acknowledgement');
         try {
           if (!startCalls) throw new Error('Raw encoder stopped before its start call');
@@ -88,7 +91,7 @@ export function createNativeEncoderControl(source, dependencies = {}) {
     snapshot() {
       return { scope: 'Raw native VP8 source diagnostic; no product recording acceptance',
         mimeType: recorder.mimeType || MIME, requestedBitsPerSecond: VIDEO_BITS, timesliceMs: 2000,
-        startCalls, startReturns, startEvents, startRequestedMs, firstStartMs, stopCalls, stopReturns, stopEvents, stopRequestedMs,
+        startCalls, startReturns, startEvents, startRequestedMs, startExpiresAtMs, firstStartMs, stopCalls, stopReturns, stopEvents, stopRequestedMs, stopExpiresAtMs,
         bytes, chunks: chunks.length, emptyChunks, rows: structuredClone(rows), droppedRows, failures: [...failures],
         cloneEnded: track.readyState === 'ended', originalLive: source.readyState === 'live' };
     },

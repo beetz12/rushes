@@ -12,9 +12,9 @@ function sourceOnlyBody(text) {
   return text.slice(begin, end);
 }
 const actualControl = new (Object.getPrototypeOf(async function() {}).constructor)('environment',
-  `const { sourceOnly, nativeEncoderControl = false, metrics, performance, id, document, navigator, source, screen, camera, microphone,
+  `const { sourceOnly, nativeEncoderControl = false, nativeEncoderFanout = 0, metrics, performance, id, document, navigator, source, screen, camera, microphone,
     audio, sourceObserverTrack, sourceWorker, toneContext, nativeRecorder, nativeWorker, suppliedReference,
-    retireObservations, withNativeEncoderControl } = environment; ${sourceOnlyBody(fixture)} throw new Error('Entered product admission');`);
+    retireObservations, withNativeEncoderControl, withNativeEncoderFanout } = environment; ${sourceOnlyBody(fixture)} throw new Error('Entered product admission');`);
 
 test('source-only extraction keeps the same actual body for LF and Windows CRLF inputs', () => {
   const lf = fixture.replace(/\r\n/g, '\n');

@@ -85,6 +85,11 @@ const nativeEncoderControl = process.env.RUSHES_M1_NATIVE_ENCODER_CONTROL === '1
 if (process.env.RUSHES_M1_NATIVE_ENCODER_CONTROL !== undefined && !nativeEncoderControl) throw new Error('Native encoder control option must be1');
 if (nativeEncoderControl && (!sourceOnly || sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl || nativeTraceRequested || checkpointRequested || sourceAudioFrames !== 128 || sourceAudioSink !== 'none'))
   throw new Error('Raw native encoder control requires the untraced8s native-reference128 source-only diagnostic');
+const fanoutOption = process.env.RUSHES_M1_NATIVE_ENCODER_FANOUT;
+if (fanoutOption !== undefined && !['1', '2', '3'].includes(fanoutOption)) throw new Error('Native encoder fanout option must be1, 2 or3');
+const nativeEncoderFanout = fanoutOption === undefined ? 0 : Number(fanoutOption);
+if (nativeEncoderFanout && (nativeEncoderControl || !sourceOnly || sourceMode !== 'native-reference' || long || reference || diagnostic || sourceControl || nativeTraceRequested || checkpointRequested || sourceAudioFrames !== 128 || sourceAudioSink !== 'none'))
+  throw new Error('Raw native encoder fanout requires its own untraced8s native-reference128 source-only diagnostic');
 const videoEncoder = process.env.RUSHES_M1_VIDEO_ENCODER ?? 'default';
 if (!['default', 'software-diagnostic'].includes(videoEncoder)) throw new Error('Unknown matrix video encoder policy');
 const softwareEncoderDiagnostic = videoEncoder === 'software-diagnostic';
@@ -115,6 +120,10 @@ const evidence = { schema: softwareEncoderDiagnostic ? 'rushes.software-encoder-
   fixtureImage: process.env.RUSHES_M1_ENTROPY === '1' ? 'pixel entropy stress' : 'moving detailed 12px tiles',
   physicalPermissions: 'not tested', nativeMinimizedWindow: 'not tested; tab activation alone is not physical minimization',
   diagnostic, allocationDiagnostic, samples: [], actions: [], checks: [], failures: [], browserStderr: [], lifecycle: [], hostTimeline: [], nativeAllocationSamples: [], fixturePages: [], appRequests: [] };
+if (nativeEncoderFanout) {
+  evidence.schema = 'rushes.native-encoder-fanout/1'; evidence.nativeEncoderFanout = nativeEncoderFanout;
+  evidence.nativeEncoderFanoutScope = 'Generated raw video-only native VP8 fanout over clones of one qualified source; no product recording acceptance';
+}
 const nodeOutput = outputDelivery === undefined ? undefined : nodeConsoleLedger();
 if (nodeOutput) {
   evidence.schema = 'rushes.output-delivery-control/1';
@@ -127,7 +136,7 @@ for (const filename of ['test/matrix.mjs', 'test/matrix-browser-options.mjs', 't
 for (const filename of ['test/native-clock-seed.mjs', 'test/cold-trace.mjs', 'test/startup-metadata.mjs'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 evidence.fileHashes['test/matrix-checkpoint-action.mjs'] = createHash('sha256').update(await readFile(join(root, 'test/matrix-checkpoint-action.mjs'))).digest('hex');
-for (const filename of ['test/matrix-native-encoder-control.mjs', 'test/fixture-document.mjs', 'src/capture/camera-source-limits.ts', 'test/node-output-delivery.mjs'])
+for (const filename of ['test/matrix-native-encoder-control.mjs', 'test/matrix-native-encoder-fanout.mjs', 'test/fixture-document.mjs', 'src/capture/camera-source-limits.ts', 'test/node-output-delivery.mjs'])
   evidence.fileHashes[filename] = createHash('sha256').update(await readFile(join(root, filename))).digest('hex');
 evidence.fileHashes['src/capture/cadence.ts'] = createHash('sha256').update(await readFile(join(root, 'src/capture/cadence.ts'))).digest('hex');
 evidence.fileHashes['test/native-optical-roi.mjs'] = createHash('sha256').update(await readFile(join(root, 'test/native-optical-roi.mjs'))).digest('hex');
@@ -231,7 +240,7 @@ async function startMatrixTake(options = {}, beforeStart) {
   await bounded(page.evaluate(async options => {
     const { prepareMatrix } = await import('/test/matrix-fixture.mjs');
     window.matrixTake = await prepareMatrix(options);
-  }, { ...options, sourceMode, sourceOnly, nativeEncoderControl: evidence.nativeEncoderControl === true, sourceAudioFrames, sourceAudioSink, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed, startupObservation: startupObservationRequested && !evidence.recording, audioTimingObservation: checkpointRequested && !evidence.recording }), 30000, 'Matrix page preparation');
+  }, { ...options, sourceMode, sourceOnly, nativeEncoderControl: evidence.nativeEncoderControl === true, nativeEncoderFanout: evidence.nativeEncoderFanout ?? 0, sourceAudioFrames, sourceAudioSink, referenceWitness: sourceMode === 'native-reference' && !evidence.recording, clockSeed, startupObservation: startupObservationRequested && !evidence.recording, audioTimingObservation: checkpointRequested && !evidence.recording }), 30000, 'Matrix page preparation');
   await stage('page-preparation-ready');
   if (beforeStart) {
     try { await beforeStart(); }
@@ -406,6 +415,32 @@ function nativeEncoderRow(value) {
     || !['bytes', 'failures', 'startCalls', 'startReturns', 'startEvents', 'stopCalls', 'stopReturns', 'stopEvents'].every(key => Number.isSafeInteger(value[key]) && value[key] >= 0)) return;
   return value;
 }
+const nativeEncoderFanoutPrefix = 'GENERATED_NATIVE_ENCODER_FANOUT ';
+function nativeEncoderFanoutRow(value) {
+  const lists = ['bytes', 'failures', 'firstStartMs', 'startCalls', 'startEvents', 'startReturns', 'stopCalls', 'stopEvents', 'stopReturns'];
+  if (!value || Object.keys(value).sort().join(',') !== 'atMs,bytes,count,failures,firstStartMs,phase,schema,startCalls,startEvents,startReturns,stopCalls,stopEvents,stopReturns,takeId'
+    || value.schema !== 'rushes.raw-native-vp8-fanout-row/1' || typeof value.takeId !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value.takeId)
+    || !['after-start-call', 'startup-settled', 'before-stop', 'stop-settled'].includes(value.phase) || ![1, 2, 3].includes(value.count)
+    || !Number.isFinite(value.atMs) || value.atMs < 0 || !lists.every(key => Array.isArray(value[key]) && value[key].length === value.count)
+    || !value.firstStartMs.every(item => item === null || (Number.isFinite(item) && item >= 0))
+    || !lists.filter(key => key !== 'firstStartMs').every(key => value[key].every(item => Number.isSafeInteger(item) && item >= 0))) return;
+  return value;
+}
+async function retainNativeEncoderFanout() {
+  evidence.nativeEncoderFanoutFiles ??= [];
+  for (let index = 0; index < nativeEncoderFanout; index++) {
+    if (evidence.nativeEncoderFanoutFiles[index]) continue;
+    try {
+      const pending = page.waitForEvent('download', { timeout: 10000 }); void pending.catch(() => undefined);
+      await bounded(page.evaluate(value => window.matrixTake.downloadNativeEncoderFanout(value), index), 10000, 'Raw native fanout download');
+      const file = join(proof, `raw-native-fanout-${index}.webm`); await (await pending).saveAs(file);
+      evidence.nativeEncoderFanoutFiles[index] = await mediaFileEvidence(file); await save();
+    } catch (error) {
+      (evidence.nativeEncoderFanoutDownloadErrors ??= []).push({ index, error: String(error) });
+      evidence.failures.push(`Raw native fanout encoder ${index} bytes were not retained`);
+    }
+  }
+}
 async function retainNativeEncoder() {
   if (evidence.nativeEncoderFile) return;
   try {
@@ -551,6 +586,17 @@ try {
       evidence.nativeEncoderRows.push(row); console.log(nativeEncoderPrefix + JSON.stringify(row));
     });
   }
+  if (nativeEncoderFanout) {
+    evidence.nativeEncoderFanoutRows = []; evidence.nativeEncoderFanoutRowsInvalid = 0; evidence.nativeEncoderFanoutRowsDropped = 0;
+    page.on('console', message => {
+      const text = message.text(); if (!text.startsWith(nativeEncoderFanoutPrefix)) return;
+      if (text.length > 4096) { evidence.nativeEncoderFanoutRowsInvalid++; return; }
+      let value; try { value = JSON.parse(text.slice(nativeEncoderFanoutPrefix.length)); } catch { evidence.nativeEncoderFanoutRowsInvalid++; return; }
+      const row = nativeEncoderFanoutRow(value); if (!row) { evidence.nativeEncoderFanoutRowsInvalid++; return; }
+      if (evidence.nativeEncoderFanoutRows.length >= 16) { evidence.nativeEncoderFanoutRowsDropped++; return; }
+      evidence.nativeEncoderFanoutRows.push(row); console.log(nativeEncoderFanoutPrefix + JSON.stringify(row));
+    });
+  }
   if(fullNativeTrace){
     evidence.nativeRecorderCalls=[];evidence.droppedNativeRecorderCallRows=0;
     page.on('console',message=>{
@@ -682,6 +728,7 @@ try {
   evidence.finalizationMs = Date.now() - finalizationStarted;
   hostMonitor?.assert();
   if (nativeEncoderControl) await retainNativeEncoder();
+  if (nativeEncoderFanout) await retainNativeEncoderFanout();
   // Keep the actual PCM even if a later shape/decode/phase guard rejects the run.
   if (sourceMode === 'native-reference') {
     await checkpointPhase('source-reference-download');
@@ -693,7 +740,7 @@ try {
     releaseTraceRead?.('whole-source-and-PCM-retired');
   }
   if (sourceOnly) {
-    evidence.scope = nativeEncoderControl ? 'Raw native VP8 control with source qualification; no product recording acceptance' : 'Canonical supplied-reference source-only control; no product recording acceptance';
+    evidence.scope = nativeEncoderFanout ? `Raw native VP8 fanout x${nativeEncoderFanout} with source qualification; no product recording acceptance` : nativeEncoderControl ? 'Raw native VP8 control with source qualification; no product recording acceptance' : 'Canonical supplied-reference source-only control; no product recording acceptance';
     const metrics = evidence.recording.metrics, observed = evidence.recording.observation;
     check('source-only creates no product encoder, chunks or store', () => {
       assert.equal(metrics.sourceOnly, true); assert.deepEqual(metrics.recorderKinds, []); assert.deepEqual(metrics.chunks, []);
@@ -735,6 +782,53 @@ try {
       check('raw native VP8 actually decodes720p', () => assert.deepEqual([evidence.nativeEncoderDecode.width, evidence.nativeEncoderDecode.height], [1280, 720]));
       check('raw native decoded duration matches its actual observation', () => assert.ok(Math.abs(evidence.nativeEncoderDecode.durationSeconds * 1000 - observed.durationMs) <= 250));
       check('raw native decoded video retains250ms continuity', () => assert.equal(evidence.nativeEncoderDecode.gapsAbove250ms.length, 0));
+    }
+    if (nativeEncoderFanout) {
+      const group = metrics.nativeEncoderFanout;
+      evidence.nativeEncoderFanoutDecode = [];
+      for (let index = 0; index < nativeEncoderFanout; index++) {
+        try { evidence.nativeEncoderFanoutDecode[index] = await probeFrames(evidence.nativeEncoderFanoutFiles[index].path); }
+        catch (error) { evidence.nativeEncoderFanoutDecode[index] = null; evidence.failures.push(`Raw native fanout encoder ${index} offline decode failed: ${error}`); }
+      }
+      check('fanout lists every native encoder under its own schema', () => {
+        assert.equal(evidence.schema, 'rushes.native-encoder-fanout/1'); assert.equal(group.schema, 'rushes.native-encoder-fanout/1');
+        assert.equal(group.count, nativeEncoderFanout); assert.equal(group.encoders.length, nativeEncoderFanout);
+        assert.equal(metrics.nativeEncoderControl, undefined); assert.equal(evidence.nativeEncoderRows, undefined);
+        assert.equal(group.startWindowMs, 10000); assert.equal(group.finalizeWindowMs, 15000);
+      });
+      check('fanout admits every encoder under one common10s Start expiry', () => {
+        assert.ok(Number.isFinite(group.startExpiresAtMs));
+        for (const raw of group.encoders) {
+          assert.equal(raw.startExpiresAtMs, group.startExpiresAtMs);
+          assert.ok(raw.startRequestedMs < group.startExpiresAtMs);
+          assert.ok(raw.firstStartMs !== null && raw.firstStartMs < group.startExpiresAtMs);
+        }
+      });
+      check('fanout finalizes every encoder under one common15s expiry', () => {
+        assert.ok(Number.isFinite(group.stopExpiresAtMs)); assert.equal(group.groupFailure, null);
+        for (const raw of group.encoders) assert.equal(raw.stopExpiresAtMs, group.stopExpiresAtMs);
+      });
+      group.encoders.forEach((raw, index) => {
+        const decoded = evidence.nativeEncoderFanoutDecode[index], file = evidence.nativeEncoderFanoutFiles?.[index];
+        check(`fanout encoder ${index} has actual live startup and clean Stop acknowledgement`, () => {
+          assert.equal(raw.startCalls, 1); assert.equal(raw.startReturns, 1); assert.equal(raw.stopCalls, 1); assert.equal(raw.stopReturns, 1); assert.equal(raw.stopEvents, 1);
+          assert.equal(raw.cloneEnded, true); assert.deepEqual(raw.failures, []); assert.equal(raw.droppedRows, 0);
+        });
+        check(`fanout encoder ${index} receives all five actual pauses and resumes`, () => {
+          for (const kind of ['pause-call', 'pause-event', 'resume-call', 'resume-event']) assert.equal(raw.rows.filter(row => row.kind === kind).length, 5);
+        });
+        check(`fanout encoder ${index} saved bytes and SHA are retained`, () => {
+          assert.ok(raw.bytes > 0 && raw.chunks > 0); assert.equal(file.bytes, raw.bytes); assert.match(file.sha256, /^[a-f0-9]{64}$/);
+        });
+        check(`fanout encoder ${index} actually decodes720p`, () => assert.deepEqual([decoded.width, decoded.height], [1280, 720]));
+        check(`fanout encoder ${index} decoded duration matches its actual observation`, () => assert.ok(Math.abs(decoded.durationSeconds * 1000 - observed.durationMs) <= 250));
+        check(`fanout encoder ${index} decoded video retains250ms continuity`, () => assert.equal(decoded.gapsAbove250ms.length, 0));
+      });
+      check('fanout retirement and bounded observations have no faults', () => {
+        assert.equal(metrics.nativeEncoderFanoutRetirementError, undefined); assert.equal(metrics.nativeEncoderFanoutObservationErrors ?? 0, 0);
+        assert.equal(evidence.nativeEncoderFanoutRowsInvalid, 0); assert.equal(evidence.nativeEncoderFanoutRowsDropped, 0);
+        assert.deepEqual(evidence.nativeEncoderFanoutRows.map(row => row.phase), ['after-start-call', 'startup-settled', 'before-stop', 'stop-settled']);
+      });
     }
   } else {
   // Retain PCM first. A diagnostic qualification failure must not discard media
@@ -866,6 +960,15 @@ try {
   }
 } catch (error) {
   evidence.failures.push(`Harness execution: ${error.stack || error}`); console.error(error);
+  if (nativeEncoderFanout && page) {
+    try { evidence.recording = await bounded(page.evaluate(() => window.matrixTake.finish()), 20000, 'Failed raw fanout source retirement'); }
+    catch (failure) {
+      evidence.nativeEncoderFanoutFailureRetirement = String(failure);
+      try { evidence.recording = await bounded(page.evaluate(() => window.matrixTake.snapshot()), 1000, 'Failed raw fanout snapshot'); }
+      catch (missing) { evidence.nativeEncoderFanoutFailureSnapshot = String(missing); }
+    }
+    await retainNativeEncoderFanout();
+  }
   if (nativeEncoderControl && page) {
     try { evidence.recording = await bounded(page.evaluate(() => window.matrixTake.finish()), 20000, 'Failed raw encoder source retirement'); }
     catch (failure) {

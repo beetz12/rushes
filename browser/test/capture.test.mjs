@@ -12,7 +12,7 @@ import { promisify } from 'node:util';
 import { matrixMedia } from './matrix-media.mjs';
 import { beginColdTrace } from './cold-trace.mjs';
 import { ownedTestBrowser } from './owned-test-browser.mjs';
-import { ownedProfile } from '../../verification/browser-retirement.mjs';
+import { coldOwnerReceipt } from './cold-owner.mjs';
 import { retainGeneratedCapture, observeGeneratedRecorders } from './generated-capture-evidence.mjs';
 const runFile = promisify(execFile);
 // Startup-readiness bound for recorder start-EVENT offsets: an event-dispatch observation
@@ -26,8 +26,8 @@ if (process.env.RUSHES_COLD_RASTER_PROOF !== undefined && (!coldRasterProof || !
   throw new Error('Cold raster proof requires1 and an explicit trace directory');
 // Container sanity bound for muxer-rebased first packets; cross-track sync stays with decoded edges.
 const CONTAINER_MEDIA_START_MS = 100;
-let server, browser, origin;
-before(async () => {
+let server, browser, origin, coldOwner;
+before(async context => {
   server = await createServer({ root: fileURLToPath(new URL('..', import.meta.url)), server: { host: '127.0.0.1', port: 0 }, logLevel: 'error',
     plugins: [{ name: 'rushes-capture-test-fixture', configureServer(value) {
       value.middlewares.use('/capture-fixture', (_request, response) => {
@@ -36,23 +36,22 @@ before(async () => {
     } }],
   });
   await server.listen(); origin = `http://127.0.0.1:${server.httpServer.address().port}`;
-  browser = await chromium.launch({ ...(process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE ? { executablePath: process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE } : { channel: process.env.RUSHES_CAPTURE_BROWSER || 'chrome' }), headless: true });
+  const browserOptions = { ...(process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE ? { executablePath: process.env.RUSHES_CAPTURE_BROWSER_EXECUTABLE } : { channel: process.env.RUSHES_CAPTURE_BROWSER || 'chrome' }), headless: true };
   if (process.env.RUSHES_COLD_OWNER_PROOF) {
-    const session = await browser.newBrowserCDPSession();
+    // Ownership comes from the child process this harness launched, never from an OS lookup or executable name.
+    coldOwner = await ownedTestBrowser(context.signal, () => chromium.launchServer(browserOptions), endpoint => chromium.connect(endpoint));
+    browser = coldOwner.browser;
     try {
-      const processes = (await session.send('SystemInfo.getProcessInfo')).processInfo.filter(value => value.type === 'browser');
-      assert.equal(processes.length, 1);
-      const pid = Number(processes[0].id); assert.ok(Number.isSafeInteger(pid) && pid > 0);
-      const command = process.platform === 'win32'
-        ? await runFile('powershell.exe', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`], { timeout: 5000 })
-        : await runFile('ps', ['-p', String(pid), '-o', 'args='], { timeout: 3000 });
-      const profile = ownedProfile(command.stdout);
-      await writeFile(process.env.RUSHES_COLD_OWNER_PROOF, JSON.stringify({ pid, profile, chrome: browser.version() }), { flag: 'wx' });
-    } finally { await session.detach(); }
-  }
+      await writeFile(process.env.RUSHES_COLD_OWNER_PROOF, JSON.stringify(await coldOwnerReceipt(coldOwner.process, browser)), { flag: 'wx' });
+    } catch (error) {
+      try { await coldOwner.close(); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], 'Cold owner receipt and browser retirement failed'); }
+      throw error;
+    }
+  } else browser = await chromium.launch(browserOptions);
   console.log(`Capture runtime ${browser.version()}; isolated synthetic media only.`);
 });
-after(async () => { await browser?.close(); await server?.close(); });
+after(async () => { try { await (coldOwner ? coldOwner.close() : browser?.close()); } finally { await server?.close(); } });
 async function pageFixture(callback) {
   const context = await browser.newContext(); const page = await context.newPage();
   page.on('console',message=>{if(message.text().startsWith('GENERATED_AUDIO_FAILURE '))console.log(message.text());});
