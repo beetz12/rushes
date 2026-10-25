@@ -92,6 +92,9 @@ python3 tools/checks/test_notices.py
 python3 -I tools/checks/check_notices.py
 
 echo "== independent verifier self-checks =="
+verifier_node_pin=$(tr -d '[:space:]' < shell/.nvmrc)
+verifier_node_pin=${verifier_node_pin#v}
+"$HOME/.nvm/versions/node/v$verifier_node_pin/bin/node" --test verification/recording-acceptance/*.test.mjs verification/update-acceptance/*.test.mjs
 python3 -m unittest discover -s verification -p 'test_*.py'
 
 echo "OK: build, tests, clean-room and notices all pass"

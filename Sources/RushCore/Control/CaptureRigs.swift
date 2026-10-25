@@ -147,6 +147,7 @@ public struct ProductionCaptureRigFactory: CaptureRigFactory {
             let plan = ScreenStreamPlan(
                 width: dimensions.width,
                 height: dimensions.height,
+                pixelFormat: kCVPixelFormatType_32BGRA,
                 showsCursor: request.cursor != "data",
                 capturesSystemAudio: request.systemAudio,
                 excludesOwnProcessAudio: !context.selftest,

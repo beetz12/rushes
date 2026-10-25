@@ -20,6 +20,15 @@ import sys
 APP_ID = 'com.nexai.rushes'
 
 
+def hardened_runtime(lines):
+    directories = [line for line in lines if line.startswith('CodeDirectory ')]
+    if len(directories) != 1:
+        return False
+    flags = re.search(r'(?:^|\s)flags=(0x[0-9a-fA-F]+)\(([^)]*)\)(?:\s|$)', directories[0])
+    return bool(flags and int(flags.group(1), 16) & 0x10000
+                and 'runtime' in flags.group(2).split(','))
+
+
 def signature_properties(details, team, identifier):
     if not re.fullmatch(r'[A-Z0-9]{10}', team):
         raise ValueError('The selected Developer ID team is required')
@@ -33,7 +42,7 @@ def signature_properties(details, team, identifier):
         raise ValueError('Exact signing identifier/team did not match')
     if not any(line.startswith('Authority=Developer ID Application:') for line in lines):
         raise ValueError('Developer ID Application authority required')
-    if not any(line.startswith('flags=') and '(runtime)' in line for line in lines):
+    if not hardened_runtime(lines):
         raise ValueError('Hardened runtime signature required')
     if not any(line.startswith('Timestamp=') and line.split('=', 1)[1].strip().lower() not in ['', 'none'] for line in lines):
         raise ValueError('Trusted signing timestamp required')
@@ -108,7 +117,7 @@ class Check:
             self.command(['/usr/bin/codesign', '--verify', '--strict', str(target)])
             description = self.command(['/usr/bin/codesign', '-d', '--verbose=4', str(target)])
             nested = description.splitlines()
-            if f'TeamIdentifier={team}' not in nested or not any(line.startswith('Timestamp=') for line in nested) or not any(line.startswith('flags=') and '(runtime)' in line for line in nested):
+            if f'TeamIdentifier={team}' not in nested or not any(line.startswith('Timestamp=') for line in nested) or not hardened_runtime(nested):
                 raise ValueError('Nested component signature/team/runtime is incomplete')
         self.command(['/usr/bin/xcrun', 'stapler', 'validate', str(path)])
         gatekeeper = self.command(['/usr/sbin/spctl', '--assess', '--type', 'execute', '--verbose=4', str(path)])
