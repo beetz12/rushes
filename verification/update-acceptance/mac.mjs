@@ -1,4 +1,5 @@
 import * as disk from "node:fs/promises";
+import { constants as fileAccess } from "node:fs";
 import * as paths from "node:path";
 import * as os from "node:os";
 import { execFile } from "node:child_process";
@@ -129,9 +130,16 @@ export class MacObserver {
     for (const [relative, entry] of Object.entries(inventory)) {
       if (entry.kind !== "file" || entry.size < 4) continue;
       const path = paths.join(app, relative),
-        handle = await disk.open(path, "r"),
+        handle = await disk.open(
+          path,
+          fileAccess.O_RDONLY | fileAccess.O_NOFOLLOW | fileAccess.O_NONBLOCK,
+        ),
         bytes = Buffer.alloc(4);
       try {
+        requireValue(
+          (await handle.stat()).isFile(),
+          "Executable probe is not a regular file.",
+        );
         await handle.read(bytes, 0, 4, 0);
       } finally {
         await handle.close();

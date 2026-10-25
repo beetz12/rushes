@@ -14,6 +14,8 @@ import {
   checkDownload,
   boundedOperation,
   remeasurePayload,
+  cleanupFailure,
+  validateBuildRoots,
 } from "./observer.mjs";
 acceptanceCases.test(
   "exercise is explicit; recheck never implies app/update execution",
@@ -205,5 +207,40 @@ acceptanceCases.test(
         "different same-version bundle metadata",
       );
     await assertions.rejects(remeasurePayload(root, sealed, app), /differ/);
+  },
+);
+acceptanceCases.test(
+  "unconfirmed cleanup is visible and retains the owned case location",
+  () => {
+    const error = cleanupFailure(
+      new Error("launch deadline"),
+      new Error("retirement unconfirmed"),
+      "/owned-case/Rushes.app",
+    );
+    assertions.equal(error.cleanupFailed, true);
+    assertions.match(
+      error.message,
+      /launch deadline.*CLEANUP.*retirement unconfirmed/,
+    );
+    assertions.equal(error.ownedApp, "/owned-case/Rushes.app");
+  },
+);
+acceptanceCases.test(
+  "ignored build output aliases refuse before the source gate can write outside",
+  async (t) => {
+    const root = await sampleDisk.mkdtemp(
+      samplePaths.join(sampleHost.tmpdir(), "build-roots-"),
+    );
+    t.after(() => sampleDisk.rm(root, { recursive: true, force: true }));
+    const repo = samplePaths.join(root, "repo"),
+      outside = samplePaths.join(root, "outside");
+    await sampleDisk.mkdir(repo);
+    await sampleDisk.mkdir(outside);
+    await sampleDisk.symlink(outside, samplePaths.join(repo, ".build"));
+    await assertions.rejects(
+      validateBuildRoots(repo, process.getuid()),
+      /symlink|escapes/,
+    );
+    assertions.deepEqual(await sampleDisk.readdir(outside), []);
   },
 );

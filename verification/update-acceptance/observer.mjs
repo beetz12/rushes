@@ -285,6 +285,75 @@ async function nativeStatus(path) {
     });
   });
 }
+export async function validateBuildRoots(repo, uid, ignored = []) {
+  let inspected = 0;
+  const visit = async (path) => {
+    const stat = await disk.lstat(path);
+    requireValue(
+      ++inspected <= 1000000 && stat.uid === uid,
+      "Build output is unowned or exceeds its inventory bound.",
+    );
+    if (stat.isSymbolicLink()) {
+      const target = await disk.realpath(path);
+      requireValue(
+        contained(repo, target) && (await disk.stat(target)).uid === uid,
+        "Build output link escapes its owned checkout.",
+      );
+      return;
+    }
+    requireValue(
+      stat.isDirectory() || stat.isFile(),
+      "Build output contains a special filesystem node.",
+    );
+    if (stat.isDirectory())
+      for (const child of await disk.readdir(path))
+        await visit(locations.join(path, child));
+  };
+  const roots = [".build", ".swiftpm", "node_modules", ...ignored];
+  for (const surface of ["shell", "cloud", "viewer", "worker", "browser"]) {
+    await safeDirectory(repo, locations.join(repo, surface));
+    if (!(await absent(locations.join(repo, surface))))
+      requireValue(
+        (await disk.stat(locations.join(repo, surface))).uid === uid,
+        "Build surface is not owned by the dedicated account.",
+      );
+    for (const name of [
+      "node_modules",
+      "dist",
+      ".wrangler",
+      "test-results",
+      "playwright-report",
+      ".vite",
+      ".cache",
+      "coverage",
+      "release.noindex",
+    ])
+      roots.push(surface + "/" + name);
+  }
+  for (const relative of new Set(roots)) {
+    const path = locations.resolve(repo, relative);
+    requireValue(
+      contained(repo, path),
+      "Ignored output escapes the source checkout.",
+    );
+    await safeDirectory(repo, path);
+    if (!(await absent(path))) await visit(path);
+  }
+  return { inspected };
+}
+export function cleanupFailure(primary, cleanup, app) {
+  const failure = new Error(
+    (primary?.message ?? "Acceptance attempt failed") +
+      "; OWNED APP CLEANUP DID NOT CONFIRM NORMAL QUIT: " +
+      cleanup.message +
+      "; owned case: " +
+      app,
+  );
+  failure.cleanupFailed = true;
+  failure.cleanupReason = cleanup.message;
+  failure.ownedApp = app;
+  return failure;
+}
 async function retireOwned(application, observer, app, uid) {
   const members = async () => {
     const owned = await observer.processes(app);
@@ -430,7 +499,14 @@ async function launch(appPath, home, repo, observer, uid) {
     try {
       await retireOwned(application, observer, appPath, uid);
     } catch (cleanup) {
-      error.cleanup = cleanup.message;
+      const failure = cleanupFailure(error, cleanup, appPath);
+      await observer.log({
+        kind: "cleanup-failed",
+        at: Date.now(),
+        reason: failure.message,
+        app: appPath,
+      });
+      throw failure;
     }
     throw error;
   }
@@ -549,10 +625,12 @@ async function archive(home, roots, userData, cache, caseRoot) {
   return moved;
 }
 async function cachePath(app, home) {
-  const text = await disk.readFile(
-      locations.join(app, "Contents/Resources/app-update.yml"),
-      "utf8",
-    ),
+  const text = (
+      await boundedBytes(
+        locations.join(app, "Contents/Resources/app-update.yml"),
+        65536,
+      )
+    ).toString("utf8"),
     match = /^updaterCacheDirName:\s*['"]?([a-zA-Z0-9_-]+)['"]?\s*$/m.exec(
       text,
     );
@@ -685,6 +763,21 @@ async function exerciseOwned(config, evidence, repo) {
     ).trim(),
     "Source acceptance requires a clean committed checkout.",
   );
+  const ignored = (
+    await observer.command("/usr/bin/git", [
+      "-C",
+      repo,
+      "ls-files",
+      "--others",
+      "--ignored",
+      "--exclude-standard",
+      "--directory",
+      "-z",
+    ])
+  )
+    .split("\0")
+    .filter(Boolean);
+  await validateBuildRoots(repo, account.uid, ignored);
   await observer.build(
     "/bin/bash",
     [locations.join(repo, "scripts/check-mac-web.sh")],
@@ -813,7 +906,7 @@ async function exerciseOwned(config, evidence, repo) {
       record = (kind, value = {}) =>
         events.push({ at: Date.now(), kind, ...value });
     record("scenario-selected", await control(config, name, randomUUID()));
-    let session;
+    let session, primaryFailure;
     try {
       session = await launch(app, account.home, repo, observer, account.uid);
       requireValue(
@@ -1025,8 +1118,23 @@ async function exerciseOwned(config, evidence, repo) {
         decoded,
         events,
       });
+    } catch (error) {
+      primaryFailure = error;
+      throw error;
     } finally {
-      if (session) await session.close().catch(() => {});
+      if (session)
+        try {
+          await session.close();
+        } catch (cleanup) {
+          const failure = cleanupFailure(primaryFailure, cleanup, app);
+          await observer.log({
+            kind: "cleanup-failed",
+            at: Date.now(),
+            reason: failure.message,
+            app,
+          });
+          throw failure;
+        }
     }
   }
   run.commandLog = { path: commandFile, sha256: await fileDigest(commandFile) };
@@ -1069,7 +1177,7 @@ async function exerciseOwned(config, evidence, repo) {
   await atomicPrivate(
     evidence,
     locations.join(evidence, "observed-run.sig"),
-    sign(null, bytes, await disk.readFile(privatePath)),
+    sign(null, bytes, await boundedBytes(privatePath, 8192)),
   );
   return recheck(config, evidence, repo);
 }
@@ -1087,8 +1195,9 @@ export async function recheck(config, evidence, repo) {
     "latest-attempt.json",
   ])
     await safeDirectory(evidence, locations.join(evidence, name));
-  const bytes = await disk.readFile(
+  const bytes = await boundedBytes(
     locations.join(evidence, "observed-run.json"),
+    16 * 1024 ** 2,
   );
   requireValue(bytes.length <= 16 * 1024 ** 2, "Observed run exceeds bound.");
   await safeDirectory(

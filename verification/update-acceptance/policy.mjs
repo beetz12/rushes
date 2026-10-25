@@ -37,7 +37,7 @@ export function compareVersions(a, b) {
 export async function boundedBytes(path, maximum = 65536) {
   const handle = await disk.open(
     path,
-    fileAccess.O_RDONLY | fileAccess.O_NOFOLLOW,
+    fileAccess.O_RDONLY | fileAccess.O_NOFOLLOW | fileAccess.O_NONBLOCK,
   );
   try {
     const before = await handle.stat();
@@ -45,12 +45,15 @@ export async function boundedBytes(path, maximum = 65536) {
       before.isFile() && before.size <= maximum,
       "Metadata exceeds its bound.",
     );
-    const bytes = Buffer.alloc(maximum + 1);
+    const bytes = Buffer.alloc(before.size + 1);
     let count = 0;
     for (;;) {
       const read = await handle.read(bytes, count, bytes.length - count, count);
       count += read.bytesRead;
-      requireValue(count <= maximum, "Metadata grew beyond its bound.");
+      requireValue(
+        count <= maximum && count <= before.size,
+        "Metadata grew beyond its bound.",
+      );
       if (!read.bytesRead) break;
     }
     const after = await handle.stat();
@@ -214,7 +217,10 @@ export function signature(details, team, identifier) {
 }
 export async function fileDigest(path, algorithm = "sha256") {
   const hash = createHash(algorithm),
-    file = await disk.open(path, "r");
+    file = await disk.open(
+      path,
+      fileAccess.O_RDONLY | fileAccess.O_NOFOLLOW | fileAccess.O_NONBLOCK,
+    );
   try {
     const before = await file.stat();
     requireValue(
@@ -392,7 +398,7 @@ export function verifyObserver(bytes, signatureBytes, keyBytes) {
 // Signing replaces LC_CODE_SIGNATURE and __LINKEDIT signature storage. Compare
 // compiled sections and loader commands, while verifying each signature separately.
 export async function executableContent(path, { ignoreUUID = false } = {}) {
-  const data = await disk.readFile(path);
+  const data = await boundedBytes(path, 512 * 1024 ** 2);
   requireValue(
     data.length >= 32 &&
       data.readUInt32LE(0) === 0xfeedfacf &&

@@ -31,7 +31,7 @@ Final scoped calibration/scans, DCO commits and stable-source non-writer remeasu
 
 - Fresh non-writer review identified and source-grounded CodeDirectory flags-format and auto-check/init races before runtime acceptance. New predicate now reads the actual CodeDirectory field; launch waits for updater initialization; terminal polling handles an already active automatic download. Root notified for the sibling signature predicate.
 
-- Generic observer, read-only recheck and explicit exercise implemented; current controlled matrix29 tests passed under Node22.22.0. None qualify a real transition.
+- Generic observer, read-only recheck and explicit exercise implemented; current controlled matrix32 tests passed under Node22.22.0. None qualify a real transition.
 - Review repairs now bind original payload inventories, independently source-build the helper, compare retained debug/signature-normalized helper copies, use the authoritative OS home and canonical linked-path guards, serialize exercise ownership, retire rejected launches, and supervise consequential build descendants with the existing owned-session runner. Actual-shaped CodeDirectory parsing requires both numeric runtime bit and marker. ZIP path/link preflight precedes extraction.
 - One generated local transform characterization used copies of the existing development helper: remove signature and strip debug metadata on copies only, compiled/linker content hashes equal. Original app/data unchanged; no identity/certificate used to sign, no notarization or production qualification.
 - Source/root umbrella wiring is parent-owned. Exact new-suite command: node --test verification/update-acceptance/*.test.mjs. No umbrella or shell source edit in this lane.
@@ -39,4 +39,6 @@ Final scoped calibration/scans, DCO commits and stable-source non-writer remeasu
 
 - Post-review source fixes additionally use bounded no-follow metadata reads, no-echo parse failures, original sealed full payload inventories, source ASAR entrypoint/dependency checks, fresh helper code/metadata binding, strict account-owned source checkout, pre-disabled seed inputs/auto-share, active QA console check before real busy capture, and archive/tree chained-link and special-filename guards. Read-only recheck remains launch/build/mount/feed-write free.
 
-- Final current29-test matrix, scoped clean-room first line0 and diff check0. Preservation and sealed-payload guards were separately removed in owned temporary mutations: each produced named RED, then restored source GREEN. Stable-source review refresh is next.
+- Final current32-test matrix, scoped clean-room first line0 and diff check0. Preservation and sealed-payload guards were separately removed in owned temporary mutations: each produced named RED, then restored source GREEN. Stable-source review refresh is next.
+
+- Final review residuals repaired: all evidence/binary readers use no-follow/nonblocking regular-file opens and pre-allocation bounds; ignored generated output ancestors/contents must be checkout-owned and cannot point outside before build gates; launch/case cleanup failures are retained and visible in CLI error fields. Generated FIFO, cleanup-detail and output-link controls pass. No real installed transition qualified.

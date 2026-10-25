@@ -15,6 +15,7 @@ import {
   executableContent,
   authoritativeAccount,
   boundedJSON,
+  fileDigest,
 } from "./policy.mjs";
 const good =
   "Identifier=com.nexai.rushes\nTeamIdentifier=ABCDEFGHIJ\nAuthority=Developer ID Application: Generated only\nCodeDirectory v=20500 size=444 flags=0x10000(runtime) hashes=3+7 location=embedded\nTimestamp=Oct 24, 2026\n";
@@ -276,5 +277,27 @@ harnessCases.test(
     await disk.symlink("../dir", testPaths.join(root, "A/B"));
     await disk.symlink("A/B/../../outside", testPaths.join(root, "escape"));
     await assertions.rejects(tree(root), /escape/);
+  },
+);
+
+harnessCases.test(
+  "nonblocking regular readers reject generated FIFOs instead of waiting for writers",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    const root = await disk.mkdtemp(
+      testPaths.join(testHost.tmpdir(), "fifo-policy-"),
+    );
+    t.after(() => disk.rm(root, { recursive: true, force: true }));
+    const fifo = testPaths.join(root, "metadata.pipe");
+    const { spawnSync } = await import("node:child_process");
+    const made = spawnSync(
+      "python3",
+      ["-c", "import os,sys;os.mkfifo(sys.argv[1])", fifo],
+      { encoding: "utf8" },
+    );
+    assertions.equal(made.status, 0, made.stderr);
+    await assertions.rejects(boundedJSON(fifo), /bound/);
+    await assertions.rejects(fileDigest(fifo), /bound/);
+    await assertions.rejects(executableContent(fifo), /bound/);
   },
 );

@@ -18,6 +18,9 @@ try {
       productionAccepted: false,
       updateTransitionQualified: false,
       reason: error.message,
+      cleanupFailed: error.cleanupFailed ?? false,
+      cleanupReason: error.cleanupReason,
+      ownedApp: error.ownedApp,
     }),
   );
   process.exitCode = 1;
