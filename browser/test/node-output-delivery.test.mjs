@@ -7,7 +7,7 @@ import { fork } from 'node:child_process';
 import { readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { outputDeliveryMode, nodeConsoleLedger, observeChildOutput } from './node-output-delivery.mjs';
 const startupPrefix = 'GENERATED_CAPTURE_STARTUP ';
 const row = index => ({ takeId: 'generated-fixture', index, timeMs: index, kind: 'phase', phase: 'session-start-entered' });
@@ -128,7 +128,7 @@ test('optional output snapshots finish before durable freeze under the existing 
   const child = Object.assign(new EventEmitter(), pipes(), { connected: true, replies: [], send(value) { this.replies.push(value); } });
   const output = observeChildOutput(child, 'retain-only');child.stdout.write(Buffer.from(text(0)));let captured;
   const broker = superviseCheckpoints(child, { proof, prefix: 'output-pure-control', beforeFreeze: control => output.flush(proof, control),
-    upload: async (_name, files) => { captured = files.map(value => value.split('/').at(-1));return { id: 123, digest: 'a'.repeat(64) }; } });
+    upload: async (_name, files) => { captured = files.map(value => basename(value));return { id: 123, digest: 'a'.repeat(64) }; } });
   child.emit('message', { kind: 'rushes-checkpoint-request', sequence: 1, stage: 'normal-before-recovery', deadlineWallMs: Date.now() + 60_000 });
   const result = await broker.finish();assert.deepEqual(result.errors, []);assert.equal(child.replies[0].ok, true);
   assert.ok(captured.includes('matrix-child-stdout.log'));assert.ok(captured.includes('supervisor-output-delivery.json'));output.detach();
