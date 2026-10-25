@@ -2084,7 +2084,7 @@ else {
     if (!engineReady || quitting || (captureBusy() && state !== 'finishing')) return;
     const main = windows.get('recorder');
     if (!main || main.isDestroyed() || !main.isVisible() || main.isMinimized())
-      windowFor(primaryView);
+      windowFor('recorder');
   });
   app.on('second-instance', (_event, argv) => {
     const url = argv.find((value) => value.startsWith('rushes:'));

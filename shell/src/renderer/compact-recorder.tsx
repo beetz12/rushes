@@ -61,8 +61,8 @@ export function CompactHeader({
             <RefreshCw size={16} />
           </button>
         )}
-        <button aria-label="My recordings" title="My recordings" onClick={library}>
-          <Grid2x2 size={17} /><span>Library</span>
+        <button aria-label="Full view" title="Open the full workspace" onClick={library}>
+          <Grid2x2 size={17} /><span>Full view</span>
         </button>
         <button aria-label="Settings" title="Settings" onClick={settings}>
           <Settings size={17} />

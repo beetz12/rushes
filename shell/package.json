@@ -1,6 +1,6 @@
 {
   "name": "rushes-desktop",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "license": "MIT",
   "description": "Rushes native recording desktop shell",
@@ -43,7 +43,7 @@
     "appId": "com.nexai.rushes",
     "productName": "Rushes",
     "directories": {
-      "output": "release"
+      "output": "release.noindex"
     },
     "files": [
       "dist/**/*",

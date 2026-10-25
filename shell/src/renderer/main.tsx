@@ -670,6 +670,11 @@ function App() {
                 ? 'Settings'
                 : 'Recording studio'}
           </span>
+          {!compact && (
+            <button className="secondary" onClick={() => void api.window('recorder')}>
+              Simple view
+            </button>
+          )}
           <span className={`status-pill ${status.state === 'offline' ? 'offline' : ''}`}>
             <i />
             {status.state === 'offline'

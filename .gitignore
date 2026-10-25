@@ -4,6 +4,7 @@ __pycache__/
 DerivedData/
 *.xcodeproj
 node_modules/
+shell/release.noindex/
 dist/
 .DS_Store
 docs/qa/

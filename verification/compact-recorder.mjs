@@ -365,6 +365,27 @@ try {
   );
   assert.equal((await primaryBounds())[0].bounds.width, 420);
   await layout("recorder-default");
+  const primaryId = (await primaryBounds())[0].id;
+  await page.getByRole("button", { name: "Full view", exact: true }).click();
+  await page.waitForFunction(() => document.documentElement.dataset.view === "library");
+  assert.equal((await primaryBounds())[0].id, primaryId);
+  assert.equal((await primaryBounds())[0].bounds.width, 1120);
+  assert.equal(await app.evaluate(({BrowserWindow}) => BrowserWindow.getAllWindows().length), 1);
+  await page.screenshot({ path: join(evidence, "full-view.png") });
+  await page.getByRole("button", { name: "Simple view", exact: true }).click();
+  await page.waitForFunction(() => document.documentElement.dataset.view === "recorder");
+  assert.equal((await primaryBounds())[0].id, primaryId);
+  assert.equal((await primaryBounds())[0].bounds.width, 420);
+  await page.getByRole("button", { name: "Full view", exact: true }).click();
+  await page.waitForFunction(() => document.documentElement.dataset.view === "library");
+  await app.evaluate(({BrowserWindow, app}) => {
+    BrowserWindow.getAllWindows().find(w => w.webContents.getURL().includes("#library")).hide();
+    app.emit("activate");
+  });
+  await page.waitForFunction(() => document.documentElement.dataset.view === "recorder");
+  assert.equal((await primaryBounds())[0].id, primaryId);
+  assert.equal((await primaryBounds())[0].bounds.width, 420);
+  check("simple-full-toggle-and-reopen");
   await resize(400, 600);
   await layout("recorder-small");
   await call("onboarding", "reset");
