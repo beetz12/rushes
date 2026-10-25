@@ -9,13 +9,16 @@ unusual and non-negotiable: the clean-room rules.
 - macOS 26.4 or later with the Swift 6.4 toolchain (Xcode 26 or the standalone toolchain)
 - Node.js per each JavaScript surface's pinned `.nvmrc` (`shell/`, `cloud/`, `viewer/`, `worker/`)
 
-## The one gate
+## Mac and web release gate
 
 ```bash
-bash scripts/check.sh
+bash scripts/check-mac-web.sh
 ```
 
-CI runs exactly this script. It builds and tests the Swift package, installs,
+The Mac/web release CI runs this script. The original `bash scripts/check.sh`
+remains the full diagnostic gate, including deferred browser recording.
+Browser recording is outside the current release; its retained diagnostics
+are not a passing qualification. It builds and tests the Swift package, installs,
 builds and tests every JavaScript surface on its pinned Node runtime, runs the
 clean-room check over all first-party source, and verifies the license notice
 inventory. If it is red locally, it will be red in CI; fix it before opening a
