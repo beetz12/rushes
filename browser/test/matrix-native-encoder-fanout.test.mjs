@@ -118,7 +118,7 @@ test('fixture adapter issues every native Start before the source epoch and stop
   assert.deepEqual(order.slice(1), ['observation-stop', 'source-finish']);
 });
 
-const runner = readFileSync(new URL('./matrix.mjs', import.meta.url), 'utf8');
+const runner = readFileSync(new URL('./matrix.mjs', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 const begin = runner.indexOf("const long = process.env.RUSHES_M1_LONG === '1';");
 const end = runner.indexOf('const root = fileURLToPath(', begin);
 const admission = new Function('sourceTaskObservationWindow', 'process', `${runner.slice(begin, end)};return {nativeEncoderFanout,nativeEncoderControl,sourceOnly,targetMs};`);
