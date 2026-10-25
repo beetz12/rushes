@@ -16,6 +16,9 @@ async function fixture() {
   let pid = process.pid;
   let acquireDelay = 0;
   let releaseInvalid = false;
+  let releaseCount = 0;
+  let parkRelease = 0;
+  let parkedRelease: (() => void) | undefined;
   let lateAcquire: (() => void) | undefined;
   const server = createServer((socket) => {
     connections.add(socket);
@@ -47,7 +50,8 @@ async function fixture() {
           else acquire();
         } else if (request.cmd === 'update.hold.release') {
           if (held === request.args.token) held = undefined;
-          reply({ pid: releaseInvalid ? pid + 1 : pid, held: false });
+          const acknowledge = () => reply({ pid: releaseInvalid ? pid + 1 : pid, held: false });
+          if (++releaseCount === parkRelease) parkedRelease = acknowledge; else acknowledge();
         }
       }
     });
@@ -68,6 +72,8 @@ async function fixture() {
     delayAcquire: () => { acquireDelay = 1; },
     invalidRelease: (value: boolean) => { releaseInvalid = value; },
     lateAcquire: () => lateAcquire?.(),
+    parkRelease: (number: number) => {parkRelease = number;},
+    finishRelease: () => parkedRelease?.(),
     disconnect: async () => {
       for (const socket of connections) socket.destroy();
       await vi.waitFor(() => expect(supervisor.client.connected).toBe(false));
@@ -188,4 +194,17 @@ describe('native update hold ownership', () => {
       expect(f.supervisor.updateHoldPending).toBe(false);
     } finally { await f.close(); }
   });
+  it('a delayed old release acknowledgement cannot clear a newer native hold', async () => {
+    const f = await fixture();
+    try {
+      const first = await f.supervisor.acquireUpdateHold(randomUUID()); f.parkRelease(2);
+      const releaseOne = f.supervisor.releaseUpdateHold(first), releaseTwo = f.supervisor.releaseUpdateHold(first);
+      await releaseOne;
+      const next = await f.supervisor.acquireUpdateHold(randomUUID());
+      expect(f.held()).toBe(next.token); f.finishRelease(); await releaseTwo;
+      expect(f.supervisor.updateHoldPending).toBe(true); expect(f.held()).toBe(next.token);
+      await f.supervisor.releaseUpdateHold(next); expect(f.supervisor.updateHoldPending).toBe(false);
+    } finally {f.finishRelease(); await f.close();}
+  });
+
 });

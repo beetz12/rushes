@@ -4,6 +4,16 @@ Product name: Rushes (app `Rushes.app`, command-line tool `rushes`, library Rush
 
 Plan date: 2026-10-11. Inputs: the nine clean-room research notes in `docs/research/`, the reader brief in `docs/process/reader-brief.md`, and `tools/checks/sources.json`. Scores written as "(4)" are the 0 to 5 quality scores from the notes' JSON files.
 
+## Current release scope (2026-10-24)
+
+The current authorized release is Mac-native recording plus web sharing,
+playback, library and billing. Browser recording is deferred. The historical
+phases and research below are retained; their old Phase7 and platform exclusions
+are not the current release scope. See
+[Mac/web release verification](verification/mac-web-release.md) for the active
+public source boundary and release gates. A source build does not establish a
+live cloud deployment or a signed production installer.
+
 ## Summary
 
 This plan tells a build team how to make Rushes, David's own Loom-style screen recorder for macOS. The team does not need to have seen any reference repository. Everything the plan says about copyleft code comes from the clean-room research notes.

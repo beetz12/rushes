@@ -496,7 +496,7 @@ export class EngineSupervisor {
         const result = await this.client.request('update.hold.release', { token }, 3000);
         this.ownedUpdateChild(child);
         this.updateReply(result, child.pid, false);
-        this.clearUpdatePending();
+        this.clearUpdatePending(hold);
       } catch (cleanup) {
         this.client.close();
         throw Object.assign(new Error('Native update hold cleanup is unconfirmed. Keep Rushes open and retry release.'), {
@@ -511,6 +511,7 @@ export class EngineSupervisor {
       throw Object.assign(new Error('The native update hold token did not match.'), {
         code: 'update-token-mismatch',
       });
+    const ownership = this.updateHold;
     try {
       const child = this.ownedUpdateChild();
       if (child.pid !== hold.pid)
@@ -522,7 +523,7 @@ export class EngineSupervisor {
       const result = await this.client.request('update.hold.release', { token: hold.token }, 3000);
       this.ownedUpdateChild(child);
       this.updateReply(result, hold.pid, false);
-      this.clearUpdatePending();
+      this.clearUpdatePending(ownership);
     } catch (cause) {
       this.client.close();
       throw Object.assign(new Error('Native update hold release is unconfirmed. Keep Rushes open and retry release.'), {
@@ -530,7 +531,8 @@ export class EngineSupervisor {
       });
     }
   }
-  private clearUpdatePending() {
+  private clearUpdatePending(expected: NativeUpdateHold) {
+    if (this.updateHold !== expected) return;
     this.updateHold = undefined;
     this.updatePending = false;
     if (!this.closing && !this.quitting) {

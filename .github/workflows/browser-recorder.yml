@@ -1,18 +1,6 @@
-name: browser-recorder
+name: deferred-browser-recorder
 on:
-  pull_request:
-    paths:
-      - 'browser/**'
-      - 'scripts/check-browser-recorder.mjs'
-      - 'scripts/install-test-chrome.mjs'
-      - '.github/workflows/browser-recorder.yml'
-  push:
-    branches: [main, codex/browser-production-20261022]
-    paths:
-      - 'browser/**'
-      - 'scripts/check-browser-recorder.mjs'
-      - 'scripts/install-test-chrome.mjs'
-      - '.github/workflows/browser-recorder.yml'
+  # Browser recording is deferred; retained only for an explicit diagnostic dispatch.
   workflow_dispatch:
     inputs:
       maximum_take:
@@ -26,6 +14,7 @@ permissions:
   contents: read
 jobs:
   browser:
+    if: github.repository == 'beetz12/rushes' && github.event.repository.private == false
     name: ${{ matrix.os }} / Chrome ${{ matrix.chrome }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40

@@ -20,7 +20,7 @@ import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { isPrimaryView, windowKey, type PrimaryView } from '../shared/navigation';
 import { unwrapNativeResponse } from '../shared/native-result';
-import { readFile, writeFile, mkdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, stat, unlink } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { Readable } from 'node:stream';
@@ -28,6 +28,9 @@ import { z } from 'zod';
 import { bubbleForCapture, globalCaptureArea } from '../shared/geometry';
 import { EngineSupervisor } from './engine';
 import { SharingService } from './sharing';
+import { HostedAccountController, hostedServiceURL } from './hosted-account';
+import { createAppUpdater, type ReleaseUpdates, type UpdateSnapshot } from './updater';
+import { UpdateRestartGate } from './update-restart';
 import { createShareDispatcher } from './share-dispatch';
 import { AutoShare, ViewNotifications } from './share-lifecycle';
 import { openInEditor, editorArguments } from './editor-handoff';
@@ -107,12 +110,36 @@ let currentId: string | undefined;
 let selectedReviewId: string | undefined;
 let automationChild: ChildProcess | undefined;
 let engineReady = false;
+let appUpdates: ReleaseUpdates | undefined;
+let updateRestart: UpdateRestartGate | undefined;
+let updatePreparing = false;
 const pendingURLs: string[] = [];
 let promptScript = '';
 let promptEnabled = false;
 let drawingEnabled = false;
 let cloudSettings: CloudSettings = { provider: 'none' };
 let cloudGeneration = 0;
+let activeShares: SharingService | undefined;
+const hostedAccount = new HostedAccountController({
+  load: async () => {
+    const bytes = await readFile(join(userDir, 'hosted-session.enc'));
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is unavailable.');
+    return JSON.parse(safeStorage.decryptString(bytes));
+  },
+  save: async (account) => {
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Secure storage is unavailable. The account was not saved.');
+    await atomicBytes(join(userDir, 'hosted-session.enc'), safeStorage.encryptString(JSON.stringify(account)));
+  },
+  clear: async () => {await unlink(join(userDir, 'hosted-session.enc')).catch(error => {if (error.code !== 'ENOENT') throw error;});},
+}, url => shell.openExternal(url), () => {
+  cloudGeneration++;
+  activeShares?.cancelForConfigurationChange();
+  broadcast({event: 'cloud-account-changed', ...hostedAccount.status()});
+}, {allowLocalHTTP: !app.isPackaged});
+function hostedIdentity(serviceURL: string) {
+  try {const account = hostedAccount.credential(serviceURL); return `hosted:${account.serviceURL}:${account.user.tenantId}:${account.user.id}`;}
+  catch {return `hosted:${serviceURL}:unconnected`;}
+}
 let viewNotifications: ViewNotifications | undefined;
 const countdownSignals = new CountdownSignals();
 const recordingWindows = new RecordingWindowLifecycle();
@@ -415,6 +442,7 @@ async function routeURL(url: string) {
     return;
   }
   try {
+    // Native admission protects URL starts; keep Stop/Pause routes available.
     await supervisor.client.request('url.open', { url });
     const live = await supervisor.client.request('status');
     state = live.state;
@@ -590,12 +618,17 @@ async function syncBubble() {
     await supervisor.client.request('record.bubble', { ...lastBubble, visible: true });
   });
 }
+function recordingBusy() {
+  return supervisor.active || startRequests > 0 || ['preparing', 'armed', 'recording', 'paused', 'finishing'].includes(state);
+}
 function captureBusy() {
-  return (
-    supervisor.active ||
-    startRequests > 0 ||
-    ['preparing', 'armed', 'recording', 'paused', 'finishing'].includes(state)
-  );
+  return recordingBusy() || updatePreparing || appUpdates?.blocksCapture === true || supervisor.updateHoldPending;
+}
+function updateBusy() {
+  return !engineReady || !supervisor.client.connected || recordingBusy() || state !== 'idle' || quitting || hostedAccount.status().pending;
+}
+function updateSnapshot(): UpdateSnapshot & {nativeHoldPending: boolean} {
+  return {...(appUpdates?.snapshot() ?? {status: 'disabled' as const, reason: 'unavailable' as const}), nativeHoldPending: supervisor.updateHoldPending};
 }
 function queueBubbleWrite(write: () => Promise<void>) {
   const next = bubbleWrites.catch(() => {}).then(write);
@@ -609,7 +642,7 @@ async function hideCameraBubble() {
   const generation = cameraOverlay.hide();
   const cameraToken = previewFrames.currentToken;
   idlePreview.invalidate();
-  const busy = captureBusy();
+  const busy = recordingBusy();
   const id = currentId;
   if (busy) bubbleSuppressed = true;
   windows.get('bubble')?.close();
@@ -629,7 +662,7 @@ async function hideCameraBubble() {
           if (supervisor.active && currentId === id && cameraOverlay.sameGeneration(generation))
             await supervisor.client.request('record.bubble', { ...lastBubble, visible: false });
         });
-      } else if (!captureBusy() && cameraOverlay.sameGeneration(generation))
+      } else if (!recordingBusy() && cameraOverlay.sameGeneration(generation))
         await idlePreview.stop();
     },
   ]);
@@ -857,6 +890,10 @@ async function provider() {
   const sdk = await import(pathToFileURL(sdkPath).toString());
   const store = new sdk.JsonJobStore(join(userDir, 'share-jobs'));
   if (settings.provider === 'worker') return new sdk.WorkerProvider(settings, { store });
+  if (settings.provider === 'hosted') {
+    const account = hostedAccount.credential(settings.serviceURL);
+    return new sdk.HostedProvider({serviceURL: account.serviceURL, credential: account.credential}, {store, allowLocalHTTP: !app.isPackaged});
+  }
   const assetsDir = app.isPackaged
     ? join(process.resourcesPath, 'viewer')
     : resolve(__dirname, '../../../viewer/dist');
@@ -867,9 +904,11 @@ async function provider() {
 function configurationSummary(settings: CloudSettings) {
   return {
     provider: settings.provider,
-    configured: settings.provider !== 'none',
+    configured: settings.provider !== 'none' && (settings.provider !== 'hosted' || (hostedAccount.status().connected && !hostedAccount.status().pending && hostedAccount.status().serviceURL === settings.serviceURL)),
     encrypted: safeStorage.isEncryptionAvailable(),
-    ...(settings.provider === 'worker'
+    ...(settings.provider === 'hosted'
+      ? {endpoint: settings.serviceURL}
+      : settings.provider === 'worker'
       ? { endpoint: settings.workerURL, accountId: settings.accountId }
       : settings.provider === 'bucket'
         ? { endpoint: settings.endpoint }
@@ -891,6 +930,9 @@ async function persistedCloudSummary() {
 }
 async function saveCloud(value: unknown) {
   const parsed = cloudSettingsSchema.parse(value);
+  if (parsed.provider === 'hosted') {parsed.serviceURL = hostedServiceURL(parsed.serviceURL, !app.isPackaged); hostedAccount.credential(parsed.serviceURL);}
+  hostedAccount.cancel();
+  activeShares?.cancelForConfigurationChange();
   if (!safeStorage.isEncryptionAvailable())
     throw new Error('macOS secure credential storage is unavailable. Credentials were not saved.');
   await atomicBytes(
@@ -904,7 +946,9 @@ async function saveCloud(value: unknown) {
     provider: parsed.provider,
     configured: parsed.provider !== 'none',
     encrypted: true,
-    ...(parsed.provider === 'worker'
+    ...(parsed.provider === 'hosted'
+      ? {endpoint: parsed.serviceURL}
+      : parsed.provider === 'worker'
       ? { endpoint: parsed.workerURL, accountId: parsed.accountId }
       : parsed.provider === 'bucket'
         ? { endpoint: parsed.endpoint }
@@ -935,7 +979,19 @@ async function ready() {
       .record(z.string(), recordingOptionsSchema)
       .parse(JSON.parse(await readFile(join(userDir, 'presets.json'), 'utf8')));
   } catch {}
+  await hostedAccount.initialize();
   await readCloud();
+  void createAppUpdater({packaged: app.isPackaged, resourcesPath: process.resourcesPath, isBusy: updateBusy,
+    changed: snapshot => broadcast({event: 'app-update', ...snapshot})}).then(updater => {
+      if (quitting) {updater.close(); return;}
+      appUpdates = updater;
+      updateRestart = new UpdateRestartGate({snapshot: updateSnapshot, recordingBusy: updateBusy,
+        flush: () => finishPreviewCleanup([() => draftExit.flush(), () => hideCameraBubble(), () => idlePreview.stop()]),
+        acquire: token => supervisor.acquireUpdateHold(token), release: hold => supervisor.releaseUpdateHold(hold),
+        restart: () => updater.restart(), committed: () => updater.blocksCapture,
+        preparing: value => {updatePreparing = value; broadcast({event: 'app-update-preparing', active: value});}});
+      updater.start(); broadcast({event: 'app-update', ...updater.snapshot()});
+    }).catch(() => broadcast({event: 'app-update', status: 'disabled', reason: 'unavailable'}));
   protocol.handle('rushes-media', async (request) => {
     const path = media.get(request.url);
     if (!path) return new Response('Not found', { status: 404 });
@@ -1075,6 +1131,7 @@ async function ready() {
       broadcast({ event: 'camera-preview-cleared' });
     let startAttempt: StartupAttempt | undefined;
     if (request.cmd === 'record.start') {
+      if (updatePreparing || appUpdates?.blocksCapture || supervisor.updateHoldPending) throw new Error('Rushes is preparing an update. Wait for the restart before recording.');
       statusRequests.changed();
       startAttempt = recordingStartup.begin();
       startRequests++;
@@ -1441,15 +1498,32 @@ async function ready() {
     }),
   );
   handle('rushes:cloud-settings', () => ({
-    provider: cloudSettings.provider,
-    configured: cloudSettings.provider !== 'none',
-    encrypted: safeStorage.isEncryptionAvailable(),
+    ...configurationSummary(cloudSettings),
     ...(cloudSettings.provider === 'bucket'
-      ? { publicBaseURL: cloudSettings.publicBaseURL }
+      ? {publicBaseURL: cloudSettings.publicBaseURL}
       : cloudSettings.provider === 'worker'
-        ? { workerURL: cloudSettings.workerURL }
-        : {}),
+        ? {workerURL: cloudSettings.workerURL}
+        : cloudSettings.provider === 'hosted' ? {serviceURL: cloudSettings.serviceURL} : {}),
   }));
+  handle('rushes:hosted-account', async (value) => {
+    const input = z.discriminatedUnion('action', [
+      z.object({action: z.literal('status')}).strict(),
+      z.object({action: z.literal('connect'), serviceURL: z.string().min(1).max(2048)}).strict(),
+      z.object({action: z.literal('cancel')}).strict(),
+      z.object({action: z.literal('disconnect')}).strict(),
+    ]).parse(value);
+    if (input.action === 'connect') return hostedAccount.start(input.serviceURL);
+    if (input.action === 'disconnect') return hostedAccount.disconnect();
+    if (input.action === 'cancel') hostedAccount.cancel();
+    return hostedAccount.status();
+  });
+  handle('rushes:updates', async value => {
+    const action = z.enum(['status', 'check', 'restart', 'recover']).parse(value);
+    if (action === 'check' && appUpdates) {await appUpdates.check(); return updateSnapshot();}
+    if (action === 'restart' && updateRestart) {await updateRestart.run(); return updateSnapshot();}
+    if (action === 'recover' && updateRestart) {await updateRestart.recover(); return updateSnapshot();}
+    return updateSnapshot();
+  });
   handle('rushes:save-cloud', saveCloud);
   handle('rushes:test-cloud', async () => {
     const p = await provider();
@@ -1484,10 +1558,11 @@ async function ready() {
         ? `bucket:${cloudSettings.endpoint}/${cloudSettings.bucket}`
         : cloudSettings.provider === 'worker'
           ? `worker:${cloudSettings.workerURL}`
-          : 'none',
+          : cloudSettings.provider === 'hosted' ? hostedIdentity(cloudSettings.serviceURL) : 'none',
     shareEvent,
     () => cloudGeneration,
   );
+  activeShares = shares;
   handle('rushes:share', async (value) => {
     const result = await shares.share(z.string().min(1).max(200).parse(value));
     await clipboard.writeText(result.url);
@@ -1531,6 +1606,7 @@ async function ready() {
       )
     )
       statusRequests.changed();
+    appUpdates?.activityChanged();
     const countdownCurrent = countdownSignals.current(e);
     const tick = recordingStartup.canceling ? undefined : countdownSignals.event(e);
     if (e.event !== 'countdown' || (countdownCurrent && !recordingStartup.canceling))
@@ -1644,10 +1720,12 @@ async function ready() {
       else windowFor(actions.view);
       currentId = undefined;
     }
+    appUpdates?.activityChanged();
     trayUpdate();
   });
   supervisor.client.on('engine-error', (e) => broadcast({ event: 'error', ...e }));
   supervisor.client.on('disconnected', () => {
+    appUpdates?.activityChanged();
     statusRequests.changed();
     clearCountdown();
     idlePreview.invalidate();
@@ -2022,6 +2100,7 @@ app.on('before-quit', (event) => {
   event.preventDefault();
   if (action === 'wait') return;
   quitting = true;
+  appUpdates?.close();
   ++feedbackRefresh;
   cameraOverlay.hide();
   void finishPreviewCleanup([() => draftExit.flush(), () => hideCameraBubble()])

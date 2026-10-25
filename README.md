@@ -22,19 +22,17 @@ shared clock, local-first on your Mac, drivable by your AI agents.
 
 </div>
 
-Use Rushes for client walkthroughs, bug reports, code demos, tutorials, YouTube
-production, and any moment where showing the work is faster than scheduling
-another call — especially when the recording is raw material you keep editing,
-not a link you send once.
+Record walkthroughs, lessons, bug reports and footage for your editor. Keep the
+separate source files on your Mac and choose when a video should be shared.
 
 ## Features
 
 | | | |
 |---|---|---|
 | 🗂️ **Your files, separate** | 🤖 **Agent-drivable** | 🔒 **Local-first** |
-| Every recording is a folder with up to four untouched track files — screen, camera, mic, system audio — all starting at the same instant. Drop them on any editor timeline at zero. | A 77-command CLI with JSON output, a local control socket, and an MCP server. Start, stop, export and share from scripts and AI agents. | Recordings, transcripts and settings stay on your Mac. No account, no cloud requirement, no telemetry. Sharing goes to storage you own. |
+| Every recording is a folder with up to four untouched track files — screen, camera, mic, system audio — all starting at the same instant. Drop them on any editor timeline at zero. | A self-describing CLI with JSON output, a local control socket, and an MCP server. Start, stop, export and share from scripts and AI agents. | Recordings, transcripts and settings stay on your Mac. No account, no cloud requirement, no telemetry. Sharing goes to storage you own. |
 | ⚖️ **Clean-room provenance** | ⚡ **Fast where it counts** | 🛠️ **Real editing** |
-| Built from nine open-source recorders under documented clean-room rules, enforced by a check in CI. Every copied file carries its license notice. | A five-minute 1080p30 share render takes 28.6 seconds. A ten-minute editor-tracks export takes 1.93 seconds. A kill -9 mid-recording loses at most one second. | Trim and split clips, cut words from the transcript, auto-zoom from your clicks, six camera layouts, captions burned in or exported. |
+| Built from nine open-source recorders under documented clean-room rules, enforced by a check in CI. Every copied file carries its license notice. | Native encoders, bounded Stop finalization and retained recording fragments. Generated-media endurance, decoder and recovery checks accompany the recorder. | Trim and split clips, cut words from the transcript, auto-zoom from your clicks, six camera layouts, captions burned in or exported. |
 
 ## Why Rushes
 
@@ -50,9 +48,9 @@ that's the wrong shape.
   `screen.mov`, `camera.mov`, `mic.mov`, `system.mov`, a manifest, the input
   event log, then transcripts and captions as they are produced. Everything
   checkable with `rushes verify`.
-- **Crash-safe by construction.** Fragmented writers mean a force-quit loses
-  at most one second on every track, and relaunching recovers interrupted
-  takes — footage is never deleted.
+- **Crash-safe by construction.** Fragmented writers retain recoverable media
+  after interruption. Relaunch verifies the available samples, reports the
+  recovered duration and preserves the original files.
 - **Pauses that stay honest.** A 60-second take with two 10-second pauses
   verifies at 40.03 seconds of media on every track, within 50 ms.
 - **On-device transcription and metadata.** Titles, summaries, chapters and
@@ -68,7 +66,7 @@ Every action is a command. The engine serves a local control socket; the
 read the self-describing guide before anything else.
 
 ```bash
-rushes guide --json              # 77 commands, self-describing contract
+rushes guide --json              # current commands and their contracts
 rushes targets                   # displays, windows, cameras, microphones (stable ids)
 rushes record start --display main --camera default --mic default --duration 60 --wait
 rushes verify 01M4P6VE62QFYN8D6  # every track decodable, durations within 50 ms
@@ -95,7 +93,7 @@ swift build -c release
 
 Open `shell/` for the desktop app (Electron + TypeScript + React): menu-bar
 recorder, control bar, camera bubble, first-use guide, review window, exports
-and settings. A signed, notarized download is on the roadmap.
+and settings. Installer and updater code is prepared; signed/notarized installation and update acceptance remain release gates.
 
 ## Sharing and self-hosting
 
@@ -103,14 +101,16 @@ Share links upload to storage you configure — Cloudflare R2 or any
 S3-compatible bucket — and play on a small static viewer page with captions
 and a clickable transcript. Prefer full control? The single-user share Worker
 in `worker/` is part of this repository and deploys to your own Cloudflare
-account. A hosted sharing tier may come later as a separate, optional
-convenience; nothing local depends on it.
+account. An optional paid cloud account is being prepared for web sharing, playback,
+library management and billing. Its backend stays private. Local recording and
+exports work without it. Browser recording is deferred.
 
 ## Status and roadmap
 
 Early alpha — see [ROADMAP.md](ROADMAP.md) for honest phase-by-phase status.
-Phases 1–3 (engine, desktop app, review and sharing) are implemented and
-benchmarked; transcription, editing and the extras continue in flight.
+The release scope is Mac recording plus web sharing, playback, library and
+billing. The new integration is under qualification; this is not a paid public
+launch. See [the release checks](docs/verification/mac-web-release.md).
 
 ## Clean-room provenance
 
@@ -130,8 +130,9 @@ open the `copyleft_paths` files inside permissive repos (7 files in better-shot)
 ## Contributing
 
 Contributions follow [CONTRIBUTING.md](CONTRIBUTING.md) — read its clean-room
-rules before your first pull request; the one gate is
-`bash scripts/check.sh`. Six starter issues are labeled
+rules before your first pull request; the Mac/web source gate is
+`bash scripts/check-mac-web.sh`. The original `bash scripts/check.sh` remains
+the full diagnostic gate including deferred browser recording. Six starter issues are labeled
 `good first issue`. "Rushes" is a trademark of David He; forks must rename
 (see [TRADEMARKS.md](TRADEMARKS.md)).
 

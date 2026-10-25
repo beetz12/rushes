@@ -3,7 +3,7 @@
   "engines": { "node": ">=22.22.0 <23" },
   "scripts": {
     "build": "tsc --noEmit && vite build", "dev": "vite --host 127.0.0.1",
-    "test": "node --test --test-concurrency=1 test/*.test.mjs", "test:capture": "node --test test/capture*.test.mjs"
+    "test": "node --test --test-concurrency=1 test/*.test.mjs", "test:web": "node test/run-scoped-tests.mjs", "test:deferred-recorder": "node test/run-scoped-tests.mjs --deferred", "test:capture": "node --test test/capture*.test.mjs"
   },
   "dependencies": { "react": "19.3.0", "react-dom": "19.3.0" },
   "devDependencies": {

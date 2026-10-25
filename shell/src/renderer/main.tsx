@@ -8,6 +8,7 @@ import {
 import { isConnectionErrorCode } from '../shared/connection-error';
 import { libraryRecordingStatus, recordingHealth, type MediaCheck } from './recording-health';
 import { createRoot } from 'react-dom/client';
+import { AppUpdates } from './app-updates';
 import {
   formatDuration,
   defaultOptions,
@@ -2633,7 +2634,8 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
     [fields, setFields] = useState<Record<string, string>>({ region: 'auto' }),
     [test, setTest] = useState(''),
     [editorTemplate, setEditorTemplate] = useState(options.editorCommandTemplate ?? ''),
-    [editorStatus, setEditorStatus] = useState('');
+    [editorStatus, setEditorStatus] = useState(''),
+    [hosted, setHosted] = useState<{connected: boolean; pending: boolean; saving?: boolean; serviceURL?: string; email?: string; name?: string; error?: string}>({connected: false, pending: false});
   useEffect(
     () => setEditorTemplate(options.editorCommandTemplate ?? ''),
     [options.editorCommandTemplate],
@@ -2646,12 +2648,18 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
         setFields((previous) => ({
           ...previous,
           ...(v.workerURL ? { workerURL: v.workerURL } : {}),
+          ...(v.serviceURL ? {serviceURL: v.serviceURL} : {}),
           ...(v.publicBaseURL ? { publicBaseURL: v.publicBaseURL } : {}),
         }));
       });
     void reload();
+    void api.hostedAccount({action: 'status'}).then(setHosted).catch(() => {});
     return api.onEvent((e) => {
       if (e.event === 'share-configured') void reload();
+      if (e.event === 'cloud-account-changed') {
+        void api.hostedAccount({action: 'status'}).then(setHosted).catch(() => {});
+        void api.cloudSettings().then(setCloud).catch(() => {});
+      }
     });
   }, []);
   const field = (key: string, label: string, secret = false) => (
@@ -2676,6 +2684,7 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
       </div>
       <div className="settings-grid">
         <ProductionSettings run={run} />
+        <AppUpdates run={run} />
         <section className="settings-card">
           <h2>Permissions</h2>
           <PermissionPanel
@@ -2792,11 +2801,21 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
             Share provider
             <select value={provider} onChange={(e) => setProvider(e.target.value)}>
               <option value="none">Local recording only</option>
+              <option value="hosted">Rushes Cloud account</option>
               <option value="bucket">S3 / Cloudflare R2 bucket</option>
               <option value="worker">Rushes share Worker</option>
             </select>
           </label>
-          {provider === 'bucket' ? (
+          {provider === 'hosted' ? (
+            <>
+              <label className="field">Rushes Cloud address<input type="url" value={fields.serviceURL ?? 'https://rushes-browser.nexai-rushes.workers.dev'} onChange={event => setFields({...fields, serviceURL: event.target.value})}/></label>
+              <p className="fine-print">Connect in your browser to choose the Google account that will own your videos. Payment and usage are managed on the website.</p>
+              {hosted.connected && <p role="status">Connected as {hosted.email}. Save settings to use this account for sharing.</p>}
+              {hosted.error && <p className="fine-print" role="status">{hosted.error}</p>}
+              {hosted.pending ? <><p role="status">{hosted.saving ? 'Saving your connection…' : 'Complete the connection in your browser, then return here.'}</p><button className="secondary" disabled={hosted.saving} onClick={() => run(async () => {setHosted(await api.hostedAccount({action: 'cancel'}));})}>Cancel account connection</button></> : <button className="secondary" onClick={() => run(async () => {setHosted(await api.hostedAccount({action: 'connect', serviceURL: fields.serviceURL ?? 'https://rushes-browser.nexai-rushes.workers.dev'}));})}>{hosted.connected ? 'Connect another account' : 'Connect cloud account'}</button>}
+              {hosted.connected && <button className="text-button danger" onClick={() => run(async () => {setHosted(await api.hostedAccount({action: 'disconnect'}));setCloud(await api.cloudSettings());setTest('This Mac is disconnected from Rushes Cloud. Local recordings stay on this Mac.');})}>Disconnect cloud account</button>}
+            </>
+          ) : provider === 'bucket' ? (
             <>
               {field('endpoint', 'S3 endpoint')}
               {field('region', 'Region')}
@@ -2821,7 +2840,7 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
               className="primary"
               onClick={() =>
                 run(async () => {
-                  await api.saveCloudSettings({
+                  await api.saveCloudSettings(provider === 'hosted' ? {provider: 'hosted', serviceURL: fields.serviceURL ?? 'https://rushes-browser.nexai-rushes.workers.dev'} : {
                     provider,
                     ...(provider === 'none' ? {} : fields),
                   } as any);
@@ -2840,7 +2859,7 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
                 run(async () => {
                   const result = await api.testCloud();
                   setTest(
-                    result.ok ? 'Connection verified. Ready to share.' : 'Connection did not pass.',
+                    result.ok ? result.provider === 'hosted' ? 'Cloud account connection verified. Subscription and usage are checked for each upload.' : 'Connection verified. Ready to share.' : 'Connection did not pass.',
                   );
                 })
               }

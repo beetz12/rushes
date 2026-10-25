@@ -13,9 +13,12 @@ import {
 type Reservation = { id: string; url: string; manifest: Record<string, any> };
 type Asset = { file: string; bytes: number; sha256: string; kind: string };
 export interface ShareProvider {
+  readonly supportsAncillaryAssets?: boolean;
   reserve(input: {
     id?: string;
     title: string;
+    clientId?: string;
+    mode?: 'screen' | 'camera' | 'screen-camera';
     durationMs?: number;
     password?: string;
     expiresAt?: string;
@@ -91,7 +94,7 @@ export class SharingService {
   private running = new Map<string, Job>();
   private reserving = new Map<
     string,
-    Promise<{ show: any; state: State; path: string; provider: ShareProvider }>
+    Promise<{ show: any; state: State; path: string; provider: ShareProvider; version: unknown }>
   >();
   constructor(
     private engine: {
@@ -258,7 +261,7 @@ export class SharingService {
       if (existing && existing.state !== 'unshared') this.checkProvider(existing, identity);
       if (
         policy &&
-        (!identity.startsWith('worker:') || !provider.getPolicy || !provider.updatePolicy)
+        (!(identity.startsWith('worker:') || identity.startsWith('hosted:')) || !provider.getPolicy || !provider.updatePolicy)
       )
         throw this.unsupported();
       if (policy && existing && existing.state !== 'unshared') {
@@ -271,9 +274,17 @@ export class SharingService {
       this.notify({ event: 'share-progress', id, state: 'reserving' });
       const reserve = async () => {
         try {
+          let durationMs = Math.round((show.manifest.clock?.durationNs ?? 0) / 1e6);
+          if (identity.startsWith('hosted:')) {
+            const edit = await this.engine.request('edit.get', {id});
+            if (!Array.isArray(edit?.clips) || !edit.clips.length || edit.clips.some((clip: any) => !Number.isFinite(clip.sourceStartMs) || !Number.isFinite(clip.sourceEndMs) || clip.sourceEndMs <= clip.sourceStartMs || !Number.isFinite(clip.speed) || clip.speed < 1 || clip.speed > 8)) throw new Error('The edited video duration could not be verified. Open the video and retry sharing.');
+            durationMs = Math.round(edit.clips.reduce((total: number, clip: any) => total + (clip.sourceEndMs - clip.sourceStartMs) / clip.speed, 0));
+            this.checkConfiguration(version);
+          }
           return await provider.reserve({
             title: show.manifest.title ?? 'Untitled recording',
-            durationMs: Math.round((show.manifest.clock?.durationNs ?? 0) / 1e6),
+            ...(identity.startsWith('hosted:') ? {clientId: id, mode: (show.manifest.tracks ?? []).some((track: any) => track.present && track.role === 'camera') ? (show.manifest.tracks ?? []).some((track: any) => track.present && track.role === 'screen') ? 'screen-camera' : 'camera' : 'screen'} : {}),
+            durationMs,
             ...(policy?.password ? { password: policy.password } : {}),
             ...(policy?.expiresAt ? { expiresAt: policy.expiresAt } : {}),
           });
@@ -296,10 +307,15 @@ export class SharingService {
         updatedAt: new Date().toISOString(),
       };
       await atomicJSON(path, state);
-      return { show, path, state, provider };
+      try {this.checkConfiguration(version); this.checkProvider(state);}
+      catch (error) {await atomicJSON(path, {...state, state: 'failed', lastError: {code: 'share-provider-mismatch', message: 'Sharing settings changed. Retry with the current account.'}}); throw error;}
+      return { show, path, state, provider, version };
     })().finally(() => this.reserving.delete(id));
     this.reserving.set(id, operation);
     return operation;
+  }
+  cancelForConfigurationChange() {
+    for (const job of this.running.values()) job.abort.abort(new Error('Sharing settings changed. Retry with the current account.'));
   }
   async share(
     id: string,
@@ -335,6 +351,8 @@ export class SharingService {
         prepared.path,
         prepared.provider,
         abort.signal,
+        undefined,
+        prepared.version,
       ).finally(() => this.running.delete(id));
       job = { kind: 'share', promise, abort };
       this.running.set(id, job);
@@ -350,15 +368,18 @@ export class SharingService {
     provider: ShareProvider,
     signal: AbortSignal,
     frozen?: { editSnapshot: Record<string, unknown>; publishedVideoPath: string },
+    version = this.configurationVersion(),
   ): Promise<{ url: string; state: 'ready' }> {
+    const current = () => {signal.throwIfAborted(); this.checkProvider(state); this.checkConfiguration(version);};
     try {
+      current();
       this.notify({ event: 'share-progress', id, state: 'rendering', url: state.reservation.url });
       const snapshot: Snapshot = await this.engine.request(
         'share.assets',
         { id, ...frozen },
         30 * 60 * 1000,
       );
-      signal.throwIfAborted();
+      current();
       this.notify({ event: 'share-progress', id, state: 'uploading', url: state.reservation.url });
       const assets: Record<string, Asset> = {};
       const reservation = state.reservation;
@@ -369,24 +390,24 @@ export class SharingService {
         onProgress: (value) =>
           this.notify({ event: 'share-progress', id, state: 'uploading', ...value }),
       });
-      assets.poster = await provider.upload(reservation, {
+      if (provider.supportsAncillaryAssets !== false) assets.poster = await provider.upload(reservation, {
         path: snapshot.posterPath,
         kind: 'poster',
         signal,
       });
-      if (snapshot.captionsPath)
+      if (snapshot.captionsPath && provider.supportsAncillaryAssets !== false)
         assets.captions = await provider.upload(reservation, {
           path: snapshot.captionsPath,
           kind: 'captions',
           signal,
         });
-      if (snapshot.transcriptPath)
+      if (snapshot.transcriptPath && provider.supportsAncillaryAssets !== false)
         assets.transcript = await provider.upload(reservation, {
           path: snapshot.transcriptPath,
           kind: 'transcript',
           signal,
         });
-      signal.throwIfAborted();
+      current();
       const metadata = {
         title: snapshot.title,
         summary: snapshot.summary ?? null,
@@ -405,6 +426,7 @@ export class SharingService {
         durationMs: Math.round(snapshot.durationMs),
         ...metadata,
       });
+      current();
       await atomicJSON(path, {
         ...state,
         reservation: published,
@@ -417,6 +439,7 @@ export class SharingService {
         lastError: undefined,
         updatedAt: new Date().toISOString(),
       });
+      current();
       this.notify({ event: 'share-progress', id, state: 'ready', url: published.url });
       return { url: published.url, state: 'ready' };
     } catch (error) {

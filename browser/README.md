@@ -1,43 +1,42 @@
-# Rushes shared browser recorder
+# Rushes web library and sharing
 
-This experimental client targets screen, camera and microphone recording in
-current and previous pinned Chrome on Windows and Mac. Recordings and their separate original
-tracks stay in the browser's local storage until you explicitly export or upload.
-Browser permission prompts choose the screen and devices. No desktop install is
-needed to develop or test this client.
+The shipped web app opens the private library and supports account management,
+playback, downloads, explicit share links and billing. Record in the Mac app,
+then use its Share action. The web app requests no screen, camera or microphone
+access. Browser recording is deferred on every platform.
 
-Use Node22.22.0 declared in .nvmrc:
+Use the pinned Node22.22.0 runtime from `.nvmrc`:
 
 ```sh
 npm --prefix browser ci
 npm --prefix browser run build
 npm --prefix browser run dev
+npm --prefix browser run test:web
 ```
 
-Open the local URL printed by Vite. Choose your sources, record, then review and
-export the combined video or individual originals. Local drafts belong to this
-browser profile; clearing its site data removes those drafts.
+The local development server proxies `/api` and `/auth` to the separately running
+service on127.0.0.1:8787. Without that configured service, cloud actions remain
+unavailable. The commercial backend, Google credentials, tenant database and
+Stripe integration live in a separate private repository; none is provisioned by
+building this public client.
 
-Run the shared tests with a pinned Chrome installed by
-`node scripts/install-test-chrome.mjs --generation current --destination /absolute/path`.
-The installer prints the actual runtime and exports both browser variables in
-GitHub Actions. For local tests set RUSHES_CAPTURE_BROWSER_EXECUTABLE and
-RUSHES_CHROME to the printed executable. FFmpeg and ffprobe are required for the
-generated-media checks. Run `node scripts/check-browser-recorder.mjs`. The full
-repository gate is `bash scripts/check.sh`.
+The web viewing tests use owned generated H264 media over a real local HTTP
+server. Chrome tests can use the exact binary printed by
+`node scripts/install-test-chrome.mjs --generation current --destination /absolute/path`
+through `RUSHES_CHROME`. `RUSHES_TEST_BROWSER=webkit` checks Mac WebKit. These are
+local checks; authenticated cloud and payment acceptance require separate proof.
 
-This repository contains the shared recorder/client and generated-media checks.
-The hosted multi-tenant service, account database, provider processing, billing
-and provider seam tests remain in a separate private repository. Account/cloud
-buttons require that configured service; local recording and export do not. No
-backend provisioning, credentials or paid plan activation is part of this tree.
+`test:web` classifies every test file and retains the existing account, library,
+sharing and billing regressions. The legacy full command remains `npm test`.
+Deferred recording diagnostics are explicitly named
+`npm --prefix browser run test:deferred-recorder`; their failures remain unresolved
+and do not count as Mac/web qualification. No recorder diagnostic runs in the
+shipped entry. Historical instructions are in `docs/deferred-recording.md`.
 
-The public browser workflow tests pinned Chrome on standard Windows/Mac runners.
-It retains source/runtime identities and generated diagnostics. A short result
-does not establish ten-minute, physical-device or paid-cloud acceptance. Known
-recording qualification gaps remain visible in CI; this is not a public launch.
+Old browser drafts are retained. `/local-drafts` offers an explicit download-only
+recovery view; use the same original browser profile and origin. Reading that
+page neither starts recording nor uploads its saved bytes. Changing browser or
+clearing its site data cannot transfer those drafts.
 
-CI keeps generated short recordings, source/runtime hashes, traces, logs and
-independent supplied-reference PCM for one day. Encoded180s reference masters are
-not uploaded by default. These compact diagnostics are not a substitute for the
-full raw-media acceptance required before a production recording claim.
+See `../docs/verification/mac-web-release.md` for the release gates and current
+scope. A passing client test suite is not a public-launch claim.

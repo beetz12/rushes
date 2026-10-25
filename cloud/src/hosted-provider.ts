@@ -56,6 +56,8 @@ export class HostedProvider implements ShareProvider {
     private cancelled(signal?: AbortSignal): void { if (signal?.aborted) throw new ShareError('CANCELLED', 'Hosted upload cancelled or its deadline elapsed.'); }
     private async request<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal, binary = false): Promise<T> {
         this.cancelled(signal);
+        const encoded = body === undefined ? undefined : binary ? body as BodyInit : JSON.stringify(body);
+        if (!binary && typeof encoded === 'string' && Buffer.byteLength(encoded, 'utf8') > 65536) throw new ShareError('INVALID_METADATA', 'Hosted request metadata exceeds 64 KiB. Shorten the summary or chapters.');
         const timeout = AbortSignal.timeout(REQUEST_MILLIS);
         const bounded = signal ? AbortSignal.any([signal, timeout]) : timeout;
         try {
@@ -63,7 +65,7 @@ export class HostedProvider implements ShareProvider {
                 Authorization: `Native ${this.#credential}`,
                 ...(body === undefined ? {} : { 'Content-Type': binary ? 'application/octet-stream' : 'application/json' }),
                 ...(binary ? { 'X-Part-SHA256': createHash('sha256').update(body as Buffer).digest('hex') } : {}),
-            }, body: body === undefined ? undefined : binary ? body as BodyInit : JSON.stringify(body), redirect: 'error', signal: bounded });
+            }, body: encoded, redirect: 'error', signal: bounded });
             this.cancelled(signal);
             if (!response.ok) throw new ShareError('HOSTED_HTTP', `Hosted request failed with HTTP ${response.status}.`, response.status);
             const value = await responseJSON(response);
@@ -199,6 +201,7 @@ export class HostedProvider implements ShareProvider {
     private publicationFields(input: Partial<Pick<MetadataPatch, 'title' | 'summary' | 'chapters'>>): Partial<Pick<MetadataPatch, 'title' | 'summary' | 'chapters'>> {
         const fields = metadataPatch({ title: input.title, summary: input.summary, chapters: input.chapters });
         if (fields.title !== undefined && fields.title.length > 160) throw new ShareError('INVALID_METADATA', 'Hosted title is too long.');
+        if (fields.chapters && (fields.chapters.length > 200 || fields.chapters.some(chapter => chapter.title.length > 200 || !chapter.title.trim()))) throw new ShareError('INVALID_METADATA', 'Hosted video supports up to 200 chapters with titles of 200 characters.');
         return fields;
     }
     async updateMetadata(share: ShareReservation, patch: Partial<MetadataPatch>): Promise<ShareReservation> {

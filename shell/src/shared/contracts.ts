@@ -197,6 +197,7 @@ export function selectedExportPreset(output: ExportOutput, format: ExportPreset)
   return output === 'separate' ? 'editor-tracks' : format;
 }
 export const cloudSettingsSchema = z.discriminatedUnion('provider', [
+  z.object({provider: z.literal('hosted'), serviceURL: z.url()}),
   z.object({ provider: z.literal('none') }),
   z.object({
     provider: z.literal('bucket'),
@@ -350,6 +351,7 @@ export function previewAcknowledgment(raw: unknown): PreviewAcknowledgment {
     );
   return value.data;
 }
+export type AppUpdateStatus = {status: 'disabled' | 'idle' | 'checking' | 'downloading' | 'downloaded' | 'restarting' | 'error'; version?: string; transferred?: number; total?: number; deferred?: boolean; nativeHoldPending?: boolean; reason?: 'development' | 'unavailable' | 'failed'};
 export interface RushesAPI {
   openRecording(id: string): Promise<void>;
   restorePrimaryView(view: PrimaryView): Promise<void>;
@@ -388,9 +390,12 @@ export interface RushesAPI {
     encrypted: boolean;
     publicBaseURL?: string;
     workerURL?: string;
+    serviceURL?: string;
   }>;
+  hostedAccount(input: {action: 'status' | 'cancel' | 'disconnect'} | {action: 'connect'; serviceURL: string}): Promise<{connected: boolean; pending: boolean; saving: boolean; serviceURL?: string; email?: string; name?: string; expiresAt?: string; error?: string}>;
   saveCloudSettings(settings: CloudSettings): Promise<void>;
   testCloud(): Promise<any>;
+  updates(action: 'status' | 'check' | 'restart' | 'recover'): Promise<AppUpdateStatus>;
   share(id: string, policy?: SharePolicyPatch): Promise<{ url: string; state?: string }>;
   shareStatus(id: string): Promise<ShareStatus>;
   getSharePolicy(id: string): Promise<SharePolicy>;

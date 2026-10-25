@@ -90,7 +90,7 @@ async function pageFixture(options={}) {
     else {status=404;payload={error:{code:'FIXTURE_ROUTE',message:'No fixture for this route.'}};}
     await route.fulfill({status,contentType:'application/json',body:JSON.stringify(payload)});
   });
-  if(options.denyScreen)await context.route(`${origin}/`,async route=>{const response=await route.fetch();await route.fulfill({response,headers:{...response.headers(),'Permissions-Policy':'display-capture=()'}});});
+  if(options.denyScreen)await context.route(`${origin}/test/deferred-recorder.html`,async route=>{const response=await route.fetch();await route.fulfill({response,headers:{...response.headers(),'Permissions-Policy':'display-capture=()'}});});
   await context.route('**/test-player',route=>route.fulfill({contentType:'text/html',body:'<main>Synthetic playback fixture</main>'}));
   await context.route('**/test-checkout',route=>route.fulfill({contentType:'text/html',body:'<main>Test Checkout fixture</main>'}));
   await context.addInitScript(()=>{
@@ -104,7 +104,7 @@ async function pageFixture(options={}) {
     const display=navigator.mediaDevices.getDisplayMedia.bind(navigator.mediaDevices);
     navigator.mediaDevices.getDisplayMedia=constraints=>{window.permissionCalls.push({kind:'screen',constraints,gesture:navigator.userActivation.isActive});return display(constraints);};
   });
-  const page=await context.newPage();page.setDefaultTimeout(5000);page.on('pageerror',error=>console.log('PAGE ERROR',error.message));await page.goto(origin);await page.getByRole('heading',{name:'Show it. Say it. Send it.'}).waitFor();
+  const page=await context.newPage();page.setDefaultTimeout(5000);page.on('pageerror',error=>console.log('PAGE ERROR',error.message));await page.goto(`${origin}/test/deferred-recorder.html`);await page.getByRole('heading',{name:'Show it. Say it. Send it.'}).waitFor();
   return {context,page,calls,options};
 }
 async function skip(page){const dialog=page.getByRole('dialog',{name:'First recording guide'});if(await dialog.isVisible())await dialog.getByRole('button',{name:'Skip guide',exact:true}).click();}

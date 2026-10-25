@@ -78,7 +78,7 @@ export type CaptureSession = {
 export type BrowserConfig = {
   revision: string; googleConfigured: boolean; billingConfigured: boolean; streamConfigured: boolean;
   billingMode: 'test' | 'live' | 'unconfigured';
-  captureEnabled: boolean; hostingEnabled: boolean; signupEnabled: boolean;
+  captureEnabled: boolean; nativeUploadEnabled?: boolean; macDownloadURL?: string; hostingEnabled: boolean; signupEnabled: boolean;
   priceUSD: number; limits: typeof BROWSER_LIMITS;
 };
 export type Account = { id: string; email: string; name: string; tenantId: string };
@@ -94,7 +94,7 @@ export type Usage = {
 };
 export type RecordingState = 'draft' | 'uploading' | 'processing' | 'ready' | 'failed' | 'deleting' | 'deleted';
 export type RecordingSummary = {
-  id: string; title: string; createdAt: string; mode: CaptureMode; state: RecordingState;
+  id: string; title: string; createdAt: string; mode: CaptureMode; state: RecordingState; source?: 'native-mp4';
   durationMs: number; bytes: number; error: string | null;
   shareId: string | null; shareURL: string | null;
 };
@@ -109,5 +109,5 @@ export type FinalizeInput = {
 };
 export type UploadGrant = { uid: string; url: string; expiresAt: string };
 export type ShareInput = { password?: string; expiresAt?: string };
-export type PlaybackGrant = { url: string; expiresAt: string };
+export type PlaybackGrant = { url: string; expiresAt: string; kind?: 'mp4' | 'iframe' };
 export type ExportGrant = { status: 'processing' } | { status: 'ready'; url: string; expiresAt: string };

@@ -29,6 +29,7 @@ export function ShareAccess({
   setNote: (message: string) => void;
 }) {
   const [worker, setWorker] = useState(false);
+  const [feedbackEnabled, setFeedbackEnabled] = useState(false);
   const [policy, setPolicy] = useState<SharePolicy | null>(null);
   const [feedback, setFeedback] = useState<ShareFeedback | null>(null);
   const [expiry, setExpiry] = useState('');
@@ -42,9 +43,10 @@ export function ShareAccess({
     const reload = async () => {
       const settings = await api.cloudSettings();
       if (!live) return;
-      setWorker(settings.provider === 'worker');
-      if (!link || settings.provider !== 'worker') return;
-      const results = await Promise.allSettled([api.getSharePolicy(id), api.shareFeedback(id)]);
+      const supported = settings.provider === 'worker' || settings.provider === 'hosted';
+      setWorker(supported); setFeedbackEnabled(settings.provider === 'worker');
+      if (!link || !supported) return;
+      const results = await Promise.allSettled([api.getSharePolicy(id), settings.provider === 'worker' ? api.shareFeedback(id) : Promise.resolve(null)]);
       if (!live) return;
       if (results[0].status === 'fulfilled') {
         setPolicy(results[0].value);
@@ -77,7 +79,7 @@ export function ShareAccess({
       const current = await api.getSharePolicy(id);
       setPolicy(current);
       setExpiry(localDate(current.expiresAt));
-      setFeedback(await api.shareFeedback(id));
+      if (feedbackEnabled) setFeedback(await api.shareFeedback(id));
       setError('');
     } finally {
       setBusy(false);
@@ -99,7 +101,7 @@ export function ShareAccess({
           type="password"
           autoComplete="new-password"
           minLength={8}
-          maxLength={1024}
+          maxLength={feedbackEnabled ? 1024 : 256}
           value={draft.password ?? ''}
           placeholder={policy?.protected ? 'Leave empty to keep password' : 'At least 8 characters'}
           onChange={(event) => {
@@ -167,7 +169,7 @@ export function ShareAccess({
           {error}
         </p>
       )}
-      {link && (
+      {link && feedbackEnabled && (
         <>
           <h3>Shared video feedback</h3>
           <p className="fine-print">

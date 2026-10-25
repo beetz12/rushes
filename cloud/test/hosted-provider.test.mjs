@@ -149,3 +149,12 @@ test('bounded JSON accepts the maximum declared chapter and summary metadata eve
   const detail={id:ID,url:`https://bounded.example.test/s/${SHARE}`,state:'ready',manifest,video:{kind:'video',file,bytes:1,sha256}},bytes=new TextEncoder().encode(JSON.stringify(detail));assert.ok(bytes.length>900000&&bytes.length<1024**2);
   const value=await boundedProvider(responseStream(bytes,bytes.length).response).get(ID);assert.equal(value.manifest.chapters.length,500);assert.equal(value.manifest.summary.length,5000);
 });
+test('hosted-specific chapter limits and encoded request bound refuse before network',async t=>{
+  const f=await fixture(t),p=f.provider(),s=await p.reserve({title:'Metadata bounds'}),asset=await p.upload(s,await f.asset());
+  for(const chapters of [Array.from({length:201},(_,i)=>({startMs:i,title:'a'})),[{startMs:0,title:'a'.repeat(201)}]]){
+    const before=f.state.calls.length;await assert.rejects(()=>p.publish(s,{video:asset,width:320,height:180,durationMs:1000,chapters}),error=>error.code==='INVALID_METADATA');assert.equal(f.state.calls.length,before);
+  }
+  const allowed=Array.from({length:200},(_,i)=>({startMs:i,title:'a'.repeat(200)}));await p.publish(s,{video:asset,width:320,height:180,durationMs:1000,chapters:allowed});
+  const before=f.state.calls.length,escaped=allowed.map(chapter=>({...chapter,title:'\u0001'.repeat(200)}));
+  await assert.rejects(()=>p.publish(s,{video:asset,width:320,height:180,durationMs:1000,chapters:escaped}),error=>error.code==='INVALID_METADATA');assert.equal(f.state.calls.length,before);
+});

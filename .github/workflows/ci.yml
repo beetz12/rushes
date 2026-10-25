@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main, codex/browser-production-20261022]
+    branches: [main, codex/browser-production-20261022, codex/mac-web-release-20261024]
   pull_request:
 
 permissions:
@@ -10,7 +10,8 @@ permissions:
 
 jobs:
   gate:
-    name: check.sh (build, tests, clean-room, notices)
+    if: github.repository == 'beetz12/rushes' && github.event.repository.private == false
+    name: Mac and shipped web (build, tests, clean-room, notices)
     runs-on: macos-latest
     timeout-minutes: 150
     steps:
@@ -59,9 +60,10 @@ jobs:
         env:
           RUSHES_M1_PROOF: ${{ runner.temp }}/rushes-browser-proof
           RUSHES_UI_PROOF: ${{ runner.temp }}/rushes-browser-ui
+          RUSHES_WEB_PROOF: ${{ runner.temp }}/rushes-web-proof
         run: |
           set -euo pipefail
-          bash scripts/check.sh 2>&1 | tee "$RUNNER_TEMP/rushes-source-gate.log"
+          bash scripts/check-mac-web.sh 2>&1 | tee "$RUNNER_TEMP/rushes-source-gate.log"
       - name: Preserve generated browser failure evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -81,6 +83,8 @@ jobs:
             ${{ runner.temp }}/rushes-browser-proof/audio-retirement-*.log
             ${{ runner.temp }}/rushes-browser-ui/*.webm
             ${{ runner.temp }}/rushes-browser-ui/*.json
+            ${{ runner.temp }}/rushes-web-proof/*.png
+            ${{ runner.temp }}/rushes-web-proof/*.json
       - name: Collect only owned engine crash stack metadata
         if: always()
         run: |
@@ -103,6 +107,7 @@ jobs:
 
 
   smoke:
+    if: github.repository == 'beetz12/rushes' && github.event.repository.private == false
     name: release engine + CLI smoke (stub capture)
     runs-on: macos-latest
     timeout-minutes: 40
