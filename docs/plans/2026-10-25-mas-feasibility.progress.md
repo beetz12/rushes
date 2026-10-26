@@ -1,3 +1,9 @@
+# Current checkpoint - October25,2026 Eastern
+
+Local sandbox mechanics/diagnostic gate accepted; full App Store capture/export/profile qualification remains OPEN. Public first gate40261473389failed in the existing writer-budget fixture. T3 now has a causal strict-pool fixture repair, independent review and fresh full local gate0; publication/new exact-head hosted gate are next. No100/250/500ms bound or production source changed. The pending own-Apple-enrollment question is required for the full MAS step; no account purchase or configuration is assumed.
+
+## Preserved execution history
+
 # Rushes MAS feasibility progress
 
 2026-10-25 Eastern: New authorized Store-first spike; no previous run resumed. Base23ab6d6. Full diagnostic baseline running before edits; maker read-only. No product change, installation, provider write, purchase or private CI.
@@ -87,3 +93,17 @@ Source checkpoint234ed51 intentionally changes HEAD after the pre-commit receipt
 T-1/T-2 complete the local, reproducible feasibility decision and its test tooling. Original researched phase1's properly provisioned full application/physical capture/user-selected-folder/area/Quit acceptance remains UNRUN. The actual MAS bootstrap's incomplete signing/group configuration is held for legitimate owner setup. An account-status question is pending with David; no enrollment/purchase/signing-profile creation was performed.
 
 The approved production order is preserved: full MAS feasibility, real private cloud qualification, StoreKit/server lifecycle and Apple login/deletion, consumer migration/compatibility, then physical long TestFlight/operational/submission review. Actual prices and quota configuration remain unchanged. Installed0.1.3, originals and private185176a source remain intact; no default merge/release/deployment/privateActions/charges. Public feature-branch publication and CI must be reported from their own real provider state.
+
+## Hosted follow-up - real failure preserved
+
+Public branch bb2e881 was published asbeetz12; private-path-guard40261473314completed/success withrealguardstep. Public MAS workflow40261473389failed with source exit1 before nativeprobe. Actual failure: WriterFinalizeBudgetTests.parkedAppend elapsed0.254802041<0.25; total419native/Intents cases,oneissue. Raw source.log under durable ci-first-failure. No claim this is a sandbox failure or a proved scheduler cause. Current production writer/test file bytes equal the accepted base; bounded primary-source/controlled-executor diagnosis is underway inT3. No time bound, assertion or production source has been changed.
+
+## T3 local repair checkpoint - hosted acceptance still pending
+
+Actual `python3 scripts/mas-spike/check.py --output .../final-gate-t3` returned0; all5steps accepted,32receiptcontrols and fresh generated native2lifecycles/strictverification0. Normal source gate's native/Intents counts remained414+5; no production source changed.
+
+The failing fixture's deliberately blocked append producer moved from Task.detached onto a userInitiated Dispatch queue. Its completion uses an asynchronous DispatchGroup.notify/checked-continuation join. Original strict control: actual1 because append admission failed; original default:actual0. Corrected exact strict/default each actual0/one executed case; normal complete7-case writer-budget file0. This is a causal correction for the strict control's fixture premise, not proof of the exact historic254.802ms CI scheduling phase.
+
+All40 assertion/bound-bearing lines are unchanged. Reviewer independently compared34expects/4requires/12deadline lines, confirmed production Sources diffempty, ran strict/defaulttarget1case each actual0, and accepted the9-line fixture-only diff with notes. The source/media/cleanup assertions and100/250/500ms values are intact. The compiler's captured-CMSampleBuffer Sendable warning is a retained nonblocking test-only note; no suppression or production wrapper was added.
+
+Source-candidate code/review is ready for publicCI. T3status remainsin_progress until its actual exact-head hosted workflow passes. Retained reports: finalize-diagnosis/fixture-repair.json, review/t3-fixture-review.md/json, final-gate-t3/gate.json. Original first CI failure and original strict failure are retained. Original06:22:45Z horizon and inherited model remain unchanged.

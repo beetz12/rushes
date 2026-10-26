@@ -115,7 +115,10 @@ struct WriterFinalizeBudgetTests {
         f.writer.appendVideo(try frame())
         let barrier = DispatchSemaphore(value: 0); f.backend.appendBarrier = barrier
         let sample = try frame(33_333_333)
-        let append = Task.detached { f.writer.appendVideo(sample) }
+        // This barrier deliberately blocks its producer; keep that work off
+        // Swift's cooperative executor so the finalize waiter can resume.
+        let append = DispatchGroup()
+        DispatchQueue.global(qos: .userInitiated).async(group: append) { f.writer.appendVideo(sample) }
         #expect(f.backend.waitForAppend())
         DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(500)) { barrier.signal() }
         let start = DispatchTime.now()
@@ -124,7 +127,9 @@ struct WriterFinalizeBudgetTests {
         #expect(result.finalizeState == .degraded)
         #expect(result.framesWritten >= 1)
         #expect(PendingWriterFiles.shared.contains(in:f.root))
-        await append.value
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            append.notify(queue: .global(qos: .userInitiated)) { continuation.resume() }
+        }
         #expect(f.backend.counts.cancels == 0)
         #expect(try Data(contentsOf: f.backend.outputURL) == Data("retained fragment fixture".utf8))
     }

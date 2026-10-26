@@ -57,3 +57,22 @@ The JSON review preserves the earlier snapshots and now includes `current_review
 ### Correction - extra receipt recheck after the parent checkpoint
 
 The preceding final addendum incorrectly says my extra strict final receipt recheck returned0. Its actual exit was1, with `Source revision changed`: the parent checkpoint advanced HEAD while the receipt still names the pre-commit revision. This is the verifier's expected rejection of stale revision evidence, not a new native recording failure. The observed completed union gate still has all five actual0 results. A new post-commit receipt must be generated before claiming another strict0 recheck at the new HEAD. No source code change is requested. The JSON addendum now records the actual1 and both revision identities.
+
+
+## T3 fixture-only follow-up review
+
+# T3 fixture execution-context review
+
+Verdict: **ACCEPT-WITH-NOTES** for the nine-line test-only repair. The exact new-head hosted workflow still must pass before hosted qualification is claimed.
+
+The diff is limited to `parkedAppend`: the deliberately blocked append moves from `Task.detached` to a userInitiated GCD work item, tracked by a DispatchGroup. Completion joins through `withCheckedContinuation` and group notification; it does not block the task thread on a completion semaphore. The backend-entry assertion still proves that the append is parked before the response clock starts. This preserves the scenario being tested while removing its artificial cooperative-pool blocking.
+
+Personally compared old and new source: all34 `#expect` lines,4 `#require` lines,12 deadline lines, both500ms release lines, all250ms response bounds, PendingWriterFiles checks, cancellation counts and retained-original-byte checks are unchanged. There is no production `Sources` diff. The100ms finalize request,250ms caller response and500ms held append remain real assertions, not adjusted tolerances.
+
+Personally ran the settled binary with `swift test --skip-build --no-parallel --filter WriterFinalizeBudgetTests/parkedAppend`, once with process-local strict cooperative mode and once with that variable unset. Both actual exits0 and report1 test passed; totals0.536s and0.537s include waiting for the500ms producer release, while the unchanged measured-response assertion separately passed. SwiftPM briefly waited for the parent's existing build lock rather than running another build or install. Source bytes were unchanged across the checks. Own raw outputs and exits are in `review/t3-controls/results.json` and its named logs.
+
+Reviewed retained old/new maker logs and receipt: old strict exits1 at the admission assertion, old default exits0, new strict/default exit0, and the complete normal file passes7 cases. This demonstrates an unsupported fixture blocking premise and its narrow correction. It does not reproduce the historical hosted254.802041ms caller-response miss or identify that miss's exact timer/executor/scheduler phase. The earlier failure remains required evidence; neither these local passes nor the source-only nature of the patch erases it.
+
+The approach matches [Apple's documented handling of blocking work](https://developer.apple.com/videos/play/wwdc2022/110350/). The build retains a warning about the test's immutable CMSampleBuffer capture in a Sendable GCD closure. No suppression, broad import change or production concurrency annotation is introduced; the pinned build succeeds. This is a non-blocking fixture note, not evidence of a new data race.
+
+The parent is running the full source/diagnostic union at `final-gate-t3` and owns source checkpoint/publication and the actual new-head public CI result. This review accepts the patch and targeted controls; it does not prospectively claim those pending gates passed, accept full MAS/physical capture, or justify another fallback threshold or retry-until-green.

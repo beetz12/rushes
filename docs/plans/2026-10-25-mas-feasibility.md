@@ -94,6 +94,15 @@ answer questions mid-run. This document is the contract and the state file.
 - **Verify:** `python3 scripts/mas-spike/check.py` ->0 for source/tests/independent receipt verification; fresh non-writer review ->ACCEPT or ACCEPT-WITH-NOTES, preserving remaining Store gates.
 - **Status:** done
 
+### Phase 2: Hosted gate qualification after the diagnostic checkpoint
+
+#### T-3: Preserve the real writer response bound on the hosted runner
+- **Files:** Tests/RushCoreTests/WriterFinalizeBudgetTests.swift; Sources/RushCore/Writers/WriterFinalization.swift and TrackWriter.swift only if a causal production defect is demonstrated; docs/plans/2026-10-25-mas-feasibility.progress.md; bounded diagnostic evidence outside Git.
+- **Depends on:** T-2
+- **Acceptance:** WHEN the public source gate runs THE SYSTEM SHALL preserve its actual100ms finalize budget,250ms caller-response assertions, original/media ownership and cleanup assertions. Retain run40261473389's actual254.802041ms failure. Diagnose against unchanged source and primary runtime guidance before edits. A demonstrably blocking fixture must use an appropriate execution context without increasing thresholds, deleting assertions, skipping checks or using a global environment workaround. Production changes require causal evidence. Both the source/diagnostic union and the exact new-head public hosted workflow must pass before hosted qualification is claimed; any residual historical cause uncertainty remains explicit.
+- **Verify:** `python3 scripts/mas-spike/check.py` ->0; targeted original/fixed supported-configuration controls with real exits and executed test counts; exact-head `gh run view` ->completed/success with the actual gate step successful; fresh non-writer review ->ACCEPT or ACCEPT-WITH-NOTES without altered bounds.
+- **Status:** in_progress
+
 ## 7. Verification protocol
 
 - Per task: run Verify before flipping Status to done and paste actual output/tallies into progress. Preserve complete raw failed and passing logs under durable evidence.
@@ -130,3 +139,5 @@ Store edition updates use Apple. The prior direct-download signed installer/upda
 - D-4: No app UI changes planned. Diagnostic bundles may use AppKit only to exercise sandbox boundaries, without redesigning the product or copying Loom assets.
 
 - D-5 (author, same user authority,2026-10-25): The explicit shared-code/CI-public requirement is implemented with a dedicated public-repository-only macOS feasibility workflow, reusing existing pinned actions. It runs the same final command with generated media and no signing secrets; it cannot qualify provisioned MAS or physical capture. Additive T-2 Files coverage includes .github/workflows, already scanned by the declared umbrella clean-room gate. No acceptance or stop bound changed; private Actions remain disabled.
+
+- D-6 (integration follow-up under existing test-everything/public-CI authority,2026-10-25): Public run40261473389 failed BEFOREthe new sandbox probe in an unchanged writer-budget test:254.802041ms vs250ms,419native/Intents cases withoneissue. T1/T2 local diagnostic evidence stays accepted, but public hosted acceptance is open. Add T3 to diagnose the actual source gate without weakening its bounds. Keep original failures and the original four-hour horizon; the purged completed local artifact run is not recreated or reset.
