@@ -101,7 +101,7 @@ answer questions mid-run. This document is the contract and the state file.
 - **Depends on:** T-2
 - **Acceptance:** WHEN the public source gate runs THE SYSTEM SHALL preserve its actual100ms finalize budget,250ms caller-response assertions, original/media ownership and cleanup assertions. Retain run40261473389's actual254.802041ms failure. Diagnose against unchanged source and primary runtime guidance before edits. A demonstrably blocking fixture must use an appropriate execution context without increasing thresholds, deleting assertions, skipping checks or using a global environment workaround. Production changes require causal evidence. Both the source/diagnostic union and the exact new-head public hosted workflow must pass before hosted qualification is claimed; any residual historical cause uncertainty remains explicit.
 - **Verify:** `python3 scripts/mas-spike/check.py` ->0; targeted original/fixed supported-configuration controls with real exits and executed test counts; exact-head `gh run view` ->completed/success with the actual gate step successful; fresh non-writer review ->ACCEPT or ACCEPT-WITH-NOTES without altered bounds.
-- **Status:** in_progress
+- **Status:** done
 
 ## 7. Verification protocol
 

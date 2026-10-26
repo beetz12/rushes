@@ -97,3 +97,29 @@ Independently recomputed the refined raw first-call windows. All four have real1
 Analysis must select first events inside the existing callerStart..callerReturn window. Raw later native completion and cached-finalize events remain preserved; using the last value for each phase would misclassify parkedCancellation. A delayed post-resume event append may leave that phase missing from a snapshot, which remains unknown. Recorder work, clock reads, locks and scheduling still add unquantified overhead. If the unchanged assertion's sampled elapsed differs from the raw return tick, post-return test scheduling is another possible gap; a recorded failure must remain a failure.
 
 No competing SPM build, install, runtime probe or source edit was performed by this reviewer. The parent still owns a fresh full union gate, publication of the diagnostic snapshot and ONE exact-head hosted observation before any phase diagnosis or hosted success claim. The earlier failures and all test bounds remain preserved.
+
+
+## Hosted instrumented artifact verdict
+
+# T3 hosted diagnostic verdict - October26,2026 Eastern
+
+Verdict: **ACCEPT-WITH-NOTES**. The current instrumented artifact at `f7a74b4d57e8dcfd3a38367134fafab24dc06030` meets T3's recorded observed exact-head public gate and unchanged-bound qualification. The parent owns final integration and goal status. This is not a claim that the historical failures' causes are solved or uninstrumented latency is universally reliable.
+
+Personally read the provider read-back for [public run40268717334](https://github.com/beetz12/rushes/actions/runs/40268717334): statuscompleted, conclusionsuccess, exact matching head, successful sandbox-spike job and actual Source gate and enforced native sandbox diagnostic step. Artifact `gate.json` records all five actual command exits0 and acceptedtrue. The actual source log reports419 native/Intents tests passed and ends with the complete source-gate success marker. The verifier-control log reports32 tests/OK; independent-receipt output accepts two generated native sandbox lifecycles while retaining full MAS and Store readinessfalse.
+
+Personally matched all three previously reviewed instrumentation source hashes against both current files and the exact committed CI head. The earlier DEBUG exclusion, release-token and unchanged-assertion review therefore still applies. No100ms budget,250ms response limit,500ms fixture hold, original/media or cleanup assertion was relaxed.
+
+I re-extracted all four raw trace JSON records directly from the actual source log and compared them with the saved extraction. First-call interpretation uses only events inside callerStart..callerReturn; late cached/native events remain retained.
+
+| Case | Caller response ms | Expiry entry after absolute deadline ms | Resume marker to caller ms |
+|---|---:|---:|---:|
+|parkedAppend|152.594625|52.537167|0.023541|
+|combinedBudget|188.746208|88.666334|0.035708|
+|parkedEndSession|173.857000|73.752125|0.038000|
+|parkedCancellation|196.473042|96.386459|0.048792|
+
+Each raw requested budget is100.002-100.004ms from finalize-entry, including observed entry/clock bookkeeping. All four existing250ms response checks passed, with zero dropped trace events. In this observed run, the large measured extra interval is before the expiry callback enters; outcome publication and caller resumption follow quickly. That does not distinguish GCD scheduling, timer delivery, process/VM preemption or other pre-callback causes.
+
+The old254.802041ms and253.525958ms failures have no equivalent raw timeline. The current green run does not retrospectively assign their phase or prove a functional product repair. Platform scheduling remains best-effort, and trace overhead remains unquantified. This does not qualify a population latency bound, guarantee another uninstrumented run, or justify future threshold changes or blind retries.
+
+The hosted result qualifies this diagnostic artifact only. Full properly provisioned Electron MAS capture, user-selected export, StoreKit/cloud and App Store release remain separate gates. The user's deferred Apple publishing work is not restarted here. No new broad test, SPM command, source edit, provider mutation, private Actions run or deployment was performed by this reviewer.
