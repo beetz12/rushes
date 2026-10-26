@@ -92,7 +92,7 @@ answer questions mid-run. This document is the contract and the state file.
 - **Depends on:** T-1
 - **Acceptance:** WHEN the whole spike is reviewed THE SYSTEM SHALL pass the declared source gate, independently rerun the observable probes and reject falsified acceptance/cleanup/entitlement evidence. The report must state the exact next condition for any full-MAS or physical test not performed.
 - **Verify:** `python3 scripts/mas-spike/check.py` ->0 for source/tests/independent receipt verification; fresh non-writer review ->ACCEPT or ACCEPT-WITH-NOTES, preserving remaining Store gates.
-- **Status:** pending
+- **Status:** done
 
 ## 7. Verification protocol
 
