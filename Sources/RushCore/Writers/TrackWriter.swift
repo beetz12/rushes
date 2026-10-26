@@ -591,6 +591,14 @@ public final class TrackWriter: @unchecked Sendable {
 
     // MARK: - Finalize
 
+#if DEBUG
+    /// Install only before finalization, with no concurrent calls. Release builds
+    /// contain neither this test hook nor the recorder.
+    internal func setFinalizationTrace(_ trace: WriterFinalizationTrace?) {
+        finalization.trace = trace
+    }
+#endif
+
     /// Pads the track to a common end and finishes the file, bounded by
     /// `deadline`.
     ///
@@ -608,15 +616,35 @@ public final class TrackWriter: @unchecked Sendable {
         endMediaTimeNs: Int64? = nil,
         deadline: Duration = .seconds(5)
     ) async -> TrackWriterStatus {
+#if DEBUG
+        let entryTick = DispatchTime.now().uptimeNanoseconds
+        finalization.trace?.record(.finalizeEntry, at: entryTick)
+#endif
         let parts = deadline.components
         let ns = max(0, min(Double(Int64.max / 2),
             Double(parts.seconds) * 1e9 + Double(parts.attoseconds) / 1e9))
         let absoluteDeadline = DispatchTime.now() + .nanoseconds(Int(ns))
         return await withCheckedContinuation { continuation in
             guard let finishNative = finalization.join(continuation) else { return }
+#if DEBUG
+            finalization.trace?.record(.joined, absoluteDeadline: absoluteDeadline.uptimeNanoseconds)
+#endif
+#if DEBUG
+            let enqueueTick = DispatchTime.now().uptimeNanoseconds
+#endif
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: absoluteDeadline) { [finalization] in
+#if DEBUG
+                let expiryTick = DispatchTime.now().uptimeNanoseconds
+                finalization.trace?.record(.expiryCallbackEntered, at: expiryTick)
+#endif
                 finalization.expire()
             }
+#if DEBUG
+            let enqueuedTick = DispatchTime.now().uptimeNanoseconds
+            finalization.trace?.record(.timerEnqueue, at: enqueueTick,
+                                       absoluteDeadline: absoluteDeadline.uptimeNanoseconds)
+            finalization.trace?.record(.timerEnqueued, at: enqueuedTick)
+#endif
             if finishNative {
                 queue.async {
                     self.finishOnQueue(endMediaTimeNs: endMediaTimeNs, deadline: absoluteDeadline)
@@ -626,6 +654,10 @@ public final class TrackWriter: @unchecked Sendable {
     }
 
     private func finishOnQueue(endMediaTimeNs: Int64?, deadline: DispatchTime) {
+#if DEBUG
+        let queueTick = DispatchTime.now().uptimeNanoseconds
+        finalization.trace?.record(.nativeQueueEntered, at: queueTick)
+#endif
         finishDeadline = deadline
         finalizeState = .finalizing
         publishStatus()

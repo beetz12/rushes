@@ -1,3 +1,9 @@
+# Current checkpoint - October25,2026 Eastern, hosted diagnostic pass2
+
+T1/T2 local native sandbox mechanics accepted; full MAS/physical/StoreReady remainFALSE. Hosted gate OPEN after two real250ms-family misses:40261473389 parkedAppend254.802ms and40263210083 parkedEndSession253.526ms. The fixture producer repair is preserved and its case passed in the second run; the general timing phase is still UNKNOWN. ResearchbreakCONSTRAINT is recorded in active goal state. Fresh pass2 maker is implementing DEBUG-only opt-in raw timestamps with no timer/QoS/deadline/assertion/release policy change, before one instrumented public diagnostic. No third blind retry. Currentpublished01d144b, backendprivate185176a unchanged/Actionsdisabled, installed0.1.3 unchanged. Own Apple enrollment status pending. Activeboundedrun solo-20261026T030746Z-p3287-0 pass2/max5; original06:22:45UTCdeadline unchanged.
+
+## Previous checkpoints and retained evidence
+
 # Current checkpoint - October25,2026 Eastern
 
 Local sandbox mechanics/diagnostic gate accepted; full App Store capture/export/profile qualification remains OPEN. Public first gate40261473389failed in the existing writer-budget fixture. T3 now has a causal strict-pool fixture repair, independent review and fresh full local gate0; publication/new exact-head hosted gate are next. No100/250/500ms bound or production source changed. The pending own-Apple-enrollment question is required for the full MAS step; no account purchase or configuration is assumed.
@@ -107,3 +113,11 @@ The failing fixture's deliberately blocked append producer moved from Task.detac
 All40 assertion/bound-bearing lines are unchanged. Reviewer independently compared34expects/4requires/12deadline lines, confirmed production Sources diffempty, ran strict/defaulttarget1case each actual0, and accepted the9-line fixture-only diff with notes. The source/media/cleanup assertions and100/250/500ms values are intact. The compiler's captured-CMSampleBuffer Sendable warning is a retained nonblocking test-only note; no suppression or production wrapper was added.
 
 Source-candidate code/review is ready for publicCI. T3status remainsin_progress until its actual exact-head hosted workflow passes. Retained reports: finalize-diagnosis/fixture-repair.json, review/t3-fixture-review.md/json, final-gate-t3/gate.json. Original first CI failure and original strict failure are retained. Original06:22:45Z horizon and inherited model remain unchanged.
+
+## Pass2 diagnostic checkpoint - no timer policy change
+
+Researchbreak followed two retained public misses before further publication. The fresh maker added opt-in DEBUG-only bounded actual phase timestamps in the two writer files and named fixture cases. Timer/QoS/100-250-500ms/assertions and release product tokens are unchanged after preprocessing. The recorder reserves32events before timing; actual resume is issued before appending its saved tick. Raw late cached-call events are retained and first-response analysis must use callerStart..callerReturn.
+
+Actual refined checks:7defaulttests0;7trace-enabledtests0; scopedcleanmetric0; release engine build0(21.96s); positive/negative nmcontrol124trace-symbolsinDEBUG/0inRELEASE with33ordinarywritersymbolsremaining. Independent non-writer ACCEPT-WITH-NOTES recomputed the raw calibration and reviewed release exclusion. Local parkedEndSession:requested100.001166ms, expiry+6.025125ms, resume-marker-to-caller0.027833ms, actual nativehold500.956916ms. Observer/preemption overhead is not claimed zero; missing observations remainunknown. No historic hosted cause is proved.
+
+Parent freshfull `RUSHES_FINALIZE_TRACE=1 python3 scripts/mas-spike/check.py --output .../pass2-precision-local-gate` actual0:all5stepsaccepted,32controls, native2generatedlifecycles and independentreceipt0. Step-scopedpublicworkflowtraceflag collects only test diagnostics; no global scheduler/AppNap override. One instrumented public run is next; T3 hosted qualification remainsin_progress. No enrollment is pursued; David explicitly deferred license acquisition and requested a private competitive/GTM assessment. That strategy has its own private artifacts and no adspend/messages/offerchange.

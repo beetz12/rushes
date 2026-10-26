@@ -20,6 +20,9 @@ struct WriterFinalizeBudgetTests {
         var appendBarrier: DispatchSemaphore?
         let appendEntered = DispatchSemaphore(value: 0)
         var endDelay: TimeInterval = 0
+#if DEBUG
+        var trace: WriterFinalizationTrace?
+#endif
         var finishDelay: TimeInterval?
         var cancelBarrier: DispatchSemaphore?
         let cancelEntered = DispatchSemaphore(value: 0)
@@ -33,7 +36,15 @@ struct WriterFinalizeBudgetTests {
         func setReady(_ value: Bool) { lock.withLock { ready = value } }
         func startWriting() -> Bool { true }
         func startSession() {}
-        func endSession(atMediaNs: Int64) { Thread.sleep(forTimeInterval: endDelay) }
+        func endSession(atMediaNs: Int64) {
+#if DEBUG
+            trace?.record(.fixtureEndSessionBegin)
+#endif
+            Thread.sleep(forTimeInterval: endDelay)
+#if DEBUG
+            trace?.record(.fixtureEndSessionEnd)
+#endif
+        }
         func appendVideoFrame(_ buffer: CVPixelBuffer, mediaTimeNs: Int64) -> Bool {
             if let appendBarrier { appendEntered.signal(); _ = appendBarrier.wait(timeout: .now() + 1) }
             lock.withLock { appends += 1 }; return true
@@ -83,7 +94,11 @@ struct WriterFinalizeBudgetTests {
         let root: URL
         let backend: Backend
         let writer: TrackWriter
-        init() throws {
+#if DEBUG
+        let trace: WriterFinalizationTrace?
+        let traceCase: String?
+#endif
+        init(traceCase: String? = nil) throws {
             root = FileManager.default.temporaryDirectory.appendingPathComponent("writer-budget-\(UUID())")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let url = root.appendingPathComponent("screen.mov")
@@ -91,8 +106,38 @@ struct WriterFinalizeBudgetTests {
             backend = Backend(url)
             writer = try TrackWriter(configuration: .screen(outputURL: url, width: 32, height: 32, codec: .h264),
                                      clock: SessionClock(epochNs: 0), factory: Factory(backend: backend))
+#if DEBUG
+            self.traceCase = traceCase
+            trace = traceCase != nil && ProcessInfo.processInfo.environment["RUSHES_FINALIZE_TRACE"] == "1"
+                ? WriterFinalizationTrace() : nil
+            backend.trace = trace
+            writer.setFinalizationTrace(trace)
+#endif
         }
-        func close() { backend.complete(); try? FileManager.default.removeItem(at: root) }
+        func close() {
+            backend.complete(); try? FileManager.default.removeItem(at: root)
+#if DEBUG
+            // The original timed assertions and owned fixture cleanup precede I/O.
+            guard let trace, let traceCase else { return }
+            let snapshot = trace.snapshot()
+            let observed = Set(snapshot.events.map { $0.phase })
+            let payload: [String: Any] = [
+                "schema": "rushes-finalize-trace-v1", "case": traceCase,
+                "clock": "DispatchTime.uptimeNanoseconds", "recordLimit": WriterFinalizationTrace.limit,
+                "droppedEvents": snapshot.dropped, "terminalState": writer.status().finalizeState.rawValue,
+                "events": snapshot.events.map { event in
+                    var row: [String: Any] = ["phase": event.phase.rawValue, "uptimeNanoseconds": event.uptimeNanoseconds]
+                    if let deadline = event.absoluteDeadlineNanoseconds { row["absoluteDeadlineNanoseconds"] = deadline }
+                    return row
+                },
+                "unknownPhases": WriterFinalizationTrace.Phase.allCases.filter { !observed.contains($0) }.map(\.rawValue)
+            ]
+            do {
+                let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
+                print("RUSHES_FINALIZE_TRACE " + String(decoding: data, as: UTF8.self))
+            } catch { Issue.record("Could not encode finalization trace: \(error)") }
+#endif
+        }
     }
     private func frame(_ ns: Int64 = 0) throws -> CMSampleBuffer {
         var pixel: CVPixelBuffer?
@@ -111,7 +156,7 @@ struct WriterFinalizeBudgetTests {
 
     @Test("Queue admission is inside the finish budget")
     func parkedAppend() async throws {
-        let f = try Fixture(); defer { f.close() }
+        let f = try Fixture(traceCase: "parkedAppend"); defer { f.close() }
         f.writer.appendVideo(try frame())
         let barrier = DispatchSemaphore(value: 0); f.backend.appendBarrier = barrier
         let sample = try frame(33_333_333)
@@ -123,7 +168,14 @@ struct WriterFinalizeBudgetTests {
         DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(500)) { barrier.signal() }
         let start = DispatchTime.now()
         let result = await f.writer.finalize(deadline: .milliseconds(100))
+#if DEBUG
+        let returnTick = DispatchTime.now().uptimeNanoseconds
+#endif
         #expect(elapsed(start) < 0.25)
+#if DEBUG
+        f.trace?.record(.callerStart, at: start.uptimeNanoseconds)
+        f.trace?.record(.callerReturn, at: returnTick)
+#endif
         #expect(result.finalizeState == .degraded)
         #expect(result.framesWritten >= 1)
         #expect(PendingWriterFiles.shared.contains(in:f.root))
@@ -136,23 +188,37 @@ struct WriterFinalizeBudgetTests {
 
     @Test("Drain, padding and hung native completion share one budget")
     func combinedBudget() async throws {
-        let f = try Fixture(); defer { f.close() }
+        let f = try Fixture(traceCase: "combinedBudget"); defer { f.close() }
         f.writer.appendVideo(try frame()); f.backend.setReady(false)
         f.writer.appendVideo(try frame(33_333_333))
         let start = DispatchTime.now()
         let result = await f.writer.finalize(endMediaTimeNs: 1_000_000_000, deadline: .milliseconds(100))
+#if DEBUG
+        let returnTick = DispatchTime.now().uptimeNanoseconds
+#endif
         #expect(elapsed(start) < 0.25)
+#if DEBUG
+        f.trace?.record(.callerStart, at: start.uptimeNanoseconds)
+        f.trace?.record(.callerReturn, at: returnTick)
+#endif
         #expect(result.finalizeState == .degraded)
         #expect(f.backend.counts.cancels == 0)
     }
 
     @Test("A synchronous native endSession cannot extend the response budget")
     func parkedEndSession() async throws {
-        let f = try Fixture(); defer { f.close() }
+        let f = try Fixture(traceCase: "parkedEndSession"); defer { f.close() }
         f.writer.appendVideo(try frame()); f.backend.endDelay = 0.5
         let start = DispatchTime.now()
         let result = await f.writer.finalize(endMediaTimeNs: 1_000_000_000, deadline: .milliseconds(100))
+#if DEBUG
+        let returnTick = DispatchTime.now().uptimeNanoseconds
+#endif
         #expect(elapsed(start) < 0.25)
+#if DEBUG
+        f.trace?.record(.callerStart, at: start.uptimeNanoseconds)
+        f.trace?.record(.callerReturn, at: returnTick)
+#endif
         #expect(result.finalizeState == .degraded)
         // Allow the owned backend to leave its synchronous operation before cleanup.
         #expect(PendingWriterFiles.shared.contains(in:f.root))
@@ -209,14 +275,21 @@ struct WriterFinalizeBudgetTests {
 
     @Test("Joining a cancellation still obeys the first finalize deadline")
     func parkedCancellation() async throws {
-        let f=try Fixture(); defer { f.close() }
+        let f=try Fixture(traceCase: "parkedCancellation"); defer { f.close() }
         let barrier=DispatchSemaphore(value:0); f.backend.cancelBarrier=barrier
         let cancel=Task { await f.writer.cancel() }
         #expect(f.backend.waitForCancel())
         DispatchQueue.global().asyncAfter(deadline:.now() + .milliseconds(500)) { barrier.signal() }
         let start=DispatchTime.now()
         let result=await f.writer.finalize(deadline:.milliseconds(100))
+#if DEBUG
+        let returnTick = DispatchTime.now().uptimeNanoseconds
+#endif
         #expect(elapsed(start)<0.25)
+#if DEBUG
+        f.trace?.record(.callerStart, at: start.uptimeNanoseconds)
+        f.trace?.record(.callerReturn, at: returnTick)
+#endif
         #expect(result.finalizeState == .degraded)
         #expect(PendingWriterFiles.shared.contains(in:f.root))
         await cancel.value

@@ -76,3 +76,24 @@ Reviewed retained old/new maker logs and receipt: old strict exits1 at the admis
 The approach matches [Apple's documented handling of blocking work](https://developer.apple.com/videos/play/wwdc2022/110350/). The build retains a warning about the test's immutable CMSampleBuffer capture in a Sendable GCD closure. No suppression, broad import change or production concurrency annotation is introduced; the pinned build succeeds. This is a non-blocking fixture note, not evidence of a new data race.
 
 The parent is running the full source/diagnostic union at `final-gate-t3` and owns source checkpoint/publication and the actual new-head public CI result. This review accepts the patch and targeted controls; it does not prospectively claim those pending gates passed, accept full MAS/physical capture, or justify another fallback threshold or retry-until-green.
+
+
+## DEBUG deadline diagnostic review
+
+# Deadline trace independent review
+
+Verdict: **ACCEPT-WITH-NOTES** for the refined DEBUG-only measurement. This is not a timing fix, proof of either historical failure's phase, full MAS acceptance or hosted qualification.
+
+Personally read all three diffs against01d144b and verified the current source hashes against the refined component receipt. The collector is enabled only by test setup with `RUSHES_FINALIZE_TRACE=1`; it is absent from release compilation. It caps one writer's raw event buffer at32 entries, reserves capacity during setup and reports dropped/unknown events. It uses actual DispatchTime uptime values and the already-computed absolute deadline. There is no injected clock, replacement timer, changed QoS, new activity assertion or tolerance change.
+
+Both resume paths now capture a tick immediately before the actual continuation resume, invoke resume, then append that saved event. Recorder locking/allocation no longer precedes issuance of that resume event. Winning outcome-assignment time is captured only in the winning branch under the existing outcome lock; observer recording occurs after that lock is released. Clock reads precede observer locks. JSON/I/O occurs in fixture close after existing timed assertions and cleanup. The recorder does not call status or arbitrary callbacks from the timed expiry path.
+
+Personally stripped DEBUG blocks and compared literal-preserving lexical tokens of both product writer files against01d144b: equal, allowing optional semicolon/whitespace formatting only. This is source-behavior evidence, not a claim that complete release binaries are byte-identical. All34 expect lines,4 require lines,12 deadline lines, both500ms release lines, all250ms limits, pending-file, cancellation-count and original-byte checks remain exact. The100ms budget and both userInitiated queues are unchanged.
+
+Read the refined release build's actual0 receipt and `Build complete! (21.96 sec)`, and the trace-off/on seven-case actual0 receipts with matching log tallies. Independently rehashed both compiled WriterFinalization objects and ran nm: DEBUG has124 trace symbols, Release has0. This positive/negative control confirms the observer is compiled in only for DEBUG on the measured artifacts.
+
+Independently recomputed the refined raw first-call windows. All four have real100ms deadlines, zero dropped events and caller response105.852-106.449ms in these local samples. For parkedEndSession, expiry enters6.025125ms after the actual deadline; resume-marker to caller is27.833 microseconds, while the native endSession hold is500.956916ms. These observed data establish calibration only, not latency equivalence across hosts or cause of the old253.5/254.8ms failures.
+
+Analysis must select first events inside the existing callerStart..callerReturn window. Raw later native completion and cached-finalize events remain preserved; using the last value for each phase would misclassify parkedCancellation. A delayed post-resume event append may leave that phase missing from a snapshot, which remains unknown. Recorder work, clock reads, locks and scheduling still add unquantified overhead. If the unchanged assertion's sampled elapsed differs from the raw return tick, post-return test scheduling is another possible gap; a recorded failure must remain a failure.
+
+No competing SPM build, install, runtime probe or source edit was performed by this reviewer. The parent still owns a fresh full union gate, publication of the diagnostic snapshot and ONE exact-head hosted observation before any phase diagnosis or hosted success claim. The earlier failures and all test bounds remain preserved.

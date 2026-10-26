@@ -60,6 +60,7 @@ jobs:
       - name: Source gate and enforced native sandbox diagnostic
         env:
           RUSHES_MAS_EVIDENCE_DIR: ${{ runner.temp }}/rushes-mas-spike.noindex
+          RUSHES_FINALIZE_TRACE: '1'
         run: python3 scripts/mas-spike/check.py
       - name: Preserve generated diagnostic evidence
         if: always()

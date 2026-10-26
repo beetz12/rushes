@@ -13,6 +13,10 @@ internal final class WriterFinalization: @unchecked Sendable {
     private var snapshot: TrackWriterStatus
     private var outcome: TrackWriterStatus?
     private var waiters: [CheckedContinuation<TrackWriterStatus, Never>] = []
+#if DEBUG
+    // Test-only opt-in, installed before any finalize call and never replaced.
+    var trace: WriterFinalizationTrace?
+#endif
 
     init(_ initial: TrackWriterStatus, fileURL: URL) { snapshot = initial; self.fileURL = fileURL }
     var accepting: Bool { lock.withLock { !sealed } }
@@ -39,7 +43,15 @@ internal final class WriterFinalization: @unchecked Sendable {
             snapshot = snapshot.withFinalization(.finalizing)
             return (finish, nil)
         }
-        if let outcome = result.1 { waiter.resume(returning: outcome) }
+        if let outcome = result.1 {
+#if DEBUG
+            let resumeTick = DispatchTime.now().uptimeNanoseconds
+#endif
+            waiter.resume(returning: outcome)
+#if DEBUG
+            trace?.record(.waiterResumeIssued, at: resumeTick)
+#endif
+        }
         return result.0
     }
 
@@ -61,11 +73,30 @@ internal final class WriterFinalization: @unchecked Sendable {
     }
 
     func resolve(_ value: TrackWriterStatus) {
+#if DEBUG
+        var publicationTick: UInt64?
+#endif
         let pending: [CheckedContinuation<TrackWriterStatus, Never>] = lock.withLock {
             guard outcome == nil else { return [] }
-            outcome = value; let pending = waiters; waiters.removeAll(); return pending
+            outcome = value
+#if DEBUG
+            if trace != nil { publicationTick = DispatchTime.now().uptimeNanoseconds }
+#endif
+            let pending = waiters; waiters.removeAll(); return pending
         }
-        for waiter in pending { waiter.resume(returning: value) }
+#if DEBUG
+        // Capture under the outcome lock, but never acquire the recorder lock there.
+        if let publicationTick { trace?.record(.winningResolvePublished, at: publicationTick) }
+#endif
+        for waiter in pending {
+#if DEBUG
+            let resumeTick = DispatchTime.now().uptimeNanoseconds
+#endif
+            waiter.resume(returning: value)
+#if DEBUG
+            trace?.record(.waiterResumeIssued, at: resumeTick)
+#endif
+        }
     }
 }
 
@@ -94,3 +125,39 @@ internal final class PendingWriterFiles: @unchecked Sendable {
         return lock.withLock { files.values.contains { $0.path.hasPrefix(path) } }
     }
 }
+
+#if DEBUG
+/// Raw monotonic ticks for one opted-in test writer. Recording performs no I/O;
+/// callers capture ticks before this recorder's lock. Absent phases stay unknown.
+internal final class WriterFinalizationTrace: @unchecked Sendable {
+    enum Phase: String, CaseIterable {
+        case callerStart, finalizeEntry, joined, timerEnqueue, timerEnqueued
+        case nativeQueueEntered, fixtureEndSessionBegin, fixtureEndSessionEnd
+        case expiryCallbackEntered, winningResolvePublished, waiterResumeIssued, callerReturn
+    }
+    struct Event {
+        let phase: Phase
+        let uptimeNanoseconds: UInt64
+        let absoluteDeadlineNanoseconds: UInt64?
+    }
+    static let limit = 32
+    private let lock = NSLock()
+    private var events: [Event] = []
+    private var dropped = 0
+
+    init() { events.reserveCapacity(Self.limit) }
+
+    func record(_ phase: Phase, at tick: UInt64 = DispatchTime.now().uptimeNanoseconds,
+                absoluteDeadline: UInt64? = nil) {
+        let event = Event(phase: phase, uptimeNanoseconds: tick, absoluteDeadlineNanoseconds: absoluteDeadline)
+        lock.withLock {
+            if events.count < Self.limit { events.append(event) }
+            else { dropped += 1 }
+        }
+    }
+
+    func snapshot() -> (events: [Event], dropped: Int) {
+        lock.withLock { (events.sorted { $0.uptimeNanoseconds < $1.uptimeNanoseconds }, dropped) }
+    }
+}
+#endif
