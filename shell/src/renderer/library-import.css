@@ -1,0 +1,9 @@
+/* Keep Import beside New recording at the right of the Library heading. */
+.page-heading > .library-import {
+  margin-left: auto;
+  margin-right: -8px;
+  white-space: nowrap;
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

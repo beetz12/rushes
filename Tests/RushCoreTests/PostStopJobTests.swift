@@ -269,6 +269,41 @@ struct PostStopJobTests {
         #expect(try fixture.package.readManifest().verified == nil)
         #expect(!FileManager.default.fileExists(atPath:fixture.package.folderURL.appendingPathComponent("verification.json").path))
     }
+    @Test func retainedFailedTakeGetsDiagnosticDecodeWithoutSuccessfulStamp() async throws {
+        let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
+        let hashes=try fixture.hashes()
+        var manifest=try fixture.package.readManifest(); manifest.status = .failed
+        try fixture.package.writeManifest(manifest)
+        let service=PostStopJobService(root:fixture.root,executor:NativePostStopJobExecutor())
+        let queued=try await service.enqueueAfterStop(id:fixture.package.id)
+        #expect(queued.map(\.kind) == [.verify])
+        await service.waitUntilIdle()
+        let job=try #require(try await service.list().jobs.first)
+        #expect(job.status == .failed && job.error?.code == "verification-failed")
+        let report=try JSONDecoder().decode(PostStopVerificationReport.self,from:Data(contentsOf:fixture.package.folderURL.appendingPathComponent("verification.json")))
+        #expect(!report.ok && report.trackChecks.count == 4 && report.trackChecks.allSatisfy(\.ok))
+        #expect(try fixture.package.readManifest().status == .failed)
+        #expect(try fixture.package.readManifest().verified?.ok == false)
+        #expect(try fixture.hashes() == hashes)
+    }
+    @Test func nativeFinalizationLeaseDefersDecodeAndResumesWithoutInventingAStamp() async throws {
+        let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
+        let token=UUID(); PendingWriterFiles.shared.begin(token,url:fixture.package.trackURL(for:.screen))
+        defer { PendingWriterFiles.shared.end(token) }
+        let backend=JobFixtureExecutor(realVerification:true),service=PostStopJobService(root:fixture.root,executor:backend)
+        _=try await service.enqueueAfterStop(id:fixture.package.id); await service.waitUntilIdle()
+        let pending=try #require(try await service.list().jobs.first(where:{$0.kind == .verify}))
+        #expect(pending.status == .failed && pending.error?.code == "finalization-pending")
+        #expect(pending.nextRetryAt != nil)
+        #expect(try fixture.package.readManifest().verified == nil)
+        #expect(!FileManager.default.fileExists(atPath:fixture.package.folderURL.appendingPathComponent("verification.json").path))
+        PendingWriterFiles.shared.end(token)
+        _=try await service.resume(); await service.waitUntilIdle()
+        let complete=try #require(try await service.list().jobs.first(where:{$0.kind == .verify}))
+        #expect(complete.status == .done && complete.attempts == 2)
+        #expect(try fixture.package.readManifest().verified?.ok == true)
+        try await service.shutdown()
+    }
     @Test func cancellingActiveWorkStaysTerminalThroughCaptureAndShutdown() async throws {
         let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
         let backend=JobFixtureExecutor(holdSpeech:true),service=PostStopJobService(root:fixture.root,executor:backend)

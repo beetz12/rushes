@@ -1,7 +1,12 @@
 import { build } from 'electron-builder';
 import { access } from 'node:fs/promises';
+import { packageSigning } from './package-signing.mjs';
+import { packageTargets, installerTargets } from './package-targets.mjs';
+import { nativeHelperBeforeSigning } from './package-helper.mjs';
+const signing = packageSigning(process.env);
 for (const f of ['../.build/release/rushcore-engine', '../.build/release/rushes']) await access(f);
-const config = process.env.RUSHES_SIGN_IDENTITY
-  ? { mac: { identity: process.env.RUSHES_SIGN_IDENTITY, type: 'development', notarize: false } }
-  : {};
-await build({ mac: ['dir'], publish: 'never', config });
+const selection = packageTargets(signing, process.env);
+const config = { ...signing, mac: selection.mac };
+config.afterPack = nativeHelperBeforeSigning(config);
+console.log(`Packaging ${installerTargets.join(', ')} for arm64 as ${selection.label}.`);
+await build({ mac: [...installerTargets], arm64: true, publish: 'never', config });

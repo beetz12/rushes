@@ -263,3 +263,31 @@ test('bucket owner policy and feedback capabilities reject explicitly without re
     assert.equal(f.sessions.size, 0);
     assert.equal(await f.store.read(ID), undefined);
 });
+test('Worker share pages advertise oEmbed discovery; static bucket pages do not', () => { const m = { schema: 'rushes.share/1', id: ID, title: 'Embed "me"', status: 'ready', createdAt: '2026-11-06', durationMs: 1, video: { file: 'video-abcdef12.mp4', width: 1280, height: 720, bytes: 1 } }; const worker = viewerPage(m, 'https://share.example/', true); assert.ok(worker.includes(`<link rel="alternate" type="application/json+oembed" href="https://share.example/oembed?url=${encodeURIComponent(`https://share.example/s/${ID}`)}&amp;format=json" title="Embed &quot;me&quot;">`)); assert.ok(worker.includes('<meta property="og:video:width" content="1280"><meta property="og:video:height" content="720">')); const bucket = viewerPage(m, 'https://bucket.example/recordings'); assert.ok(!bucket.includes('oembed')); assert.ok(bucket.includes('og:video:width')); assert.ok(!viewerPage({ ...m, video: undefined }, 'https://share.example', true).includes('og:video')); });
+test('bucket preview GIF is an optional extra: served as image/gif, never replaces og:image, dropped when absent or missing', async t => {
+    const { metadataPatch } = await import('../dist/index.js');
+    const f = await fixture(t), p = f.provider();
+    const reservation = await p.reserve({ id: ID, title: 'Preview', durationMs: 1000 });
+    const write = async (name, body) => { const path = join(f.dir, name); await writeFile(path, body); return path; };
+    const video = await p.upload(reservation, { kind: 'video', path: await write('v.mp4', 'video bytes') });
+    const poster = await p.upload(reservation, { kind: 'poster', path: await write('p.jpg', 'jpeg bytes') });
+    const preview = await p.upload(reservation, { kind: 'preview', path: await write('p.gif', 'GIF89a bytes') });
+    assert.match(preview.file, /^preview-[a-f0-9]{8}\.gif$/);
+    await assert.rejects(() => p.upload(reservation, { kind: 'preview', path: join(f.dir, 'p.jpg') }), e => e.code === 'INVALID_TYPE');
+    const ready = await p.publish(reservation, { video, poster, preview, width: 320, height: 240, durationMs: 1000 });
+    assert.equal(ready.manifest.preview, preview.file);
+    const served = await fetch(ready.url + '/' + preview.file);
+    assert.equal(served.headers.get('content-type'), 'image/gif');
+    const html = await (await fetch(ready.url)).text();
+    assert.ok(html.includes(`<meta property="og:image" content="${ready.url}/${poster.file}">`));
+    assert.ok(html.includes(`<meta name="rushes:preview" content="${ready.url}/${preview.file}">`));
+    const without = await p.publish(ready, { video, poster, width: 320, height: 240, durationMs: 1000 });
+    assert.ok(!Object.hasOwn(without.manifest, 'preview'));
+    // The superseded GIF is deleted from the bucket, not just dropped from the manifest.
+    assert.equal((await fetch(ready.url + '/' + preview.file)).status, 404);
+    // A preview whose bytes never arrived is skipped instead of failing publication.
+    const missing = await p.publish(without, { video, poster, preview: { ...preview, file: 'preview-00000000.gif' }, width: 320, height: 240, durationMs: 1000 });
+    assert.equal(missing.manifest.status, 'ready'); assert.ok(!Object.hasOwn(missing.manifest, 'preview'));
+    assert.throws(() => metadataPatch({ preview: poster.file }), e => e.code === 'INVALID_METADATA');
+    assert.equal(metadataPatch({ preview: preview.file }).preview, preview.file);
+});

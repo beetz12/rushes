@@ -30,9 +30,11 @@ export function sidebarDraft(document: any, fallbackTitle: string): Record<strin
     shape: bubble?.shape ?? 'circle',
     mirror: bubble?.mirror ?? true,
     micGain: document.audio?.micGain ?? 1,
+    noiseSuppression: document.audio?.noiseSuppression ?? false,
     systemGain: document.audio?.systemGain ?? 0.5,
     title: document.meta?.title ?? fallbackTitle,
     burnIn: document.captions?.burnIn ?? false,
+    clickHighlight: document.clickHighlight === true,
   };
 }
 export class DraftAutosave<T> {
@@ -128,4 +130,36 @@ export function videoExportRequest(id: string, selection: string, path: string) 
     path,
     ...(selection === 'youtube-source' ? { sourceSize: true } : {}),
   };
+}
+type TimelineClip = { sourceStartMs: number; sourceEndMs: number; speed?: number };
+/** Maps a playhead in the source tracks to the edited (exported) timeline.
+ * A playhead inside a removed range snaps to the next kept clip. */
+export function editedTimeForSource(clips: TimelineClip[], sourceMs: number): number {
+  let elapsed = 0,
+    next: number | undefined;
+  for (const clip of clips) {
+    const speed = clip.speed || 1;
+    if (sourceMs >= clip.sourceStartMs && sourceMs < clip.sourceEndMs)
+      return elapsed + (sourceMs - clip.sourceStartMs) / speed;
+    if (next === undefined && clip.sourceStartMs > sourceMs) next = elapsed;
+    elapsed += (clip.sourceEndMs - clip.sourceStartMs) / speed;
+  }
+  return next ?? elapsed;
+}
+/** The current frame in edited-timeline milliseconds, for the share poster and
+ * the thumbnail export. A rendered preview already plays the edited timeline.
+ * The result stays one frame inside the edit, which the engine requires. */
+export function posterTimeForPlayhead(
+  clips: TimelineClip[],
+  playheadSeconds: number,
+  renderedPreview: boolean,
+): number {
+  const ms = Math.max(0, playheadSeconds * 1000);
+  const edited = renderedPreview || !clips.length ? ms : editedTimeForSource(clips, ms);
+  const total = clips.reduce(
+    (sum, clip) => sum + (clip.sourceEndMs - clip.sourceStartMs) / (clip.speed || 1),
+    0,
+  );
+  const last = total > 0 ? Math.max(0, Math.floor(total - 1000 / 30)) : Infinity;
+  return Math.min(Math.round(edited), last);
 }

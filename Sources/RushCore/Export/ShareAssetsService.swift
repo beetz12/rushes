@@ -18,6 +18,15 @@ public struct ShareAssetsResult:Codable,Equatable,Sendable {
     public var editRevision:Int
     public var editSnapshot:EditDocument
     public var videoSHA256:String
+    /// Short looping GIF for link unfurls; absent when it could not be made.
+    public var previewPath:String? = nil
+}
+
+extension ShareAssetsResult {
+    /// The animated preview: the opening seconds, small enough for chat unfurls.
+    static let previewDurationMs:Double = 3_000
+    static let previewWidth = 480
+    static let previewMaxBytes = 4 * 1_048_576
 }
 
 /// Local preparation only: providers reserve links and upload these immutable
@@ -59,10 +68,12 @@ public actor ShareAssetsService {
         let video=try PostproductionPaths.managedFile("video.mp4",in:stage)
         let rendered:ExportResult
         var publishedPoster:URL?
+        var publishedPreview:URL?
         if let publishedVideoPath {
             let published=try validatePublished(publishedVideoPath,id:id,edit:edit,shared:shared)
             try copy(published.video,to:video)
             publishedPoster=published.poster
+            publishedPreview=published.preview
             rendered=ExportResult(id:id,path:video.path,preset:"share",cacheKey:published.stamp.cacheKey,cached:true,durationMs:published.stamp.durationMs,width:published.stamp.width,height:published.stamp.height,fps:30)
         } else { rendered=try await postproduction.export(id:id,to:video,editSnapshot:edit) }
         let latestTitle=currentEdit.meta.title
@@ -76,9 +87,11 @@ public actor ShareAssetsService {
         let projectedMetadata=JSONValue.object(["title":.string(title),"summary":.string(summary),"chapters":try JSONValue(encoding:timeline.chapters),"durationMs":.double(rendered.durationMs),"editRevision":.int(Int64(edit.revision))])
         var hash=SHA256(); hash.update(data:Data("rushes.share-assets/2".utf8)); hash.update(data:Data(videoHash.utf8)); hash.update(data:try ControlWire.encoder.encode(projectedMetadata))
         if let transcriptData { hash.update(data:transcriptData) }
+        // Only a chosen poster joins the key, so earlier generations stay reusable.
+        if edit.meta.posterMs != nil { hash.update(data:Data("poster:\(edit.posterTimeMs)".utf8)) }
         let key=hash.finalize().map { String(format:"%02x",$0) }.joined()
         let expected=shared.appendingPathComponent(key,isDirectory:true)
-        let result=ShareAssetsResult(id:id,videoPath:expected.appendingPathComponent("video.mp4").path,posterPath:expected.appendingPathComponent("poster.jpg").path,captionsPath:captionsData == nil ? nil : expected.appendingPathComponent("captions.vtt").path,transcriptPath:transcriptData == nil ? nil : expected.appendingPathComponent("transcript.json").path,durationMs:rendered.durationMs,width:rendered.width,height:rendered.height,title:title,summary:summary,chapters:timeline.chapters,cacheKey:key,cached:rendered.cached,editRevision:edit.revision,editSnapshot:edit,videoSHA256:videoHash)
+        var result=ShareAssetsResult(id:id,videoPath:expected.appendingPathComponent("video.mp4").path,posterPath:expected.appendingPathComponent("poster.jpg").path,captionsPath:captionsData == nil ? nil : expected.appendingPathComponent("captions.vtt").path,transcriptPath:transcriptData == nil ? nil : expected.appendingPathComponent("transcript.json").path,durationMs:rendered.durationMs,width:rendered.width,height:rendered.height,title:title,summary:summary,chapters:timeline.chapters,cacheKey:key,cached:rendered.cached,editRevision:edit.revision,editSnapshot:edit,videoSHA256:videoHash)
         if FileManager.default.fileExists(atPath:expected.path) {
             let existing=try PostproductionPaths.managedDirectory(key,in:shared)
             let stamp=try PostproductionPaths.managedFile("assets.json",in:existing)
@@ -88,14 +101,22 @@ public actor ShareAssetsService {
                     let file=try PostproductionPaths.managedFile(name,in:existing)
                     guard FileManager.default.fileExists(atPath:file.path) else { throw renderFailure("Incomplete shared asset generation") }
                 }
-                var reused=result; reused.cached=true; return reused
+                var reused=result; reused.cached=true
+                if let preview=try? PostproductionPaths.managedFile("preview.gif",in:existing),FileManager.default.fileExists(atPath:preview.path) { reused.previewPath=expected.appendingPathComponent("preview.gif").path }
+                return reused
             }
             throw renderFailure("Shared asset generation has no readable stamp")
         }
         let poster=try PostproductionPaths.managedFile("poster.jpg",in:stage)
         if let publishedPoster { try copy(publishedPoster,to:poster) }
-        else { try await CompositionThumbnail.write(video:video,to:poster,atMs:0,width:1280,height:720) }
+        else { try await CompositionThumbnail.write(video:video,to:poster,atMs:min(edit.posterTimeMs,max(0,rendered.durationMs-1000.0/30)),width:1280,height:720) }
         if let transcriptData { try AtomicFileWriter.write(transcriptData,to:PostproductionPaths.managedFile("transcript.json",in:stage)) }
+        // Best effort: a share never fails because its animated preview could not be made.
+        let previewFile=try PostproductionPaths.managedFile("preview.gif",in:stage)
+        if let publishedPreview { if (try? copy(publishedPreview,to:previewFile)) != nil { result.previewPath=expected.appendingPathComponent("preview.gif").path } }
+        else if publishedVideoPath == nil, let preview=try? await AnimatedGIFWriter.encode(video:video,startMs:0,durationMs:min(ShareAssetsResult.previewDurationMs,max(100,rendered.durationMs)),fps:10,width:ShareAssetsResult.previewWidth,maxBytes:ShareAssetsResult.previewMaxBytes),
+                (try? AtomicFileWriter.write(preview.data,to:previewFile)) != nil { result.previewPath=expected.appendingPathComponent("preview.gif").path }
+        try Task.checkCancellation()
         if let captionsData { try AtomicFileWriter.write(captionsData,to:PostproductionPaths.managedFile("captions.vtt",in:stage)) }
 
         try AtomicFileWriter.writeEncodable(result,to:PostproductionPaths.managedFile("assets.json",in:stage),encoder:ControlWire.encoder)
@@ -106,7 +127,7 @@ public actor ShareAssetsService {
         try AtomicFileWriter.posixRename(from:stage,to:expected)
         return result
     }
-    private func validatePublished(_ path:String,id:String,edit:EditDocument,shared:URL) throws -> (video:URL,poster:URL,stamp:ShareAssetsResult) {
+    private func validatePublished(_ path:String,id:String,edit:EditDocument,shared:URL) throws -> (video:URL,poster:URL,preview:URL?,stamp:ShareAssetsResult) {
         guard path.hasPrefix("/"),URL(fileURLWithPath:path).lastPathComponent == "video.mp4" else { throw shareAssetFailure("re-share-required","Published video identity is missing or invalid") }
         let requested=URL(fileURLWithPath:path).standardizedFileURL
         let generation=requested.deletingLastPathComponent().lastPathComponent
@@ -120,7 +141,8 @@ public actor ShareAssetsService {
         catch { throw shareAssetFailure("re-share-required","Published asset snapshot is unavailable; re-share the recording") }
         guard video.resolvingSymlinksInPath().path == requested.resolvingSymlinksInPath().path,stamp.id == id,stamp.cacheKey == generation,stamp.editSnapshot == edit,
               FileManager.default.fileExists(atPath:poster.path),try sha256(video) == stamp.videoSHA256 else { throw shareAssetFailure("re-share-required","Published assets no longer match the saved edit/video identity") }
-        return (video,poster,stamp)
+        let preview=try PostproductionPaths.managedFile("preview.gif",in:folder)
+        return (video,poster,FileManager.default.fileExists(atPath:preview.path) ? preview : nil,stamp)
     }
     private func sha256(_ url:URL) throws -> String {
         let input=try FileHandle(forReadingFrom:url); defer { try? input.close() }

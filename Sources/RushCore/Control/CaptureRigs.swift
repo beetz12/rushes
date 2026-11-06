@@ -369,10 +369,20 @@ private final class ProductionCaptureRig: CaptureRig, @unchecked Sendable {
 /// clock, so packages are produced, finalized and verified by exactly the
 /// same session and writer code paths as a live take.
 public struct StubCaptureRigFactory: CaptureRigFactory {
+    private let idlePreview = GeneratedCameraPreview()
 
     public init() {}
 
+    public func warmCamera(cameraID: String?, preview: @escaping @Sendable (Data) -> Void,
+                           warning: @escaping @Sendable (String, String?) -> Void) async throws -> JSONValue {
+        guard cameraID == "camera-diagnostic" else { throw ControlFailure(code: "camera-not-found") }
+        try await idlePreview.start(preview)
+        return .object(["running": .bool(true), "camera": .string(cameraID), "capture": .string("stub")])
+    }
+    public func stopPreview() async { await idlePreview.stop() }
+
     public func attach(_ context: CaptureContext) async throws -> CaptureRig {
+        await idlePreview.stop()
         var writers: [TrackKind: TrackWriter] = [:]
         for kind in context.request.trackKinds {
             if let writer = await context.session.trackWriter(for: kind) {
@@ -382,6 +392,22 @@ public struct StubCaptureRigFactory: CaptureRigFactory {
         }
         return try StubCaptureRig(context: context, writers: writers)
     }
+}
+
+private actor GeneratedCameraPreview {
+    private var task: Task<Void, Never>?
+    func start(_ publish: @escaping @Sendable (Data) -> Void) async throws {
+        await stop()
+        let image = try NativeScreenPreview.generated(surface: .area(displayID: "generated",
+            rect: CGRect(x: 10, y: 10, width: 320, height: 320))).jpeg
+        task = Task {
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { break }
+                if !Task.isCancelled { publish(image) }
+            }
+        }
+    }
+    func stop() async { let old = task; task = nil; old?.cancel(); await old?.value }
 }
 
 /// Synthetic media generator (the buffer shapes the session tests use): one
@@ -488,12 +514,16 @@ private final class StubCaptureRig: CaptureRig, @unchecked Sendable {
     private static let audioBufferNs: Int64 = Int64(Double(1024) / 48_000 * 1e9)
     /// Where each video track's next synthetic frame sits, on the host clock.
     private var nextVideoHostNs: [TrackKind: Int64] = [:]
+    private let cameraJPEG: Data?
+    private var lastPreviewHostNs: Int64 = 0
     /// One 30 fps frame interval.
     private static let videoFrameNs: Int64 = 33_333_333
 
     init(context: CaptureContext, writers: [TrackKind: TrackWriter]) throws {
         self.context = context
         self.writers = writers
+        cameraJPEG = context.request.cameraId == nil ? nil : try NativeScreenPreview.generated(
+            surface: .area(displayID: "generated", rect: CGRect(x: 10, y: 10, width: 320, height: 320))).jpeg
         self.inputFile = try NDJSONAppendFile(
             url: context.package.inputURL, fsyncPerLine: false)
     }
@@ -599,6 +629,9 @@ private final class StubCaptureRig: CaptureRig, @unchecked Sendable {
     private func pumpOnce(pinFinalVideoFrame: Bool = false) {
         guard currentEpoch() != nil else { return }
         let now = Int64(DispatchTime.now().uptimeNanoseconds)
+        if let cameraJPEG, now - lastPreviewHostNs >= 100_000_000 {
+            lastPreviewHostNs = now; context.preview(cameraJPEG)
+        }
 
         for (kind, writer) in writers {
             switch kind {

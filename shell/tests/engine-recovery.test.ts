@@ -14,6 +14,7 @@ async function service(path: string, state: string) {
     stopMode: 'done' | 'pending' | 'fail' = 'done';
   const connections = new Set<sockets.Socket>();
   const commands: string[] = [];
+  let previewSubscriptions = 0;
   let nextStatusEvent: string | undefined;
   const server = sockets.createServer((socket) => {
     connections.add(socket);
@@ -27,6 +28,14 @@ async function service(path: string, state: string) {
         const boundary = buffer.indexOf('\n');
         const request = JSON.parse(buffer.slice(0, boundary));
         buffer = buffer.slice(boundary + 1);
+        // Transport-only data subscription is not a capture/status operation.
+        if (request.cmd === 'preview.subscribe') {
+          previewSubscriptions++;
+          socket.write(
+            JSON.stringify({ id: request.id, ok: true, result: { enabled: true } }) + '\n',
+          );
+          continue;
+        }
         commands.push(request.cmd);
         if (request.cmd === 'record.stop' && stopMode === 'fail') {
           socket.write(
@@ -60,6 +69,7 @@ async function service(path: string, state: string) {
   });
   return {
     commands,
+    previewSubscriptions: () => previewSubscriptions,
     connections,
     state: (value: string) => {
       current = value;
@@ -240,6 +250,7 @@ describe('shutdown connection recovery', () => {
       expect(supervisor.active).toBe(true);
       expect(launch).not.toHaveBeenCalled();
       expect(peer.commands).toEqual(['status']);
+      expect(peer.previewSubscriptions()).toBeGreaterThanOrEqual(1);
       peer.state('idle');
       await supervisor.quit();
     } finally {

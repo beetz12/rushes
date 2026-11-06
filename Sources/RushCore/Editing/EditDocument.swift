@@ -42,6 +42,9 @@ public struct EditAudio: Codable, Equatable, Sendable {
     public var micGain: Double = 1
     public var systemGain: Double = 0.5
     public var micMuted: Bool = false
+    /// Remove background noise from the microphone in exports. The raw
+    /// microphone master is never modified.
+    public var noiseSuppression: Bool = false
     public init() {}
 }
 public struct EditCaptions: Codable, Equatable, Sendable {
@@ -73,6 +76,9 @@ public struct EditMeta: Codable, Equatable, Sendable {
     public var title: String = "Untitled recording"
     public var summary: String?
     public var chapters: [EditChapter] = []
+    /// Share poster time on the edited timeline. Nil keeps the first frame and
+    /// is omitted from the encoded document.
+    public var posterMs: Double?
     public init() {}
 }
 public struct EditExportSettings: Codable, Equatable, Sendable {
@@ -93,11 +99,20 @@ public struct EditDocument: Codable, Equatable, Sendable {
     public var export = EditExportSettings()
     public var meta = EditMeta()
     public var drawCursor: Bool = false
+    /// Draw a fading ring at each mouse click in rendered video. Nil (off) is
+    /// omitted from the encoded document so existing render caches stay valid.
+    public var clickHighlight: Bool?
+    public var highlightsClicks: Bool { clickHighlight == true }
     public init(durationMs: Double, title: String? = nil) {
         clips = [EditClip(id: "c1", sourceStartMs: 0, sourceEndMs: durationMs)]
         meta.title = title ?? "Untitled recording"
     }
     public var durationMs: Double { clips.reduce(0) { $0 + $1.durationMs } }
+    /// The share poster frame: the chosen time clamped inside the edit, else 0.
+    public var posterTimeMs: Double {
+        guard let chosen = meta.posterMs, chosen.isFinite else { return 0 }
+        return min(max(0, chosen), max(0, durationMs - 1000.0 / 30))
+    }
     public func validate(sourceDurationMs: Double) throws {
         guard schema == Self.currentSchema else { throw invalid("Unsupported edit schema") }
         guard !clips.isEmpty, Set(clips.map(\.id)).count == clips.count else { throw invalid("Keep at least one clip with unique identifiers") }
@@ -114,6 +129,7 @@ public struct EditDocument: Codable, Equatable, Sendable {
               ["source", "16:9", "1:1", "9:16"].contains(layout.canvas),
               captions.fontSize.isFinite, (12...120).contains(captions.fontSize), captions.position.isFinite, (0...1).contains(captions.position)
         else { throw invalid("Layout, caption or audio settings are invalid") }
+        if let poster = meta.posterMs, !poster.isFinite { throw invalid("Poster time must be a finite number") }
         for cue in zoomCues {
             guard let clip = clips.first(where: { $0.id == cue.clipId }), cue.sourceStartMs.isFinite, cue.sourceEndMs.isFinite,
                   cue.sourceStartMs >= clip.sourceStartMs, cue.sourceEndMs <= clip.sourceEndMs, cue.sourceEndMs > cue.sourceStartMs,
@@ -159,7 +175,7 @@ private func invalid(_ message: String) -> ControlFailure { ControlFailure(code:
 
 // Decode old equal-schema drafts with defaults; invalid and future schemas are rejected by validate.
 extension EditDocument {
-    enum CodingKeys: String, CodingKey { case schema, revision, clips, cuts, layout, zoomCues, audio, captions, export, meta, drawCursor }
+    enum CodingKeys: String, CodingKey { case schema, revision, clips, cuts, layout, zoomCues, audio, captions, export, meta, drawCursor, clickHighlight }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         schema = try c.decode(String.self, forKey: .schema)
@@ -173,6 +189,7 @@ extension EditDocument {
         export = try c.decodeIfPresent(EditExportSettings.self, forKey: .export) ?? EditExportSettings()
         meta = try c.decodeIfPresent(EditMeta.self, forKey: .meta) ?? EditMeta()
         drawCursor = try c.decodeIfPresent(Bool.self, forKey: .drawCursor) ?? false
+        clickHighlight = try c.decodeIfPresent(Bool.self, forKey: .clickHighlight).flatMap { $0 ? true : nil }
     }
 }
 
@@ -201,12 +218,21 @@ extension EditLayout {
 }
 
 extension EditAudio {
-    enum CodingKeys: String, CodingKey { case micGain, systemGain, micMuted }
+    enum CodingKeys: String, CodingKey { case micGain, systemGain, micMuted, noiseSuppression }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         micGain = try c.decodeIfPresent(Double.self, forKey: .micGain) ?? 1
         systemGain = try c.decodeIfPresent(Double.self, forKey: .systemGain) ?? 0.5
         micMuted = try c.decodeIfPresent(Bool.self, forKey: .micMuted) ?? false
+        noiseSuppression = try c.decodeIfPresent(Bool.self, forKey: .noiseSuppression) ?? false
+    }
+    // Omit the flag while off so existing render cache keys stay valid.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(micGain, forKey: .micGain)
+        try c.encode(systemGain, forKey: .systemGain)
+        try c.encode(micMuted, forKey: .micMuted)
+        if noiseSuppression { try c.encode(true, forKey: .noiseSuppression) }
     }
 }
 
@@ -222,12 +248,13 @@ extension EditCaptions {
 }
 
 extension EditMeta {
-    enum CodingKeys: String, CodingKey { case title, summary, chapters }
+    enum CodingKeys: String, CodingKey { case title, summary, chapters, posterMs }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         title = try c.decodeIfPresent(String.self, forKey: .title) ?? "Untitled recording"
         summary = try c.decodeIfPresent(String.self, forKey: .summary)
         chapters = try c.decodeIfPresent([EditChapter].self, forKey: .chapters) ?? []
+        posterMs = try c.decodeIfPresent(Double.self, forKey: .posterMs)
     }
 }
 

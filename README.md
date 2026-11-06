@@ -12,13 +12,10 @@ shared clock, local-first on your Mac, drivable by your AI agents.
 ![Platform: macOS](https://img.shields.io/badge/platform-macOS%2026.4%2B-333333.svg)
 ![Status: early alpha](https://img.shields.io/badge/status-early%20alpha-d69e2e.svg)
 
-[Features](#features) · [Why Rushes](#why-rushes) · [Agents](#built-for-agents) ·
-[Get started](#get-started) · [Sharing](#sharing-and-self-hosting) ·
+[Features](#features) · [Why Rushes](#why-rushes) · [Coming from Loom](docs/coming-from-loom.md) ·
+[Agents](#built-for-agents) · [Get started](#get-started) · [Sharing](#sharing-and-self-hosting) ·
 [Status](#status-and-roadmap) · [Clean-room](#clean-room-provenance) ·
 [Contributing](#contributing)
-
-<!-- TODO: hero demo GIF recorded with Rushes itself. Keep it under 10 MB and
-     caption it with the four-track layout. -->
 
 </div>
 
@@ -32,7 +29,7 @@ not a link you send once.
 | | | |
 |---|---|---|
 | 🗂️ **Your files, separate** | 🤖 **Agent-drivable** | 🔒 **Local-first** |
-| Every recording is a folder with up to four untouched track files — screen, camera, mic, system audio — all starting at the same instant. Drop them on any editor timeline at zero. | A 77-command CLI with JSON output, a local control socket, and an MCP server. Start, stop, export and share from scripts and AI agents. | Recordings, transcripts and settings stay on your Mac. No account, no cloud requirement, no telemetry. Sharing goes to storage you own. |
+| Every recording is a folder with up to four untouched track files — screen, camera, mic, system audio — all starting at the same instant. Drop them on any editor timeline at zero. | A 77-command CLI with JSON output, a local control socket, and an MCP server. Start, stop, export and share from scripts and AI agents. | Recordings, transcripts and settings stay on your Mac. No account, no cloud requirement, no telemetry. Sharing goes to storage you own. The once-a-day update check asks GitHub for the latest release, sends only a generic `Rushes/<version>` User-Agent, and can be turned off in Settings. |
 | ⚖️ **Clean-room provenance** | ⚡ **Fast where it counts** | 🛠️ **Real editing** |
 | Built from nine open-source recorders under documented clean-room rules, enforced by a check in CI. Every copied file carries its license notice. | A five-minute 1080p30 share render takes 28.6 seconds. A ten-minute editor-tracks export takes 1.93 seconds. A kill -9 mid-recording loses at most one second. | Trim and split clips, cut words from the transcript, auto-zoom from your clicks, six camera layouts, captions burned in or exported. |
 
@@ -80,10 +77,22 @@ Claude and Cursor.
 
 ## Get started
 
-Rushes is in early alpha. From the app: the menu-bar icon opens the recorder,
-your library and Settings — pick a display, window or area, enable camera and
-audio, record. Building from source (macOS 26.4+, Swift 6.4, Node per each
-surface's `.nvmrc`):
+**Install.** Download the latest `.dmg` from
+[Releases](https://github.com/beetz12/rushes/releases), open it and drag
+Rushes to Applications. Preview builds are not yet notarized by Apple, so
+macOS asks you to approve the app once; [docs/install.md](docs/install.md)
+shows the exact steps.
+
+**First recording.** Click the Rushes icon in the menu bar. A short guide
+walks you through choosing what to record and granting Screen Recording,
+Camera and Microphone access. ⇧⌘R starts and stops a recording; ⇧⌘P pauses.
+
+**Coming from Loom?** [docs/coming-from-loom.md](docs/coming-from-loom.md)
+maps every Loom habit to its place in Rushes and lists what Rushes does not
+do yet.
+
+**Build from source** (macOS 26.4+, Swift 6.4, Node per each surface's
+`.nvmrc`):
 
 ```bash
 git clone https://github.com/beetz12/rushes.git
@@ -95,16 +104,16 @@ swift build -c release
 
 Open `shell/` for the desktop app (Electron + TypeScript + React): menu-bar
 recorder, control bar, camera bubble, first-use guide, review window, exports
-and settings. A signed, notarized download is on the roadmap.
+and settings.
 
 ## Sharing and self-hosting
 
-Share links upload to storage you configure — Cloudflare R2 or any
-S3-compatible bucket — and play on a small static viewer page with captions
-and a clickable transcript. Prefer full control? The single-user share Worker
-in `worker/` is part of this repository and deploys to your own Cloudflare
-account. A hosted sharing tier may come later as a separate, optional
-convenience; nothing local depends on it.
+Share links upload to storage you own: a small Cloudflare Worker you deploy
+once (passwords, expiry, comments, reactions, view counts, embeds), or any
+S3-compatible bucket. [docs/self-host-sharing.md](docs/self-host-sharing.md)
+walks through both. Until you set one up, **Copy video file** puts the MP4 on
+your clipboard so you can paste it anywhere. A hosted sharing tier may come
+later as a separate, optional convenience; nothing local depends on it.
 
 ## Status and roadmap
 

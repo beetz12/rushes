@@ -207,7 +207,10 @@ public struct SystemSourceCatalog: SourceCataloging {
 public struct DiagnosticSourceCatalog: SourceCataloging {
     public init() {}
     public func displays() async throws -> [DisplaySource] { [.init(id: "display-diagnostic", name: "Synthetic display", widthPoints: 640, heightPoints: 480, isMain: true)] }
-    public func windows() async throws -> [WindowSource] { [] }
+    public func windows() async throws -> [WindowSource] {
+        [.init(id: "window-diagnostic", title: "Synthetic window",
+               owningApplication: "generated.example", displayID: "display-diagnostic")]
+    }
     public func cameras() async throws -> [CameraDevice] { [.init(id: "camera-diagnostic", name: "Synthetic camera")] }
     public func microphones() async throws -> [MicrophoneDevice] { [.init(id: "mic-diagnostic", name: "Synthetic microphone")] }
 }

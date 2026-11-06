@@ -127,7 +127,10 @@ final class NativeRenderer: @unchecked Sendable {
         let screenOffset=manifest.tracks.first(where:{$0.kind == .screen})?.offsetMs ?? 0
         var sources:[PCMEditingAudioInput]=[]
         for info in manifest.tracks where info.present && (info.kind == .microphone || info.kind == .systemAudio) {
-            let decoded=try await PCMAudioSourceCache.shared.prepare(package:package,track:info)
+            var decoded=try await PCMAudioSourceCache.shared.prepare(package:package,track:info)
+            if info.kind == .microphone && edit.audio.noiseSuppression && !edit.audio.micMuted {
+                decoded=try await VoiceIsolation.prepare(decoded)
+            }
             let offset=Double(info.offsetMs-screenOffset-(info.latencyMs ?? 0))
             let gain=info.kind == .microphone ? (edit.audio.micMuted ? 0 : edit.audio.micGain) : edit.audio.systemGain
             sources.append(.init(url:decoded.url,frameCount:decoded.frameCount,offsetMs:offset,gain:gain))
@@ -198,6 +201,7 @@ final class NativeRenderer: @unchecked Sendable {
                 let frameCount=Int(ceil(edit.durationMs/1000*Double(options.fps)))
                 var lastClip="", screenReader:FrameReader?, cameraReader:FrameReader?
                 var viewport=ViewportTimeline(), pointerIndex=0, pointer:[Double]?
+                var clicks:[(t:Double,point:[Double])]=[]
                 var lastSource = -1.0
                 for frame in 0..<frameCount {
                     try Task.checkCancellation()
@@ -208,14 +212,17 @@ final class NativeRenderer: @unchecked Sendable {
                         if let camera { cameraReader=try await FrameReader(source:camera,startMs:mapped.clip.sourceStartMs,endMs:mapped.clip.sourceEndMs) }
                         lastClip=mapped.clip.id
                     }
-                    if mapped.sourceMs < lastSource { pointerIndex=0; pointer=nil }
+                    if mapped.sourceMs < lastSource { pointerIndex=0; pointer=nil; clicks=[] }
                     while pointerIndex < pointers.count && pointers[pointerIndex].t <= mapped.sourceMs {
-                        if let x=pointers[pointerIndex].x,let y=pointers[pointerIndex].y { pointer=[x,y] }
+                        let sample=pointers[pointerIndex]
+                        if let x=sample.x,let y=sample.y { pointer=[x,y] }
+                        if edit.highlightsClicks,sample.k == "down",let pointer { clicks.append((sample.t,pointer)) }
                         pointerIndex += 1
                     }
+                    clicks.removeAll { mapped.sourceMs-$0.t >= ClickHighlight.lifeMs }
                     lastSource=mapped.sourceMs
                     let state=viewport.tick(clip:mapped.clip,sourceMs:mapped.sourceMs,cues:edit.zoomCues,pointer:pointer,dt:1/Double(options.fps))
-                    let composite=try compose(screen:screenReader?.image(at:mapped.sourceMs),camera:cameraReader?.image(at:mapped.sourceMs),viewport:state,pointer:edit.drawCursor ? pointer : nil,width:dimensions.0,height:dimensions.1)
+                    let composite=try compose(screen:screenReader?.image(at:mapped.sourceMs),camera:cameraReader?.image(at:mapped.sourceMs),viewport:state,pointer:edit.drawCursor ? pointer : nil,clicks:clicks.map { (mapped.sourceMs-$0.t,$0.point) },width:dimensions.0,height:dimensions.1)
                     let image=captions.image(at:mapped.sourceMs)?.composited(over:composite) ?? composite
                     try await wait(input,writer:writer)
                     guard let pool=adaptor.pixelBufferPool else { throw renderFailure("Missing render buffer pool") }
@@ -255,7 +262,7 @@ final class NativeRenderer: @unchecked Sendable {
         guard let text=String(data:data,encoding:.utf8) else { throw renderFailure("Input timeline is not UTF-8") }
         return text.split(separator:"\n").compactMap { try? JSONDecoder().decode(PointerSample.self,from:Data($0.utf8)) }.sorted { $0.t < $1.t }
     }
-    private func compose(screen: CIImage?,camera: CIImage?,viewport: ViewportState,pointer: [Double]?,width: Int,height: Int) throws -> CIImage {
+    private func compose(screen: CIImage?,camera: CIImage?,viewport: ViewportState,pointer: [Double]?,clicks: [(ageMs:Double,point:[Double])] = [],width: Int,height: Int) throws -> CIImage {
         let bounds=CGRect(x:0,y:0,width:width,height:height)
         var image=CIImage(color:CIColor(red:0.06,green:0.07,blue:0.09)).cropped(to:bounds)
         let hasScreen=manifest.tracks.contains { $0.kind == .screen && $0.present }
@@ -266,6 +273,13 @@ final class NativeRenderer: @unchecked Sendable {
             let cropWidth=extent.width/viewport.scale,cropHeight=extent.height/viewport.scale
             let crop=CGRect(x:min(extent.width-cropWidth,max(0,viewport.x*extent.width-cropWidth/2)),y:min(extent.height-cropHeight,max(0,(1-viewport.y)*extent.height-cropHeight/2)),width:cropWidth,height:cropHeight)
             image=fit(screen.cropped(to:crop),to:rect(region),fill:false).composited(over:image)
+            for click in clicks {
+                let px=(click.point[0]*extent.width-crop.minX)/crop.width,py=((1-click.point[1])*extent.height-crop.minY)/crop.height
+                let target=rect(region),ring=ClickHighlight.ring(ageMs:click.ageMs,canvasWidth:width)
+                if (0...1).contains(px),(0...1).contains(py),let ring {
+                    image=CIImage(cgImage:ring).transformed(by:CGAffineTransform(translationX:target.minX+px*target.width-CGFloat(ring.width)/2,y:target.minY+py*target.height-CGFloat(ring.height)/2)).composited(over:image)
+                }
+            }
             if let pointer {
                 let px=(pointer[0]*extent.width-crop.minX)/crop.width,py=((1-pointer[1])*extent.height-crop.minY)/crop.height
                 let region=rect(region)
@@ -294,3 +308,13 @@ final class NativeRenderer: @unchecked Sendable {
     }
 }
 func renderFailure(_ message: String) -> ControlFailure { ControlFailure(code:"render-failed",message:message) }
+
+/// Timing and size of the click highlight ring drawn in rendered video.
+enum ClickHighlight {
+    static let lifeMs=600.0
+    static func ring(ageMs:Double,canvasWidth:Int) -> CGImage? {
+        guard ageMs >= 0,ageMs < lifeMs else { return nil }
+        let progress=ageMs/lifeMs,base=max(14,Double(canvasWidth)/48)
+        return OverlayArtwork.clickRing(radius:CGFloat(base*(0.45+0.75*progress)),alpha:CGFloat(0.9*(1-progress)))
+    }
+}

@@ -202,7 +202,8 @@ public struct RecordingPackage: Equatable, Sendable {
             at: root, includingPropertiesForKeys: [.isDirectoryKey])
         var entries: [ScanEntry] = []
         for folder in folders.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
-            guard folder.hasDirectoryPath else { continue }
+            // Hidden folders (an import's staging folder) are never takes.
+            guard folder.hasDirectoryPath, !folder.lastPathComponent.hasPrefix(".") else { continue }
             let package = RecordingPackage(root: root, id: "", folderURL: folder)
             guard let manifest = try? package.readManifest() else { continue }
             entries.append(

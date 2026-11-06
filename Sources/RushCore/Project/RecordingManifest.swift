@@ -243,6 +243,37 @@ public struct RecordingManifest: Equatable, Sendable {
         }
     }
 
+    /// Where an imported video came from (`library.import`). Absent for
+    /// takes recorded by Rushes. The source file itself is never stored or
+    /// referenced by path: only its name and timestamps.
+    public struct ImportInfo: Codable, Equatable, Sendable {
+        /// The source file's name as the user saw it, extension included.
+        public var originalFilename: String
+        /// When the import ran, ISO 8601 UTC.
+        public var importedAt: String
+        /// The container's recorded creation date, when it carries one.
+        public var mediaCreatedAt: String?
+        /// The source file's creation and modification times.
+        public var fileCreatedAt: String?
+        public var fileModifiedAt: String?
+        /// The source file's size in bytes.
+        public var sourceBytes: Int64?
+        /// Whether the source carried an audio track (copied to `mic.mov`).
+        public var hasAudio: Bool
+
+        public init(originalFilename: String, importedAt: String, mediaCreatedAt: String? = nil,
+                    fileCreatedAt: String? = nil, fileModifiedAt: String? = nil,
+                    sourceBytes: Int64? = nil, hasAudio: Bool) {
+            self.originalFilename = originalFilename
+            self.importedAt = importedAt
+            self.mediaCreatedAt = mediaCreatedAt
+            self.fileCreatedAt = fileCreatedAt
+            self.fileModifiedAt = fileModifiedAt
+            self.sourceBytes = sourceBytes
+            self.hasAudio = hasAudio
+        }
+    }
+
     // MARK: - Fields
 
     public var schema: String
@@ -264,6 +295,7 @@ public struct RecordingManifest: Equatable, Sendable {
     public var warnings: [ManifestWarning]
     public var verified: VerificationStamp?
     public var bubble: BubbleMetadata?
+    public var imported: ImportInfo?
 
     public init(
         schema: String = RecordingManifest.currentSchema,
@@ -358,7 +390,7 @@ extension RecordingManifest: Codable {
 
     private enum Keys: String, CodingKey {
         case schema, id, title, createdAt, status, app, clock, sources, tracks
-        case input, warnings, verified, bubble
+        case input, warnings, verified, bubble, imported
         case createdHostNs, startedHostNs, endedHostNs
     }
 
@@ -390,6 +422,7 @@ extension RecordingManifest: Codable {
         warnings = try container.decodeIfPresent([ManifestWarning].self, forKey: .warnings) ?? []
         verified = try container.decodeIfPresent(VerificationStamp.self, forKey: .verified)
         bubble = try container.decodeIfPresent(BubbleMetadata.self, forKey: .bubble)
+        imported = try container.decodeIfPresent(ImportInfo.self, forKey: .imported)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -410,6 +443,7 @@ extension RecordingManifest: Codable {
         try container.encode(warnings, forKey: .warnings)
         try container.encodeIfPresent(verified, forKey: .verified)
         try container.encodeIfPresent(bubble, forKey: .bubble)
+        try container.encodeIfPresent(imported, forKey: .imported)
     }
 }
 

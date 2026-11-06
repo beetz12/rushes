@@ -21,9 +21,9 @@ public struct TrackWriterStatus: Codable, Equatable, Sendable {
         case finalized
 
         /// The finish deadline passed. The fragmented file on disk keeps every
-        /// complete movie fragment AVAssetWriter flushed, so the footage is
-        /// playable up to the last fragment; the writer deliberately left the
-        /// underlying writer alone instead of cancelling it.
+        /// complete movie fragment AVAssetWriter flushed. Decodability and
+        /// native closure are unchecked; the writer is deliberately left alone
+        /// rather than destructively cancelled.
         case degraded
 
         /// No usable file: the writer failed, or no samples were ever written.

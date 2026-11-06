@@ -18,6 +18,8 @@ export interface ShareManifest {
         bytes: number;
     };
     poster?: string;
+    /** Short looping GIF for link unfurls. og:image stays the still poster. */
+    preview?: string;
     captions?: Array<{
         file: string;
         lang: string;
@@ -39,7 +41,7 @@ export interface ShareReservation {
 }
 export interface UploadInput {
     path: string;
-    kind: 'video' | 'poster' | 'captions' | 'transcript';
+    kind: 'video' | 'poster' | 'preview' | 'captions' | 'transcript';
     signal?: AbortSignal;
     onProgress?: (p: {
         bytes: number;
@@ -53,7 +55,7 @@ export interface UploadedAsset {
     sha256: string;
     kind: UploadInput['kind'];
 }
-export type MetadataPatch = Pick<ShareManifest, 'title' | 'durationMs'> & Partial<Pick<ShareManifest, 'summary' | 'chapters' | 'poster' | 'captions'>> & { transcript?: string | null };
+export type MetadataPatch = Pick<ShareManifest, 'title' | 'durationMs'> & Partial<Pick<ShareManifest, 'summary' | 'chapters' | 'poster' | 'preview' | 'captions'>> & { transcript?: string | null };
 export interface PublishInput {
     video: UploadedAsset;
     width: number;
@@ -66,6 +68,8 @@ export interface PublishInput {
     /** Null explicitly removes a stale transcript when an edited snapshot has none. */
     transcript?: string | null;
     poster?: UploadedAsset;
+    /** Optional animated preview; publication never depends on it. */
+    preview?: UploadedAsset;
 }
 /** Private owner-facing policy; passwords and hashes never appear in this snapshot. */
 export interface SharePolicy {
@@ -116,7 +120,7 @@ export class ShareError extends Error {
 export const SHARE_ID = /^[A-Za-z0-9_-]{22}$/;
 export function assertShareId(id: string): string { if (!SHARE_ID.test(id))
     throw new ShareError('INVALID_SHARE_ID', 'Share ID must be 22 base64url characters.'); return id; }
-export const ASSET_FILE = /^(video-[a-f0-9]{8}\.mp4|poster-[a-f0-9]{8}\.(?:jpg|png)|captions-[a-f0-9]{8}\.vtt|transcript-[a-f0-9]{8}\.json)$/;
+export const ASSET_FILE = /^(video-[a-f0-9]{8}\.mp4|poster-[a-f0-9]{8}\.(?:jpg|png)|preview-[a-f0-9]{8}\.gif|captions-[a-f0-9]{8}\.vtt|transcript-[a-f0-9]{8}\.json)$/;
 export function assertAssetFile(file: string): string { if (!ASSET_FILE.test(file))
     throw new ShareError('INVALID_ASSET', 'Invalid share asset filename.'); return file; }
 export function requireHTTPS(value: string, allowLocalHTTP = false): URL {
@@ -148,6 +152,11 @@ export function metadataPatch(input: Partial<MetadataPatch>): Partial<MetadataPa
         out.poster = assertAssetFile(input.poster);
         if (!out.poster.startsWith('poster-'))
             throw new ShareError('INVALID_METADATA', 'Poster filename required.');
+    }
+    if (input.preview !== undefined) {
+        out.preview = assertAssetFile(input.preview);
+        if (!out.preview.startsWith('preview-'))
+            throw new ShareError('INVALID_METADATA', 'Preview filename required.');
     }
     if (input.transcript !== undefined) {
         out.transcript = input.transcript === null ? null : assertAssetFile(input.transcript);

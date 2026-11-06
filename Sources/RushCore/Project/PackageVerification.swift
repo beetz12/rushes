@@ -8,6 +8,15 @@ import Foundation
 /// result into the manifest's `verified` block).
 public struct PackageVerifier: Sendable {
 
+    private struct CheckedTrack {
+        let report: Report.TrackCheck
+        let actualDuration: Double?
+        init(kind: TrackKind, file: String, ok: Bool, skipped: Bool, issues: [String], actualDuration: Double? = nil) {
+            report = .init(kind: kind, file: file, ok: ok, skipped: skipped, issues: issues)
+            self.actualDuration = actualDuration
+        }
+    }
+
     /// AVFoundation's synchronous decoder can wait for codec work. Keep those
     /// waits outside Swift's cooperative executor, which must remain available
     /// to concurrent writers and cancellation tasks.
@@ -62,6 +71,9 @@ public struct PackageVerifier: Sendable {
     public func verify(_ package: RecordingPackage) async -> Report {
         var packageIssues: [String] = []
         if Task.isCancelled { return Report(packageID: package.id, ok: false, trackChecks: [], issues: ["verification cancelled"]) }
+        guard !PendingWriterFiles.shared.contains(in: package.folderURL) else {
+            return Report(packageID: package.id, ok: false, trackChecks: [], issues: ["native finalization is still pending; retained media has not been checked"])
+        }
 
         let manifest: RecordingManifest
         do {
@@ -96,12 +108,35 @@ public struct PackageVerifier: Sendable {
             packageIssues.append("manifest clock has no positive duration")
         }
 
-        var checks: [Report.TrackCheck] = []
+        let recoveredTiming = manifest.status == .recovered
+            && manifest.warnings.contains { $0.code == "recovered-track-timing" }
+        let cameraLost = manifest.warnings.contains { $0.code == "camera-lost" }
+        var measured: [CheckedTrack] = []
         for track in manifest.tracks {
             if Task.isCancelled { packageIssues.append("verification cancelled"); break }
-            checks.append(
-                await checkTrack(track, in: package, manifestDuration: manifestDurationSeconds, cameraLost: manifest.warnings.contains { $0.code == "camera-lost" }))
+            measured.append(await checkTrack(track, in: package, manifestDuration: manifestDurationSeconds,
+                                            cameraLost: cameraLost, recoveredTiming: recoveredTiming))
         }
+        if recoveredTiming {
+            let present = measured.filter { !$0.report.skipped }
+            let valid = present.filter { $0.actualDuration.map { $0.isFinite && $0 > 0 } == true }
+            if valid.count != manifest.tracks.filter(\.present).count {
+                packageIssues.append("recovered timing is missing a measurable present track")
+            }
+            let eligible = valid.filter { item in
+                !(cameraLost && item.report.kind == .camera && valid.contains {
+                    $0.report.kind != .camera && ($0.actualDuration ?? 0) > (item.actualDuration ?? 0)
+                })
+            }
+            // Compare directly with file measurements; two tolerance checks
+            // via declared durations must not permit a 100ms clock error.
+            if let actualEnd = eligible.compactMap(\.actualDuration).min(), let expected = manifestDurationSeconds,
+               abs(actualEnd - expected) * 1_000 > toleranceMs {
+                packageIssues.append("recovered common timeline differs from measured available media")
+            }
+        }
+
+        let checks = measured.map(\.report)
 
         let allTracksOK = checks.allSatisfy(\.ok)
         return Report(
@@ -115,8 +150,9 @@ public struct PackageVerifier: Sendable {
         _ track: RecordingManifest.RecordingTrack,
         in package: RecordingPackage,
         manifestDuration: Double?,
-        cameraLost: Bool
-    ) async -> Report.TrackCheck {
+        cameraLost: Bool,
+        recoveredTiming: Bool
+    ) async -> CheckedTrack {
         let url: URL
         do {
             url = try package.validatedMediaURL(track.file)
@@ -130,7 +166,12 @@ public struct PackageVerifier: Sendable {
 
         var issues: [String] = []
         var expectedDuration = manifestDuration
-        if let durationNs = track.durationNs {
+        if recoveredTiming {
+            if let durationNs = track.durationNs, durationNs > 0 {
+                expectedDuration = Double(durationNs) / 1e9
+            } else { issues.append("\(track.file): recovered measured duration is missing or invalid") }
+            if track.offsetNs != 0 { issues.append("\(track.file): recovered native input must start on the shared zero clock") }
+        } else if let durationNs = track.durationNs {
             let duration = Double(durationNs) / 1e9
             if track.kind == .camera, cameraLost, durationNs > 0,
                let manifestDuration, duration <= manifestDuration {
@@ -214,6 +255,7 @@ public struct PackageVerifier: Sendable {
         }
 
         return .init(
-            kind: track.kind, file: track.file, ok: issues.isEmpty, skipped: false, issues: issues)
+            kind: track.kind, file: track.file, ok: issues.isEmpty, skipped: false, issues: issues,
+            actualDuration: probe.durationSeconds)
     }
 }

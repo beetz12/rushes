@@ -210,4 +210,39 @@ describe('stable share state', () => {
     await expect(r.service.enrich('take')).rejects.toMatchObject({ code: 're-share-required' });
     await rm(root, { recursive: true });
   });
+  it('uploads the preview GIF when present and still shares when that upload fails', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rushes-preview-'));
+    const r = rig(root);
+    const original = r.engine.request.getMockImplementation()!;
+    vi.mocked(r.engine.request).mockImplementation(async (cmd: string) => {
+      const value = await original(cmd);
+      return cmd === 'share.assets'
+        ? {
+            ...value,
+            previewPath: join(root, 'renders', 'shared_assets', 'fixture-key', 'preview.gif'),
+          }
+        : value;
+    });
+    await r.service.share('take', true);
+    expect(vi.mocked(r.provider.upload).mock.calls.map((c) => c[1].kind)).toEqual([
+      'video',
+      'poster',
+      'preview',
+    ]);
+    expect(r.provider.publish).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ preview: expect.objectContaining({ kind: 'preview' }) }),
+    );
+    const upload = vi.mocked(r.provider.upload);
+    upload.mockImplementation(async (_r, input) => {
+      if (input.kind === 'preview') throw new Error('Fixture preview upload refused');
+      return { file: input.kind + '-hash.mp4', bytes: 10, sha256: 'test-hash', kind: input.kind };
+    });
+    expect(await r.service.share('take', true)).toEqual({
+      url: 'https://example.invalid/stable-share-id',
+      state: 'ready',
+    });
+    expect(vi.mocked(r.provider.publish).mock.calls.at(-1)![1]).not.toHaveProperty('preview');
+    await rm(root, { recursive: true });
+  });
 });

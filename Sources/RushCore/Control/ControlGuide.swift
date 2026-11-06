@@ -103,7 +103,8 @@ public struct ControlGuide: Codable, Equatable, Sendable {
     }
 
     private static func productionCommandDocs() -> [CommandDoc] {
-        var docs = [CommandDoc(name: "record.geometry", cli: ["record geometry"], summary: "Read current captured content bounds in global screen points without acquiring a device.", usage: "rushes record geometry", result: "{mode,rect:{x,y,width,height},displayID?}|null")]
+        var docs = [CommandDoc(name: "record.geometry", cli: ["record geometry"], summary: "Read current captured content bounds in global screen points without acquiring a device.", usage: "rushes record geometry", result: "{mode,rect:{x,y,width,height},displayID?}|null"),
+            CommandDoc(name: "preview.subscribe", cli: [], summary: "Select a preview-only data connection. Ordinary control connections receive reliable events only; this never acquires a source.", usage: "socket preview.subscribe {enabled:true}", params: [.init(name: "enabled", type: "boolean", required: true, description: "true selects preview-only delivery; false restores control delivery on this connection")], result: "{enabled}")]
         for name in ProductionEffectsCoordinator.commands.sorted() {
             let camera = name.hasPrefix("camera.")
             var params: [ParamDoc] = []
@@ -125,6 +126,7 @@ public struct ControlGuide: Codable, Equatable, Sendable {
             CommandDoc(name: "drawing.status", cli: [], summary: "Inspect the explicitly included drawing panel.", usage: "socket drawing.status", result: "{enabled,windowID?}"),
             CommandDoc(name: "library.trash", cli: [], summary: "Move a finalized recording package to macOS Trash with a five-second undo.", usage: "socket library.trash {id:string}", params: [.init(name: "id", type: "string", required: true, description: "Recording ULID.")], result: "{id,undoToken,undoExpiresAt,undoWindowMs,trashedPath}"),
             CommandDoc(name: "library.undoTrash", cli: [], summary: "Restore one recording within its five-second undo window; never overwrite an occupied path.", usage: "socket library.undoTrash {token:string}", params: [.init(name: "token", type: "string", required: true, description: "Undo token returned by library.trash.")], result: "{id,restored:true}"),
+            CommandDoc(name: "library.import", cli: ["import"], summary: "Copy a local .mp4, .mov or .m4v video (for example a Loom download) into a new library package without re-encoding, then queue transcript and metadata jobs. The source file is never moved or changed.", usage: "rushes import PATH", params: [.init(name: "path", type: "string", required: true, description: "Absolute path of the video file; the CLI resolves relative paths.")], result: "{id,packagePath,title,imported:{originalFilename,importedAt,mediaCreatedAt?,fileCreatedAt?,fileModifiedAt?,sourceBytes,hasAudio},durationMs,tracks,warnings}"),
             CommandDoc(name: "library.refresh", cli: [], summary: "Rebuild library cache after a reversible move or restore; manifests remain authoritative.", usage: "socket library.refresh", result: "{recordings:[index rows]}"),
             CommandDoc(name: "mcp.enable", cli: ["mcp enable"], summary: "Enable private loopback MCP; read-only unless allowMutations is explicitly true.", usage: "rushes mcp enable [--args JSON]", params: [.init(name: "allowMutations", type: "boolean", description: "Explicitly permit recording/edit/export/share mutations."), .init(name: "port", type: "integer", description: "0 requests an available loopback port.")], result: "{enabled,allowMutations,url,token}; token only returned on enable"),
             CommandDoc(name: "mcp.disable", cli: ["mcp disable"], summary: "Stop loopback MCP and disable restoration on next launch.", usage: "rushes mcp disable", result: "{enabled:false}"),
@@ -133,7 +135,10 @@ public struct ControlGuide: Codable, Equatable, Sendable {
             CommandDoc(name: "permissions.check", cli: ["permissions check"], summary: "Inspect native permissions without prompting.", usage: "rushes permissions check", result: "{screen,camera,microphone,accessibility,inputMonitoring,details}"),
             CommandDoc(name: "permissions.request", cli: ["permissions request"], summary: "Explicitly request one native permission.", usage: "rushes permissions request PERMISSION", result: "permission states"),
             CommandDoc(name: "permissions.settings", cli: ["permissions settings"], summary: "Get the relevant Settings link.", usage: "rushes permissions settings PERMISSION", result: "{url}"),
-            CommandDoc(name: "camera.preview.subscribe", cli: [], summary: "Enable or disable preview events without changing camera device lifecycle; allowed during active CLI takes.", usage: "socket camera.preview.subscribe {enabled:true}", result: "{enabled}"),
+            CommandDoc(name: "capture.preflight.start", cli: [], summary: "Check selected native inputs while idle without requesting permissions.", usage: "socket capture.preflight.start {selectionToken:UUID,selectionRevision:positiveInteger,mic,display|window?,area?}", params: [.init(name: "selectionToken", type: "string", required: true, description: "Fresh UUID correlating selection and cancellation before acknowledgment."), .init(name: "selectionRevision", type: "integer", required: true, description: "Positive monotonic revision for this connection; old Starts remain cancelled regardless of wire task order.")], result: "{previewToken,selectionToken,selectionRevision,microphone,source}; memory-only meter events"),
+            CommandDoc(name: "capture.preflight.stop", cli: [], summary: "Preserve cancellation order and drain originating idle native monitoring.", usage: "socket capture.preflight.stop {selectionToken:UUID,selectionRevision:positiveInteger}", result: "{quiescent}; false means another selection or native cleanup still owns input. Stale revision cannot close a newer input."),
+            CommandDoc(name: "capture.preflight.snapshot", cli: [], summary: "Get one bounded JPEG of the selected screen surface without audio capture.", usage: "socket capture.preflight.snapshot {previewToken:UUID}", result: "{previewToken,source,jpeg,mime,width,height}; at most640px and256KiB"),
+            CommandDoc(name: "camera.preview.subscribe", cli: [], summary: "Enable or disable preview events without changing camera device lifecycle; allowed during active CLI takes.", usage: "socket camera.preview.subscribe {enabled:true,previewToken?:UUID}", result: "{enabled,previewToken,ignored?}; supplied old token cannot change a replacement publisher"),
             CommandDoc(name: "camera.preview.start", cli: ["camera preview-start"], summary: "Warm camera and publish bounded JPEG preview events.", usage: "rushes camera preview-start --camera default", result: "{running,camera,name}"),
             CommandDoc(name: "camera.preview.stop", cli: ["camera preview-stop"], summary: "Close camera preview while idle.", usage: "rushes camera preview-stop", result: "{}"),
             CommandDoc(name: "record.cancel", cli: ["record cancel"], summary: "Cancel countdown.", usage: "rushes record cancel", result: "{state}"),
@@ -181,13 +186,14 @@ public struct ControlGuide: Codable, Equatable, Sendable {
                     + " and return the recording id. One recording at a time.",
                 usage: "rushes record start (--display ID|main | --window ID)"
                     + " [--camera ID|default] [--mic ID|default] [--system-audio]"
-                    + " [--countdown SEC] [--duration SEC] [--title TEXT] [--wait]",
+                    + " [--countdown SEC] [--duration SEC] [--quality 720p|1080p|1440p|4k] [--title TEXT] [--wait]",
                 params: [
                     ParamDoc(name: "display", flag: "--display", type: "string",
                              description: "Display to record, by stable id or \"main\"."
                                  + " Exactly one of display/window is required unless the take is camera-only."),
                     ParamDoc(name: "area", flag: "--area", type: "object", description: "Global point rectangle {x,y,width,height}; CLI X,Y,W,H."),
                     ParamDoc(name: "cursor", flag: "--cursor", type: "string", description: "baked or data (cursor-free master)."),
+                    ParamDoc(name: "quality", flag: "--quality", type: "string", description: "Longest screen edge: 720p (1280), 1080p (1920), 1440p (2560) or 4k (3840, the default ceiling). Never enlarges a smaller source."),
                     ParamDoc(name: "window", flag: "--window", type: "string",
                              description: "Window to record, by stable id."),
                     ParamDoc(name: "camera", flag: "--camera", type: "string",
@@ -303,6 +309,8 @@ public struct ControlGuide: Codable, Equatable, Sendable {
 
     private static func eventDocs() -> [EventDoc] {
         [
+            EventDoc(event: "recording-level", fields: ["recordingId", "result.rms", "result.clipping"], description: "Live microphone level while recording, about five per second; 0 while muted. Not persisted."),
+            EventDoc(event: "microphone-level", fields: ["result.previewToken", "result.microphone", "result.available", "result.rms", "result.peak", "result.clipping", "result.frames", "result.measuredAtMs"], description: "Bounded best-effort measurements of the selected native idle input. No PCM or persistence; unavailable is not silence."),
             EventDoc(event: "camera-preview", fields: ["result.jpeg", "result.mime", "result.mirrored"], description: "Bounded best-effort JPEG frames from the recording camera session."),
             EventDoc(event: "countdown", fields: ["recordingId", "result.remaining"], description: "Warm pipeline countdown, then zero at the gate."),
             EventDoc(

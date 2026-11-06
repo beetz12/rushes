@@ -107,6 +107,7 @@ public actor PostproductionService {
         try edit.validate(sourceDurationMs:try await duration(package,manifest:manifest))
         guard manifest.status == .complete || manifest.status == .recovered else { throw renderFailure("Finalize the recording before exporting it") }
         try protect(output,package:package,manifest:manifest)
+        if options.preset == .gif { return try await exportGIF(id:id,package:package,edit:edit,options:options,to:output,progress:progress) }
         // Freeze historical package policy once, including throughout remux.
         let effects=options.preset == .audio || options.preset == .editorTracks ? ProductionEffectsPolicy() : try ProductionEffectsPolicy.read(from:package.folderURL)
         let derived=options.preset == .audio || options.preset == .editorTracks ? nil : try await CameraBlurDerivedSource.shared.prepare(package:package,manifest:manifest,policy:effects)
@@ -160,9 +161,51 @@ public actor PostproductionService {
         try AtomicFileWriter.writeEncodable(result,to:stamp,encoder:ControlWire.encoder)
         try install(cache,to:output); return result
     }
+    /// The GIF range in edited-timeline milliseconds: defaults to the opening
+    /// seconds, never exceeds the cap, and is clamped to the edit's length.
+    static func gifRange(options:ExportOptions,editDurationMs:Double) -> (startMs:Double,durationMs:Double) {
+        let frame=1000/Double(options.fps)
+        let start=min(max(0,options.gifStartMs ?? 0),max(0,editDurationMs-frame))
+        let requested=min(options.gifDurationMs ?? ExportOptions.gifDefaultDurationMs,ExportOptions.gifMaxDurationMs)
+        return (start,max(frame,min(requested,editDurationMs-start)))
+    }
+    private func exportGIF(id:String,package:RecordingPackage,edit:EditDocument,options:ExportOptions,to output:URL,progress:(@Sendable (ExportProgress)->Void)?) async throws -> ExportResult {
+        let renders=try PostproductionPaths.managedDirectory("renders",in:package.folderURL,create:true)
+        let source=try PostproductionPaths.managedFile("gif-source-\(UUID().uuidString).mp4",in:renders)
+        defer {
+            if (try? PostproductionPaths.managedDirectory("renders",in:package.folderURL)) != nil,
+               let own=try? PostproductionPaths.managedFile(source.lastPathComponent,in:renders) { try? FileManager.default.removeItem(at:own) }
+        }
+        // The share render is cached, so GIFs reuse the same composed edit.
+        let rendered=try await export(id:id,to:source,progress:progress,editSnapshot:edit)
+        let range=Self.gifRange(options:options,editDurationMs:rendered.durationMs)
+        var resolved=options; resolved.gifStartMs=range.startMs; resolved.gifDurationMs=range.durationMs; resolved.gifWidth=options.gifWidth ?? ExportOptions.gifDefaultWidth
+        var hasher=SHA256()
+        hasher.update(data:Data("rushes.gif/1".utf8)); hasher.update(data:Data(rendered.cacheKey.utf8)); hasher.update(data:try ControlWire.encoder.encode(resolved))
+        let key=hasher.finalize().map { String(format:"%02x",$0) }.joined()
+        guard activeExports.insert(key).inserted else { throw ControlFailure(code:"render-in-progress",message:"This export is already running") }
+        defer { activeExports.remove(key) }
+        let cache=try PostproductionPaths.managedFile("\(key).gif",in:renders),stamp=try PostproductionPaths.managedFile("\(key).json",in:renders)
+        if let data=try? Data(contentsOf:stamp),var result=try? JSONDecoder().decode(ExportResult.self,from:data),FileManager.default.fileExists(atPath:cache.path) {
+            try Task.checkCancellation(); try install(cache,to:output)
+            result.path=output.path; result.cached=true; return result
+        }
+        let gif=try await AnimatedGIFWriter.encode(video:source,startMs:range.startMs,durationMs:range.durationMs,fps:resolved.fps,width:resolved.gifWidth!,maxBytes:ExportOptions.gifMaxBytes)
+        try Task.checkCancellation()
+        let partial=try PostproductionPaths.managedFile(".partial-\(UUID().uuidString).gif",in:renders)
+        defer { if let own=try? PostproductionPaths.managedFile(partial.lastPathComponent,in:renders) { try? FileManager.default.removeItem(at:own) } }
+        try AtomicFileWriter.write(gif.data,to:partial)
+        _=try PostproductionPaths.managedDirectory("renders",in:package.folderURL)
+        try AtomicFileWriter.posixRename(from:partial,to:cache)
+        let result=ExportResult(id:id,path:output.path,preset:ExportPreset.gif.rawValue,cacheKey:key,cached:false,durationMs:range.durationMs,width:gif.width,height:gif.height,fps:resolved.fps)
+        try AtomicFileWriter.writeEncodable(result,to:stamp,encoder:ControlWire.encoder)
+        try install(cache,to:output); return result
+    }
     private func cacheKey(package:RecordingPackage,manifest:RecordingManifest,edit:EditDocument,options:ExportOptions,effects:ProductionEffectsPolicy,derived:CameraBlurDerivedVideo?) throws -> String {
         var hasher=SHA256()
         var canonical=edit; canonical.revision=0; canonical.export.lastPath=nil
+        // The chosen share poster never changes rendered pixels.
+        canonical.meta.posterMs=nil
         hasher.update(data:Data("rushes.native-render/3".utf8)); hasher.update(data:try ControlWire.encoder.encode(canonical)); hasher.update(data:try ControlWire.encoder.encode(options))
         hasher.update(data:try ControlWire.encoder.encode(effects))
         if let derived { hasher.update(data:Data(derived.result.sha256.utf8)) }

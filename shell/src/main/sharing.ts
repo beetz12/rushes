@@ -24,7 +24,7 @@ export interface ShareProvider {
     reservation: Reservation,
     input: {
       path: string;
-      kind: 'video' | 'poster' | 'captions' | 'transcript';
+      kind: 'video' | 'poster' | 'preview' | 'captions' | 'transcript';
       signal?: AbortSignal;
       onProgress?: (value: any) => void;
     },
@@ -34,6 +34,7 @@ export interface ShareProvider {
     input: {
       video: Asset;
       poster?: Asset;
+      preview?: Asset;
       width: number;
       height: number;
       durationMs: number;
@@ -55,6 +56,7 @@ type Snapshot = {
   id: string;
   videoPath: string;
   posterPath: string;
+  previewPath?: string;
   captionsPath?: string;
   transcriptPath?: string;
   durationMs: number;
@@ -121,6 +123,10 @@ export class SharingService {
         ),
         { code: 'share-provider-mismatch' },
       );
+  }
+  /** True while any share is reserving, uploading or publishing. */
+  busy() {
+    return this.running.size > 0 || this.reserving.size > 0;
   }
   async status(id: string): Promise<ShareStatus> {
     const show = await this.engine.request('show', { id });
@@ -216,34 +222,41 @@ export class SharingService {
     const identity = this.providerIdentity();
     const version = this.configurationVersion();
     const list = await this.engine.request('list', { limit: 1000 });
-    const snapshots: Array<{ key: string; id: string; title: string; feedback: ShareFeedback }> =
-      [];
+    const snapshots: Array<{ key: string; id: string; title: string; feedback: ShareFeedback }> & {
+      partial?: boolean;
+    } = [];
+    // A non-enumerable flag: the poller keeps remembered state for shares it could not load.
+    const partial = <T extends object>(value: T) =>
+      Object.defineProperty(value, 'partial', { value: true, enumerable: false });
     for (const row of list.recordings ?? []) {
       try {
         const state = await this.read(join(row.folder, 'share', 'state.json'));
         if (!state || state.state === 'unshared' || state.provider !== identity) continue;
         const feedback = await this.feedback(row.id);
         if (identity !== this.providerIdentity() || version !== this.configurationVersion())
-          return [];
+          return partial([]);
         snapshots.push({
-          key: `${identity}:${String(version)}:${state.reservation.id}`,
+          // Stable across launches so the poller can persist what it already reported.
+          key: `${identity}:${state.reservation.id}`,
           id: row.id,
           title: row.title ?? 'Your recording',
           feedback,
         });
       } catch (error) {
-        if ((error as any).code !== 'share-feature-unsupported')
+        if ((error as any).code !== 'share-feature-unsupported') {
+          if (!snapshots.partial) partial(snapshots);
           this.notify({
             event: 'warning',
             code: 'share-feedback-poll-failed',
             id: row.id,
             message: 'Viewer feedback could not be refreshed. The last view count is kept.',
           });
+        }
       }
     }
     return identity === this.providerIdentity() && version === this.configurationVersion()
       ? snapshots
-      : [];
+      : partial([]);
   }
   private async prepare(id: string, policy?: SharePolicyPatch) {
     const current = this.reserving.get(id);
@@ -386,6 +399,17 @@ export class SharingService {
           kind: 'transcript',
           signal,
         });
+      // The animated preview is a nice-to-have for link unfurls: never fail the share over it.
+      if (snapshot.previewPath)
+        try {
+          assets.preview = await provider.upload(reservation, {
+            path: snapshot.previewPath,
+            kind: 'preview',
+            signal,
+          });
+        } catch (error) {
+          if (signal.aborted) throw error;
+        }
       signal.throwIfAborted();
       const metadata = {
         title: snapshot.title,
@@ -400,6 +424,7 @@ export class SharingService {
       const published = await provider.publish(reservation, {
         video: assets.video,
         poster: assets.poster,
+        ...(assets.preview ? { preview: assets.preview } : {}),
         width: snapshot.width,
         height: snapshot.height,
         durationMs: Math.round(snapshot.durationMs),

@@ -248,16 +248,27 @@ export class BucketProvider implements ShareProvider {
             throw new ShareError('INVALID_VIDEO', 'A video asset is required.');
         await this.verifySize(`s/${share.id}/${input.video.file}`, input.video.bytes);
         const previous = share.manifest.video?.file;
+        const previousPreview = share.manifest.preview;
         const manifest = applyMetadata(share.manifest, publicationMetadata(input));
         const next: ShareReservation = { ...share, manifest: { ...manifest, status: 'ready', video: { file: input.video.file, bytes: input.video.bytes, width: input.width, height: input.height }, ...(input.poster ? { poster: assertAssetFile(input.poster.file) } : {}) } };
+        // A republish without a preview must not keep pointing at an older one.
+        delete next.manifest.preview;
+        if (input.preview?.kind === 'preview' && input.preview.file.startsWith('preview-')) {
+            const file = assertAssetFile(input.preview.file);
+            try { await this.verifySize(`s/${share.id}/${file}`, input.preview.bytes); next.manifest.preview = file; }
+            catch { /* best effort: the share publishes without its animated preview */ }
+        }
         for(const file of [...(next.manifest.captions?.map(c=>c.file)??[]), ...(next.manifest.transcript?[next.manifest.transcript]:[])]) await this.request('HEAD', `s/${share.id}/${assertAssetFile(file)}`);
         await this.document(next);
         await this.save(next);
         if (previous && previous !== input.video.file)
             await this.request('DELETE', `s/${share.id}/${assertAssetFile(previous)}`);
+        // A superseded preview may show frames the owner trimmed away; remove it from storage too.
+        if (previousPreview?.startsWith('preview-') && previousPreview !== next.manifest.preview)
+            await this.request('DELETE', `s/${share.id}/${assertAssetFile(previousPreview)}`);
         return next;
     }
-    async updateMetadata(share: ShareReservation, patch: Partial<MetadataPatch>): Promise<ShareReservation> { for (const f of [patch.poster, patch.transcript, ...(patch.captions?.map(c => c.file) ?? [])])
+    async updateMetadata(share: ShareReservation, patch: Partial<MetadataPatch>): Promise<ShareReservation> { for (const f of [patch.poster, patch.preview, patch.transcript, ...(patch.captions?.map(c => c.file) ?? [])])
         if (f)
             assertAssetFile(f); const next = { ...share, manifest: applyMetadata(share.manifest, patch) }; await this.document(next); return this.save(next); }
     private async list(prefix: string): Promise<string[]> { const keys: string[] = []; let token = ''; do {

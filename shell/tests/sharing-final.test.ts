@@ -10,6 +10,10 @@ import { AutoShare, ViewNotifications } from '../src/main/share-lifecycle';
 import { defaultOptions, recordingOptionsSchema } from '../src/shared/contracts';
 
 const roots: string[] = [];
+const memoryStore = () => {
+  let shares = {};
+  return { load: async () => shares, save: async (next: typeof shares) => void (shares = next) };
+};
 afterEach(async () => {
   vi.useRealTimers();
   for (const root of roots.splice(0)) await fixtures.rm(root, { recursive: true, force: true });
@@ -388,7 +392,7 @@ describe('automatic sharing and new-play notifications', () => {
     ]);
     const emit = vi.fn(),
       notify = vi.fn();
-    const poller = new ViewNotifications(load, emit, notify);
+    const poller = new ViewNotifications(load, emit, notify, memoryStore());
     poller.start();
     await vi.advanceTimersByTimeAsync(0);
     expect(notify).not.toHaveBeenCalled();
@@ -426,7 +430,7 @@ describe('automatic sharing and new-play notifications', () => {
     );
     const emit = vi.fn(),
       notify = vi.fn();
-    const poller = new ViewNotifications(load, emit, notify);
+    const poller = new ViewNotifications(load, emit, notify, memoryStore());
     const pending = poller.poll();
     poller.stop();
     release([
@@ -451,6 +455,7 @@ describe('automatic sharing and new-play notifications', () => {
       ],
       emit,
       notify,
+      memoryStore(),
     );
     await restarted.poll();
     expect(notify).not.toHaveBeenCalled();

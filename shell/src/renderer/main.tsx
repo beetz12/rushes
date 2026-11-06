@@ -6,18 +6,24 @@ import {
   initialAppErrors,
 } from '../shared/app-errors';
 import { isConnectionErrorCode } from '../shared/connection-error';
+import { libraryRecordingStatus, recordingHealth, type MediaCheck } from './recording-health';
 import { createRoot } from 'react-dom/client';
 import {
   formatDuration,
   defaultOptions,
-  countdownChoices,
-  countdownFromSelection,
   recordingStartArguments,
   selectedExportPreset,
   type RecordingOptions,
   type ExportPreset,
   type ExportOutput,
   type SharePolicyPatch,
+  preflightAcknowledgmentSchema,
+  microphoneLevelSchema,
+  screenPreviewSchema,
+  preflightInputs,
+  type PreflightAcknowledgment,
+  type MicrophoneLevel,
+  type ScreenPreview,
 } from '../shared/contracts';
 import {
   CircleDot,
@@ -54,12 +60,28 @@ import {
   sidebarDraft,
   persistReviewDraft,
   refreshedMetadata,
+  posterTimeForPlayhead,
   type DraftState,
 } from '../shared/review-draft';
 import { ZoomEditor } from './zoom-editor';
+import { LaunchAtLoginSetting, LibrarySortControl, LibraryThumbnail } from './library-extras';
+import { ImportVideosButton } from './library-import';
+import { defaultLibrarySort, isLibrarySort, sortRecordings } from '../shared/library-sort';
 import { OnboardingTour } from './onboarding-tour';
+import { UpdateSettings } from './update-settings';
 import { CountdownAudio } from './countdown-audio';
-import { isPrimaryView } from '../shared/navigation';
+import { isPrimaryView, type PrimaryView } from '../shared/navigation';
+import { CompactHeader, CompactRecorder } from './compact-recorder';
+import {
+  bubbleSizeLabel,
+  levelFraction,
+  liveWarningText,
+  nextBubbleSize,
+  timeLimitIsNear,
+  timeLimitRemainingMs,
+} from '../shared/live-recording';
+import { createNativeAPI } from './native-api';
+import { ShareSetupWizard } from './share-setup';
 import { reviewVideoSources } from '../shared/review-video';
 import {
   captureIntent,
@@ -69,7 +91,7 @@ import {
   type ScreenSelection,
 } from '../shared/recording-setup';
 document.documentElement.dataset.view = location.hash.slice(1) || 'recorder';
-const api = window.rushes;
+const api = window.rushes ? createNativeAPI(window.rushes) : window.rushes;
 function Icon({ name, size = 20 }: { name: string; size?: number }) {
   const icons: Record<string, LucideIcon> = {
     record: CircleDot,
@@ -99,13 +121,34 @@ function App() {
   const receivedNavigation = useRef(false);
   const startRef = useRef<() => void>(() => {});
   const [openRecording, setOpenRecording] = useState<{ id: string }>();
-  const navigate = useCallback((next: string) => {
-    if (!isPrimaryView(next)) return;
-    viewRef.current = next;
-    document.documentElement.dataset.view = next;
-    history.replaceState(null, '', `#${next}`);
-    setView(next);
-    setOpenRecording(undefined);
+  const navigationGuard = useRef<(() => Promise<void>) | undefined>(undefined);
+  const navigationRevision = useRef(0);
+  const registerNavigationGuard = useCallback((flush: () => Promise<void>) => {
+    navigationGuard.current = flush;
+    return () => {
+      if (navigationGuard.current === flush) navigationGuard.current = undefined;
+    };
+  }, []);
+  const navigate = useCallback(async (next: string) => {
+    if (!isPrimaryView(next)) return false;
+    const revision = ++navigationRevision.current;
+    try {
+      await navigationGuard.current?.();
+      if (revision !== navigationRevision.current) return false;
+      viewRef.current = next;
+      document.documentElement.dataset.view = next;
+      history.replaceState(null, '', '#' + next);
+      setView(next);
+      setOpenRecording(undefined);
+      return true;
+    } catch (error) {
+      if (revision === navigationRevision.current) {
+        setError('Save the current draft before leaving: ' + String(error));
+        if (isPrimaryView(viewRef.current))
+          void api.restorePrimaryView(viewRef.current).catch(() => {});
+      }
+      return false;
+    }
   }, []);
   const [errors, dispatchError] = useReducer(appErrors, initialAppErrors);
   const [note, setNote] = useState('');
@@ -117,6 +160,8 @@ function App() {
   }, []);
   const [busy, setBusy] = useState(false);
   const [options, setOptions] = useState<RecordingOptions>(defaultOptions);
+  const optionsRef = useRef(options);
+  const optionRevision = useRef(0);
   const [status, setStatus] = useState<any>({ state: 'loading' });
   const [targets, setTargets] = useState<any>({
     displays: [],
@@ -126,6 +171,14 @@ function App() {
   });
   const [permissions, setPermissions] = useState<any>({});
   const [preview, setPreview] = useState('');
+  const inputAcknowledgment = useRef<PreflightAcknowledgment | undefined>(undefined);
+  const receivedPreflight = useRef(false);
+  const [screenPreview, setScreenPreview] = useState<ScreenPreview>();
+  const [microphoneLevel, setMicrophoneLevel] = useState<{
+    value: MicrophoneLevel;
+    receivedAt: number;
+  }>();
+  const [feedbackError, setFeedbackError] = useState('');
   const lastCamera = useRef('default');
   const lastScreen = useRef<ScreenSelection | undefined>(undefined);
   const [countdown, setCountdown] = useState<number | null>(null);
@@ -135,7 +188,10 @@ function App() {
   const [presets, setPresets] = useState<Record<string, RecordingOptions>>({}),
     [presetName, setPresetName] = useState('');
   const [micMuted, setMicMuted] = useState(false),
-    [systemMuted, setSystemMuted] = useState(false);
+    [systemMuted, setSystemMuted] = useState(false),
+    [bubbleHidden, setBubbleHidden] = useState(false),
+    [liveWarning, setLiveWarning] = useState<{ code?: string; message?: string }>(),
+    [recordingLevel, setRecordingLevel] = useState<{ rms: number; clipping: boolean }>();
   const run = useCallback(async (fn: () => Promise<any>) => {
     setError('');
     setBusy(true);
@@ -152,14 +208,21 @@ function App() {
       const p = await api.request('permissions.check');
       setPermissions(p);
       // Native targets omits ungranted screens but still lists cameras/mics.
-      setTargets(await api.request('targets'));
+      const sources = await api.request('targets');
+      setTargets({
+        ...sources,
+        windows: sources.windows.filter(
+          (item: any) => !String(item.owningApplication).startsWith('com.nexai.rushes'),
+        ),
+      });
     } catch (e) {
       setError(String(e), (e as { code?: string })?.code);
     }
     try {
       setStatus(await api.request('status'));
-    } catch {
-      setStatus({ state: 'offline' });
+    } catch (error) {
+      if ((error as { code?: string })?.code !== 'status-superseded')
+        setStatus({ state: 'offline' });
     }
   }, []);
   useEffect(() => {
@@ -168,33 +231,68 @@ function App() {
       return;
     }
     api.bootstrap().then((v) => {
-      setOptions(v.options);
+      if (optionRevision.current === 0) {
+        optionsRef.current = v.options;
+        setOptions(v.options);
+      }
+      if (!receivedPreflight.current && v.inputPreflight) {
+        const ack = preflightAcknowledgmentSchema.safeParse(v.inputPreflight);
+        if (ack.success) inputAcknowledgment.current = ack.data;
+      }
       if (
         !receivedNavigation.current &&
         isPrimaryView(viewRef.current) &&
         isPrimaryView(v.primaryView)
       )
-        navigate(v.primaryView);
+        void navigate(v.primaryView).then((moved) => {
+          if (moved && v.reviewId && ['review', 'editor'].includes(v.primaryView!))
+            setOpenRecording({ id: v.reviewId });
+        });
     });
     void api.presets('list').then(setPresets);
     void refresh();
     const off = api.onEvent((e) => {
+      if (e.event === 'flush-draft' && typeof e.token === 'string') {
+        const token = e.token;
+        void (async () => {
+          try {
+            await navigationGuard.current?.();
+            await api.draftFlushed(token);
+          } catch (error) {
+            await api.draftFlushed(token, String(error).slice(0, 2000));
+          }
+        })().catch(() => {});
+      }
       if (e.event === 'navigate' && isPrimaryView(e.view)) {
         receivedNavigation.current = true;
-        navigate(e.view);
+        void navigate(e.view);
       }
       if (e.event === 'open-recording' && typeof e.id === 'string') {
         receivedNavigation.current = true;
-        navigate('library');
-        setOpenRecording({ id: e.id });
+        void navigate('review').then((moved) => {
+          if (moved) setOpenRecording({ id: e.id as string });
+        });
       }
       if (e.event === 'hotkey-start') {
         receivedNavigation.current = true;
-        navigate('recorder');
-        startRef.current();
+        void navigate('recorder').then((moved) => {
+          if (moved) startRef.current();
+        });
       }
       if (e.event === 'error') setError(String(e.message ?? 'Native engine error'), e.code);
-      if (e.event === 'warning') setNote(String(e.message ?? e.code));
+      if (e.event === 'warning') {
+        setNote(String(e.message ?? e.code));
+        setLiveWarning({
+          code: typeof e.code === 'string' ? e.code : undefined,
+          message: typeof e.message === 'string' ? e.message : undefined,
+        });
+      }
+      if (e.event === 'bubble-visibility') setBubbleHidden(e.visible === false);
+      if (e.event === 'recording-level') {
+        const value = e.result as { rms?: unknown; clipping?: unknown } | undefined;
+        if (typeof value?.rms === 'number')
+          setRecordingLevel({ rms: value.rms, clipping: value.clipping === true });
+      }
       if (e.event === 'engine-ready') void refresh();
       if (e.event === 'engine-reconnected') {
         setStatus(e.status ?? { state: e.state });
@@ -202,6 +300,44 @@ function App() {
         countdownAudio.cancel();
         dispatchError({ type: 'verified-recovery' });
         setNote('Native engine connection restored.');
+      }
+      if (e.event === 'preflight-cleared') {
+        receivedPreflight.current = true;
+        inputAcknowledgment.current = undefined;
+        setScreenPreview(undefined);
+        setMicrophoneLevel(undefined);
+        setFeedbackError('');
+      }
+      if (e.event === 'preflight-ready') {
+        receivedPreflight.current = true;
+        const ack = preflightAcknowledgmentSchema.safeParse(e.result);
+        if (ack.success) {
+          inputAcknowledgment.current = ack.data;
+          setFeedbackError('');
+        }
+      }
+      if (e.event === 'screen-preview') {
+        const image = screenPreviewSchema.safeParse(e.result);
+        if (
+          image.success &&
+          image.data.previewToken === inputAcknowledgment.current?.previewToken
+        ) {
+          setScreenPreview(image.data);
+          setFeedbackError('');
+        }
+      }
+      if (e.event === 'microphone-level') {
+        const level = microphoneLevelSchema.safeParse(e.result);
+        if (
+          level.success &&
+          level.data.previewToken === inputAcknowledgment.current?.previewToken &&
+          level.data.microphone === inputAcknowledgment.current.microphone
+        )
+          setMicrophoneLevel({ value: level.data, receivedAt: performance.now() });
+      }
+      if (e.event === 'preflight-error') {
+        setScreenPreview(undefined);
+        setFeedbackError(String(e.message ?? 'Input check unavailable.'));
       }
       if (e.event === 'camera-preview-cleared') setPreview('');
       if (e.event === 'camera-preview') {
@@ -215,11 +351,14 @@ function App() {
           state: 'recording',
           recording: { recordingID: e.recordingId, elapsedMediaNs: 0 },
         });
+        setBubbleHidden(false);
+        setLiveWarning(undefined);
+        setRecordingLevel(undefined);
         setCountdown(null);
         countdownAudio.cancel();
       }
       if (e.event === 'recording-stopped') {
-        setStatus({ state: 'idle' });
+        setStatus({ state: 'finishing' });
         setCountdown(null);
         countdownAudio.cancel();
       }
@@ -234,18 +373,20 @@ function App() {
         setCountdown(null);
         countdownAudio.cancel();
       }
-      if (e.event === 'window-anchor')
-        setOptions((previous) => ({
-          ...previous,
-          [e.view === 'bubble' ? 'bubbleAnchor' : 'barAnchor']: e.anchor,
-        }));
+      if (e.event === 'window-anchor') {
+        const field = e.view === 'bubble' ? 'bubbleAnchor' : 'barAnchor';
+        optionsRef.current = { ...optionsRef.current, [field]: e.anchor };
+        setOptions((previous) => ({ ...previous, [field]: e.anchor }));
+      }
       if (e.event === 'area-selected') {
-        setOptions((o) => ({
-          ...o,
+        const next: RecordingOptions = {
+          ...optionsRef.current,
           mode: 'area',
-          source: typeof e.source === 'string' ? e.source : o.source,
+          source: typeof e.source === 'string' ? e.source : optionsRef.current.source,
           area: e.area as any,
-        }));
+        };
+        optionsRef.current = next;
+        setOptions(next);
         setNote('Area selected. Ready to record.');
       }
     });
@@ -264,14 +405,26 @@ function App() {
     };
   }, [refresh]);
   const updateOptions = (change: Partial<RecordingOptions>) => {
-    const next = { ...options, ...change };
+    const revision = ++optionRevision.current;
+    const previous = optionsRef.current;
+    const next = { ...previous, ...change };
+    optionsRef.current = next;
+    if (JSON.stringify(preflightInputs(previous)) !== JSON.stringify(preflightInputs(next))) {
+      inputAcknowledgment.current = undefined;
+      setScreenPreview(undefined);
+      setMicrophoneLevel(undefined);
+      setFeedbackError('');
+    }
     return api.saveOptions(next).then(
       () => {
-        setOptions(next);
+        if (revision === optionRevision.current) setOptions(next);
         return true;
       },
       (error) => {
-        setError(String(error), (error as { code?: string })?.code);
+        if (revision === optionRevision.current) {
+          optionsRef.current = previous;
+          setError(String(error), (error as { code?: string })?.code);
+        }
         return false;
       },
     );
@@ -289,6 +442,8 @@ function App() {
         setStatus({ state: r.state, recording: { recordingID: r.id, elapsedMediaNs: 0 } });
         setCountdown(null);
         return r;
+      } catch (error) {
+        if ((error as { code?: string })?.code !== 'cancelled') throw error;
       } finally {
         setCountdown(null);
         countdownAudio.cancel();
@@ -317,7 +472,7 @@ function App() {
   const chooseCamera = (camera: string) =>
     run(async () => {
       if (camera === 'none') {
-        if (await updateOptions({ camera })) await api.request('camera.preview.stop');
+        await updateOptions({ camera });
         return;
       }
       let access = permissions;
@@ -329,7 +484,7 @@ function App() {
         await refresh();
         if (access.camera !== 'granted') return;
       }
-      if (await updateOptions({ camera })) await api.request('camera.preview.start', { camera });
+      await updateOptions({ camera });
     });
   const chooseMode = (mode: 'display' | 'window' | 'area') =>
     updateOptions({
@@ -343,44 +498,27 @@ function App() {
   const intent = captureIntent(options);
   const selectIntent = (next: CaptureIntent) =>
     run(async () => {
-      if (options.camera !== 'none') lastCamera.current = options.camera;
-      if (options.mode !== 'camera-only')
-        lastScreen.current = { mode: options.mode, source: options.source, area: options.area };
+      const current = optionsRef.current;
+      if (current.camera !== 'none') lastCamera.current = current.camera;
+      if (current.mode !== 'camera-only')
+        lastScreen.current = { mode: current.mode, source: current.source, area: current.area };
       const camera =
-        options.camera !== 'none'
-          ? options.camera
+        current.camera !== 'none'
+          ? current.camera
           : lastCamera.current === 'default'
             ? (targets.cameras[0]?.id ?? 'default')
             : lastCamera.current;
-      const chosen = captureIntentOptions(options, next, camera, lastScreen.current);
+      const chosen = captureIntentOptions(current, next, camera, lastScreen.current);
       if (!(await updateOptions(chosen))) return;
       setPreview('');
-      if (chosen.camera === 'none') await api.request('camera.preview.stop');
-      else {
-        let access = permissions;
-        if (access.camera !== 'granted') {
-          access = await api.request(
-            access.camera === 'denied' ? 'permissions.settings' : 'permissions.request',
-            { permission: 'camera' },
-          );
-          await refresh();
-        }
-        if (access.camera === 'granted')
-          await api.request('camera.preview.start', { camera: chosen.camera });
+      if (chosen.camera !== 'none' && permissions.camera !== 'granted') {
+        await api.request(
+          permissions.camera === 'denied' ? 'permissions.settings' : 'permissions.request',
+          { permission: 'camera' },
+        );
+        await refresh();
       }
     });
-  const sourceLabel =
-    options.mode === 'camera-only'
-      ? 'Screen capture is off'
-      : options.mode === 'area'
-        ? options.area
-          ? `${Math.round(options.area.width)} × ${Math.round(options.area.height)} pt selected`
-          : 'No area selected yet'
-        : options.mode === 'window'
-          ? targets.windows.find((item: any) => item.id === options.source)?.title ||
-            'Choose a window below'
-          : targets.displays.find((item: any) => item.id === options.source)?.name ||
-            'Main display';
   if (view === 'bubble')
     return (
       <div
@@ -414,12 +552,27 @@ function App() {
   if (view === 'teleprompter') return <TeleprompterOverlay />;
   if (view === 'drawing') return <DrawingOverlay />;
   if (view === 'drawing-tools') return <DrawingTools run={run} error={error} />;
-  if (view === 'bar')
+  if (view === 'bar') {
+    const elapsedMs = (status.recording?.elapsedMediaNs ?? 0) / 1e6;
+    const remainingMs = timeLimitRemainingMs(options.timeLimitMinutes, elapsedMs);
+    const limitNear = timeLimitIsNear(options.timeLimitMinutes, elapsedMs);
+    const barMessage = error
+      ? liveWarningText(undefined, error)
+      : liveWarning
+        ? liveWarningText(liveWarning.code, liveWarning.message)
+        : '';
     return (
       <div className="floating-bar">
         <span className="record-dot" />
-        <strong>{formatDuration((status.recording?.elapsedMediaNs ?? 0) / 1e6)}</strong>
-        <span className="bar-state">{status.state === 'paused' ? 'Paused' : 'Recording'}</span>
+        <strong>{formatDuration(elapsedMs)}</strong>
+        <span className="bar-state">
+          {status.state === 'paused' ? 'Paused' : 'Recording'}
+          {remainingMs !== undefined && (
+            <span className={'bar-limit ' + (limitNear ? 'near' : '')} role="timer">
+              {formatDuration(remainingMs)} left
+            </span>
+          )}
+        </span>
         <button
           title={status.state === 'paused' ? 'Resume' : 'Pause'}
           onClick={() => control(status.state === 'paused' ? 'record.resume' : 'record.pause')}
@@ -456,6 +609,18 @@ function App() {
         >
           <Icon name="mic" />
           {micMuted && <small>×</small>}
+          {!micMuted && recordingLevel && (
+            <span
+              className={'bar-level ' + (recordingLevel.clipping ? 'clipping' : '')}
+              role="meter"
+              aria-label="Microphone level"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(levelFraction(recordingLevel.rms) * 100)}
+            >
+              <span style={{ height: String(levelFraction(recordingLevel.rms) * 100) + '%' }} />
+            </span>
+          )}
         </button>
         {options.mode !== 'camera-only' && options.systemAudio && (
           <button
@@ -469,6 +634,38 @@ function App() {
             {systemMuted && <small>×</small>}
           </button>
         )}
+        {options.camera !== 'none' && (
+          <>
+            <button
+              title={bubbleHidden ? 'Show camera bubble' : 'Hide camera bubble'}
+              aria-pressed={!bubbleHidden}
+              onClick={() =>
+                run(async () => {
+                  await api.window(bubbleHidden ? 'show-bubble' : 'hide-bubble');
+                  setBubbleHidden(!bubbleHidden);
+                })
+              }
+            >
+              <Icon name="camera" />
+              {bubbleHidden && <small>×</small>}
+            </button>
+            {!bubbleHidden && (
+              <button
+                className="bubble-size-btn"
+                title={`Camera bubble size: ${bubbleSizeLabel(options.bubbleSize)} (click to change)`}
+                onClick={() =>
+                  run(async () => {
+                    const size = nextBubbleSize(options.bubbleSize);
+                    await api.window('bubble-size', size);
+                    setOptions((previous) => ({ ...previous, bubbleSize: size }));
+                  })
+                }
+              >
+                {bubbleSizeLabel(options.bubbleSize)}
+              </button>
+            )}
+          </>
+        )}
         <button title="Voice teleprompter" onClick={() => run(() => api.window('teleprompter'))}>
           Aa
         </button>
@@ -479,15 +676,17 @@ function App() {
           <Icon name="stop" />
           Stop
         </button>
-        {(error || note) && (
-          <span className="bar-error" title={error || note}>
-            !
+        {barMessage && (
+          <span className="bar-warning" role="alert" title={error || liveWarning?.message || note}>
+            {barMessage}
           </span>
         )}
       </div>
     );
+  }
+  const compact = view === 'recorder' || view === 'review';
   return (
-    <div className="app">
+    <div className={'app ' + (compact ? 'compact-app' : '')}>
       <WindowChrome run={run} />
       <aside className="sidebar">
         <div className="brand">
@@ -541,9 +740,17 @@ function App() {
         </div>
       </aside>
       <main className="main">
+        {compact && (
+          <CompactHeader
+            review={view === 'review'}
+            library={() => void api.window('library')}
+            settings={() => void api.window('settings')}
+            refresh={view === 'recorder' ? () => void run(refresh) : undefined}
+          />
+        )}
         <header className="topbar">
           <span>
-            {view === 'library'
+            {view === 'library' || view === 'editor' || view === 'review'
               ? 'My recordings'
               : view === 'settings'
                 ? 'Settings'
@@ -590,378 +797,120 @@ function App() {
             </div>
           )}
           {view === 'recorder' ? (
-            <>
-              <div className="page-heading">
-                <div>
-                  <p className="eyebrow">RECORD</p>
-                  <h1>New recording</h1>
-                  <p className="subtitle">
-                    Choose what to capture, check your devices, then press Start.
-                  </p>
-                </div>
-                <button
-                  className="icon-button"
-                  title="Refresh devices"
-                  onClick={() => run(refresh)}
-                >
-                  <Icon name="refresh" />
-                </button>
-              </div>
-              {((options.mode !== 'camera-only' && permissions.screen !== 'granted') ||
-                (options.camera !== 'none' && permissions.camera !== 'granted') ||
-                (options.mic !== 'none' && permissions.microphone !== 'granted') ||
-                guideTarget === 'permissions') && (
-                <PermissionPanel
-                  permissions={permissions}
-                  refresh={refresh}
-                  run={run}
-                  screenRequired={options.mode !== 'camera-only'}
-                  cameraRequired={options.camera !== 'none'}
-                  microphoneRequired={options.mic !== 'none'}
-                />
-              )}
-              <div className="studio-card">
-                <div
-                  className="capture-intents"
-                  role="group"
-                  aria-label="What to record"
-                  data-tour="capture-mode"
-                >
-                  {(
-                    [
-                      [
-                        'screen-camera',
-                        'Screen + camera',
-                        'Walk through something together',
-                        'screen',
-                      ],
-                      ['screen', 'Screen only', 'Show your screen without a camera', 'screen'],
-                      ['camera', 'Camera only', 'Talk to your audience, screen off', 'camera'],
-                    ] as const
-                  ).map(([value, label, description, icon]) => (
-                    <button
-                      key={value}
-                      aria-pressed={intent === value}
-                      disabled={active || busy || countdown !== null}
-                      className={intent === value ? 'capture-intent selected' : 'capture-intent'}
-                      onClick={() => void selectIntent(value)}
-                    >
-                      <Icon name={icon} size={22} />
-                      <strong>{label}</strong>
-                      <small>{description}</small>
-                    </button>
-                  ))}
-                </div>
-                <div className="studio-body">
-                  <div data-tour="source">
-                    {options.mode !== 'camera-only' && (
-                      <div className="source-tabs" role="group" aria-label="Screen capture area">
-                        {[
-                          ['display', 'Entire screen'],
-                          ['window', 'A window'],
-                          ['area', 'Select area'],
-                        ].map(([mode, label]) => (
-                          <button
-                            key={mode}
-                            aria-pressed={options.mode === mode}
-                            className={options.mode === mode ? 'selected' : ''}
-                            disabled={active || busy || countdown !== null}
-                            onClick={() => chooseMode(mode as 'display' | 'window' | 'area')}
-                          >
-                            <Icon name={mode === 'camera-only' ? 'camera' : 'screen'} size={18} />
-                            {label}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                    <div
-                      className={`studio-preview ${options.mode === 'camera-only' ? 'camera-only-preview' : ''}`}
-                    >
-                      <div className="screen-symbol">
-                        <Icon
-                          name={options.mode === 'camera-only' ? 'camera' : 'screen'}
-                          size={50}
-                        />
-                      </div>
-                      <h2>
-                        {options.mode === 'camera-only'
-                          ? 'Just you, on camera'
-                          : options.mode === 'window'
-                            ? 'Choose a window'
-                            : options.mode === 'area'
-                              ? 'A focused frame'
-                              : 'Your screen, clearly'}
-                      </h2>
-                      <p>
-                        {options.mode === 'camera-only'
-                          ? 'Screen capture is off. Enabled camera and microphone inputs stay separate.'
-                          : options.mode === 'area'
-                            ? options.area
-                              ? `${Math.round(options.area.width)} × ${Math.round(options.area.height)} pt selected`
-                              : 'Drag a rectangle around what matters.'
-                            : 'Choose the screen content you want to include.'}
-                      </p>
-                      <strong className="selected-source" aria-label="Selected capture source">
-                        {sourceLabel}
-                      </strong>
-                      {options.mode === 'camera-only' ? null : options.mode === 'area' ? (
-                        <button
-                          className="secondary"
-                          disabled={active || busy}
-                          onClick={() => api.window('area')}
-                        >
-                          Select recording area
-                        </button>
-                      ) : (
-                        <select
-                          aria-label="Recording source"
-                          disabled={active || busy}
-                          value={options.source}
-                          onChange={(e) => updateOptions({ source: e.target.value })}
-                        >
-                          {options.mode === 'display' ? (
-                            <>
-                              <option value="main">Main display</option>
-                              {targets.displays.map((d: any) => (
-                                <option key={d.id} value={d.id}>
-                                  {d.name} · {d.widthPoints} × {d.heightPoints}
-                                </option>
-                              ))}
-                            </>
-                          ) : (
-                            targets.windows.map((w: any) => (
-                              <option key={w.id} value={w.id}>
-                                {w.title || w.owningApplication || w.id}
-                              </option>
-                            ))
-                          )}
-                        </select>
-                      )}
-                      {options.camera !== 'none' && (
-                        <div className="preview-camera">
-                          {preview ? (
-                            <img src={preview} alt="Live camera" />
-                          ) : (
-                            <Icon name="camera" size={36} />
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                  <div className="capture-options" data-tour="devices">
-                    <label>
-                      <span>
-                        <Icon name="camera" />
-                        Camera
-                      </span>
-                      <select
-                        aria-label="Camera device"
-                        disabled={active}
-                        value={options.camera}
-                        onChange={(e) => void chooseCamera(e.target.value)}
-                      >
-                        <option value="none">Camera off</option>
-                        <option value="default">Default camera</option>
-                        {targets.cameras.map((c: any) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>
-                        <Icon name="mic" />
-                        Microphone
-                      </span>
-                      <select
-                        aria-label="Microphone device"
-                        disabled={active}
-                        value={options.mic}
-                        onChange={(e) => {
-                          const mic = e.target.value;
-                          if (mic !== 'none' && permissions.microphone !== 'granted')
-                            void run(async () => {
-                              await api.request('permissions.request', {
-                                permission: 'microphone',
-                              });
-                              await refresh();
-                              updateOptions({ mic });
-                            });
-                          else updateOptions({ mic });
-                        }}
-                      >
-                        <option value="none">Microphone off</option>
-                        {targets.microphones.map((c: any) => (
-                          <option key={c.id} value={c.id}>
-                            {c.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      <span>
-                        <Icon name="screen" />
-                        System audio{' '}
-                        {options.mode === 'camera-only' && <small>· needs screen capture</small>}
-                      </span>
-                      <select
-                        aria-label="System audio"
-                        disabled={active || options.mode === 'camera-only'}
-                        value={String(options.systemAudio)}
-                        onChange={(e) => updateOptions({ systemAudio: e.target.value === 'true' })}
-                      >
-                        <option value="false">Off</option>
-                        <option value="true">On</option>
-                      </select>
-                    </label>
-                  </div>
-                </div>
-                <div
-                  className={`recording-readiness ${readiness.blockingReason ? 'needs-attention' : ''}`}
-                  role="status"
-                  aria-live="polite"
-                >
-                  <Icon name={readiness.blockingReason ? 'record' : 'check'} size={18} />
-                  <div>
-                    <strong>
-                      {active
-                        ? 'Recording in progress'
-                        : (readiness.blockingReason ?? 'Ready to record')}
-                    </strong>
-                    {!active && (
-                      <span>
-                        {readiness.voiceOff
-                          ? 'Microphone is off — your voice will not be recorded.'
-                          : 'Your microphone is included.'}
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="record-footer" data-tour="start">
-                  <label className="countdown-label">
-                    Countdown{' '}
+            <CompactRecorder
+              options={options}
+              targets={targets}
+              preview={preview}
+              screen={screenPreview}
+              level={microphoneLevel}
+              feedbackError={feedbackError}
+              intent={intent}
+              readiness={readiness}
+              busy={busy}
+              active={active}
+              recordingState={status.state}
+              countdown={countdown}
+              selectIntent={selectIntent}
+              chooseMode={chooseMode}
+              chooseCamera={chooseCamera}
+              chooseMicrophone={(mic) => {
+                if (mic !== 'none' && permissions.microphone !== 'granted')
+                  void run(async () => {
+                    await api.request(
+                      permissions.microphone === 'denied'
+                        ? 'permissions.settings'
+                        : 'permissions.request',
+                      { permission: 'microphone' },
+                    );
+                    await refresh();
+                    await updateOptions({ mic });
+                  });
+                else void updateOptions({ mic });
+              }}
+              update={updateOptions}
+              start={start}
+              stop={() => void control('record.stop')}
+              cancel={() => void control('record.cancel')}
+              selectArea={() => void api.window('area')}
+              refresh={() => void run(refresh)}
+              settings={() => void api.window('settings')}
+              guide={() =>
+                void run(async () => {
+                  await api.onboarding('reset');
+                  await api.window('recorder');
+                })
+              }
+              permissions={
+                ((options.mode !== 'camera-only' && permissions.screen !== 'granted') ||
+                  (options.camera !== 'none' && permissions.camera !== 'granted') ||
+                  (options.mic !== 'none' && permissions.microphone !== 'granted') ||
+                  guideTarget === 'permissions') && (
+                  <PermissionPanel
+                    permissions={permissions}
+                    refresh={refresh}
+                    run={run}
+                    screenRequired={options.mode !== 'camera-only'}
+                    cameraRequired={options.camera !== 'none'}
+                    microphoneRequired={options.mic !== 'none'}
+                  />
+                )
+              }
+              savedSetups={
+                <div className="compact-presets">
+                  <label>
+                    Saved setup
                     <select
-                      disabled={active}
-                      value={options.countdownSeconds}
-                      onChange={(e) => {
-                        const countdownSeconds = countdownFromSelection(e.target.value);
-                        if (countdownSeconds !== undefined) updateOptions({ countdownSeconds });
+                      aria-label="Saved recording preset"
+                      defaultValue=""
+                      disabled={active || busy}
+                      onChange={(event) => {
+                        const chosen = presets[event.target.value];
+                        if (chosen) void updateOptions(chosen);
                       }}
                     >
-                      {countdownChoices.map((choice) => (
-                        <option key={choice.seconds} value={choice.seconds}>
-                          {choice.label}
+                      <option value="">Choose a saved setup</option>
+                      {Object.keys(presets).map((name) => (
+                        <option key={name} value={name}>
+                          {name}
                         </option>
                       ))}
                     </select>
                   </label>
-                  {active ? (
-                    <button className="primary" onClick={() => control('record.stop')}>
-                      <Icon name="stop" />
-                      Stop recording
-                    </button>
-                  ) : (
+                  <div>
+                    <input
+                      aria-label="Preset name"
+                      disabled={active || busy}
+                      placeholder="Name this setup"
+                      value={presetName}
+                      onChange={(event) => setPresetName(event.target.value)}
+                    />
                     <button
-                      className="primary"
-                      disabled={busy || countdown !== null || Boolean(readiness.blockingReason)}
-                      onClick={start}
-                    >
-                      <span className="white-record" />
-                      {busy ? 'Starting…' : 'Start recording'}
-                      <span className="keycap">⇧ ⌘ R</span>
-                    </button>
-                  )}
-                </div>
-              </div>
-              <div className="studio-note" data-tour="originals">
-                <Icon name="check" size={16} />
-                <span>
-                  <strong>
-                    {readiness.tracks.length ? readiness.tracks.join(' + ') : 'No inputs selected'}
-                  </strong>{' '}
-                  · saved as separate originals.
-                  <br />
-                  {options.autoShare
-                    ? 'Auto-share is on: the finished video uploads after Stop.'
-                    : 'Saved on this Mac. Nothing uploads until you choose Share.'}
-                  {options.autoShare && (
-                    <button className="text-button" onClick={() => api.window('settings')}>
-                      Change sharing settings
-                    </button>
-                  )}
-                </span>
-              </div>
-              <details className="recording-preferences">
-                <summary>Saved setups</summary>
-                <div className="presets-row">
-                  <select
-                    aria-label="Saved recording preset"
-                    defaultValue=""
-                    onChange={(e) => {
-                      if (presets[e.target.value]) {
-                        setOptions(presets[e.target.value]);
-                        const chosen = presets[e.target.value];
-                        void api
-                          .saveOptions(chosen)
-                          .then(() => {
-                            if (chosen.camera !== 'none' && permissions.camera === 'granted')
-                              return api.request('camera.preview.start', { camera: chosen.camera });
-                            return api.request('camera.preview.stop');
-                          })
-                          .catch((e) => setError(String(e), e?.code));
+                      className="secondary"
+                      disabled={active || busy || !presetName.trim()}
+                      onClick={() =>
+                        void run(async () => {
+                          setPresets(await api.presets('save', presetName, optionsRef.current));
+                          setPresetName('');
+                          setNote('Recording setup saved.');
+                        })
                       }
-                    }}
-                  >
-                    <option value="">Choose a saved preset</option>
-                    {Object.keys(presets).map((name) => (
-                      <option key={name} value={name}>
-                        {name}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    aria-label="Preset name"
-                    placeholder="Name this setup…"
-                    value={presetName}
-                    onChange={(e) => setPresetName(e.target.value)}
-                  />
-                  <button
-                    className="secondary"
-                    disabled={!presetName.trim()}
-                    onClick={() =>
-                      run(async () => {
-                        setPresets(await api.presets('save', presetName, options));
-                        setPresetName('');
-                        setNote('Recording preset saved.');
-                      })
-                    }
-                  >
-                    Save preset
-                  </button>
+                    >
+                      Save
+                    </button>
+                  </div>
                 </div>
-              </details>
-              <div className="bubble-help" data-tour="bubble-help">
-                <span>Camera bubble: drag to move · × hides it · choose a size in Settings.</span>
-                {options.camera !== 'none' && (
-                  <button
-                    className="secondary small"
-                    disabled={active}
-                    onClick={() => void chooseCamera(options.camera)}
-                  >
-                    Show camera preview
-                  </button>
-                )}
-              </div>
-              {countdown !== null && (
-                <div className="countdown-overlay">
-                  <span>{countdown || 'Getting ready'}</span>
-                  <button onClick={() => control('record.cancel')}>Cancel · Esc</button>
-                </div>
-              )}
-            </>
-          ) : view === 'library' ? (
-            <Library run={run} setNote={setNote} openRecording={openRecording} />
+              }
+            />
+          ) : ['library', 'review', 'editor'].includes(view) ? (
+            <Library
+              run={run}
+              setNote={setNote}
+              openRecording={openRecording}
+              presentation={view}
+              registerNavigationGuard={registerNavigationGuard}
+              options={options}
+              updateOptions={updateOptions}
+            />
           ) : (
             <Settings
               permissions={permissions}
@@ -1068,7 +1017,7 @@ function PermissionPanel({
           ['camera', 'Camera'],
           ['screen', 'Screen recording'],
         ].map(([key, label]) => (
-          <div key={key}>
+          <div key={key} data-required={required[key]}>
             <span>
               {label}
               {required[key] ? ' · needed for this setup' : ' · optional'}
@@ -1198,11 +1147,21 @@ function AreaSelector() {
     </div>
   );
 }
-function Library({ run, setNote, openRecording }: any) {
-  const [rows, setRows] = useState<any[]>([]),
+function Library({
+  run,
+  setNote,
+  openRecording,
+  presentation,
+  registerNavigationGuard,
+  options,
+  updateOptions,
+}: any) {
+  const [rawRows, setRows] = useState<any[]>([]),
     [selected, setSelected] = useState<string | null>(null),
     [filter, setFilter] = useState(''),
     [undo, setUndo] = useState<{ token: string; expires: number } | null>(null);
+  const sort = isLibrarySort(options?.librarySort) ? options.librarySort : defaultLibrarySort;
+  const rows = useMemo(() => sortRecordings(rawRows, sort), [rawRows, sort]);
   const querySequence = useRef(0);
   const reload = useCallback(async () => {
     const sequence = ++querySequence.current;
@@ -1232,6 +1191,9 @@ function Library({ run, setNote, openRecording }: any) {
     if (openRecording) setSelected(openRecording.id);
   }, [openRecording]);
   useEffect(() => {
+    if (presentation === 'library') setSelected(null);
+  }, [presentation]);
+  useEffect(() => {
     if (!undo) return;
     const timer = setTimeout(() => setUndo(null), Math.max(0, undo.expires - Date.now()));
     return () => clearTimeout(timer);
@@ -1243,6 +1205,7 @@ function Library({ run, setNote, openRecording }: any) {
       expires: Number.isFinite(expires) ? expires : Date.now() + result.undoWindowMs,
     });
     setSelected(null);
+    void api.window('library');
     void reload();
   };
   const trash = (id: string) =>
@@ -1253,9 +1216,13 @@ function Library({ run, setNote, openRecording }: any) {
   if (selected)
     return (
       <Review
+        key={selected}
         id={selected}
+        compact={presentation === 'review'}
+        registerNavigationGuard={registerNavigationGuard}
         back={() => {
           setSelected(null);
+          void api.window('library');
           void reload();
         }}
         run={run}
@@ -1263,6 +1230,7 @@ function Library({ run, setNote, openRecording }: any) {
         trashed={trashed}
       />
     );
+  if (presentation === 'review') return <div className="empty-state">Opening your recording…</div>;
   return (
     <>
       <div className="page-heading">
@@ -1271,6 +1239,7 @@ function Library({ run, setNote, openRecording }: any) {
           <h1>Every take, ready when you are.</h1>
           <p className="subtitle">Review, refine, and share. Originals are always kept.</p>
         </div>
+        <ImportVideosButton reload={reload} setNote={setNote} />
         <button className="primary" onClick={() => api.window('recorder')}>
           <Icon name="record" />
           New recording
@@ -1302,6 +1271,10 @@ function Library({ run, setNote, openRecording }: any) {
           placeholder="Search titles and spoken words…"
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
+        />
+        <LibrarySortControl
+          value={sort}
+          onChange={(librarySort) => void updateOptions?.({ librarySort })}
         />
         <button
           className="icon-button"
@@ -1335,17 +1308,20 @@ function Library({ run, setNote, openRecording }: any) {
         <div className="recording-grid">
           {rows.map((r) => (
             <article className="recording-card" key={r.id}>
-              <button className="recording-open" onClick={() => setSelected(r.id)}>
-                <div className="recording-poster">
+              <button
+                className="recording-open"
+                onClick={() => void run(() => api.openRecording(r.id))}
+              >
+                <LibraryThumbnail folder={r.folder} status={r.status}>
                   <Icon name="play" size={38} />
                   <span className="duration-badge">{formatDuration(r.durationMs ?? 0)}</span>
-                </div>
+                </LibraryThumbnail>
                 <div className="recording-info">
                   <strong>{r.title || 'Untitled recording'}</strong>
                   <span>
                     {r.createdAt ? new Date(r.createdAt).toLocaleDateString() : r.id}
                     <i>·</i>
-                    {r.status}
+                    {libraryRecordingStatus(r.status)}
                   </span>
                 </div>
               </button>
@@ -1363,7 +1339,8 @@ function Library({ run, setNote, openRecording }: any) {
     </>
   );
 }
-function Review({ id, back, run, setNote, trashed }: any) {
+function Review({ id, back, run, setNote, trashed, compact, registerNavigationGuard }: any) {
+  const [mediaCheck, setMediaCheck] = useState<MediaCheck | null>(null);
   const [recording, setRecording] = useState<any>(null),
     [edit, setEdit] = useState<any>(null),
     [urls, setUrls] = useState<Record<string, string>>({}),
@@ -1381,6 +1358,8 @@ function Review({ id, back, run, setNote, trashed }: any) {
     [manualSummary, setManualSummary] = useState<string | undefined>(),
     [mirror, setMirror] = useState(true),
     [micGain, setMicGain] = useState(1),
+    [noiseSuppression, setNoiseSuppression] = useState(false),
+    [clickHighlight, setClickHighlight] = useState(false),
     [systemGain, setSystemGain] = useState(0.5),
     [preset, setPreset] = useState<ExportPreset>('share'),
     [exportOutput, setExportOutput] = useState<ExportOutput>('combined'),
@@ -1404,6 +1383,35 @@ function Review({ id, back, run, setNote, trashed }: any) {
     ),
     [previewLoading, setPreviewLoading] = useState(false);
   const titleEdited = useRef(false);
+  useEffect(() => {
+    let live = true;
+    setMediaCheck(null);
+    const accept = async (job: MediaCheck) => {
+      if (!live) return;
+      setMediaCheck(job);
+      // Refresh only the manifest/track report, preserving the active edit draft.
+      if (job.status === 'done' || job.status === 'failed') {
+        const latest = await api.request('show', { id });
+        if (live) setRecording(latest);
+      }
+    };
+    void api
+      .request('jobs.list', { id })
+      .then((result) => {
+        const job = result.jobs?.find((job: any) => job.kind === 'verify');
+        if (job) return accept(job);
+      })
+      .catch(() => {});
+    const off = api.onEvent((event) => {
+      const job = (event.result as any)?.job;
+      if (event.event === 'job-changed' && job?.recordingId === id && job.kind === 'verify')
+        void accept(job).catch(() => {});
+    });
+    return () => {
+      live = false;
+      off();
+    };
+  }, [id]);
   const summaryEdited = useRef<string | undefined>(undefined);
   const draftBaseline = useRef<string | null>(null);
   const autosave = useMemo(
@@ -1424,9 +1432,11 @@ function Review({ id, back, run, setNote, trashed }: any) {
       shape: bubbleShape,
       mirror,
       micGain,
+      noiseSuppression,
       systemGain,
       title,
       burnIn,
+      clickHighlight,
       ...(manualSummary === undefined ? {} : { summary: manualSummary }),
     }),
     [
@@ -1437,15 +1447,28 @@ function Review({ id, back, run, setNote, trashed }: any) {
       bubbleShape,
       mirror,
       micGain,
+      noiseSuppression,
       systemGain,
       title,
       burnIn,
+      clickHighlight,
       manualSummary,
     ],
   );
   const draftKey = JSON.stringify(draftPatch);
   const newestDraft = useRef(draftPatch);
   newestDraft.current = draftPatch;
+  const newestTitle = useRef(title);
+  newestTitle.current = title;
+  const flushReview = useCallback(async () => {
+    if (edit && draftBaseline.current !== JSON.stringify(newestDraft.current)) {
+      draftBaseline.current = JSON.stringify(newestDraft.current);
+      autosave.update(newestDraft.current);
+    }
+    await autosave.flush();
+    if (titleEdited.current) await api.request('meta.set', { id, title: newestTitle.current });
+  }, [autosave, Boolean(edit), id]);
+  useEffect(() => registerNavigationGuard(flushReview), [flushReview, registerNavigationGuard]);
   useEffect(() => {
     if (!edit) return;
     if (draftBaseline.current === null) {
@@ -1539,6 +1562,8 @@ function Review({ id, back, run, setNote, trashed }: any) {
       setBubbleShape(document.layout?.bubble?.shape ?? 'circle');
       setBurnIn(document.captions?.burnIn ?? false);
       setMicGain(document.audio?.micGain ?? 1);
+      setNoiseSuppression(document.audio?.noiseSuppression ?? false);
+      setClickHighlight(document.clickHighlight === true);
       setSystemGain(document.audio?.systemGain ?? 0.5);
       if (document.clips?.length) {
         setStart(document.clips[0].sourceStartMs / 1000);
@@ -1746,12 +1771,27 @@ function Review({ id, back, run, setNote, trashed }: any) {
       setEdit(await autosave.run(() => api.request('edit.cut', { id, cuts })));
       setNote(`${cuts.length} suggested cuts applied.`);
     });
+  const setPoster = (posterMs: number | null) =>
+    run(async () => {
+      if (!edit) throw new Error('Open an edit document first.');
+      setEdit(await autosave.run(() => api.request('edit.set', { id, posterMs })));
+      setNote(
+        posterMs === null
+          ? 'Share thumbnail reset to the first frame.'
+          : `Share thumbnail set to ${formatDuration(posterMs)}. It applies the next time you share.`,
+      );
+    });
   const doExport = (exportPreset: ExportPreset) =>
     run(async () => {
       setExportBusy(true);
       try {
         await autosave.run(() => api.request('edit.save', { id }));
-        const r = await api.exportFile(id, exportPreset, Math.round(currentTime * 1000));
+        // Thumbnail export reads a time on the edited timeline, not the source playhead.
+        const r = await api.exportFile(
+          id,
+          exportPreset,
+          posterTimeForPlayhead(edit?.clips ?? [], currentTime, Boolean(renderedPreview)),
+        );
         if (!r.canceled) {
           setNote(`Export saved: ${r.path}`);
           await api.reveal(r.path);
@@ -1762,7 +1802,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
     });
   if (!recording) return <div className="empty-state">Loading recording…</div>;
   return (
-    <>
+    <div className={'review-content ' + (compact ? 'quick-review' : '')}>
       <div className="review-heading">
         <button
           className="back-button"
@@ -1849,19 +1889,13 @@ function Review({ id, back, run, setNote, trashed }: any) {
           titleEdited.current = true;
           setTitle(e.target.value);
         }}
-        onBlur={() => void save()}
+        onBlur={() =>
+          void flushReview().catch((error) => setNote('Draft save failed: ' + String(error)))
+        }
       />
       <p className="recording-meta">
         {formatDuration(duration)} · {recording.tracks.filter((t: any) => t.present).length}{' '}
-        separate tracks ·{' '}
-        {recording.manifest.status === 'failed' ||
-        (recording.manifest.warnings ?? []).some(
-          (warning: any) =>
-            warning.code === 'ended-early' &&
-            /^(stream-error|writer-failed)/.test(warning.message ?? ''),
-        )
-          ? 'failed · surviving footage kept'
-          : recording.manifest.status}
+        separate tracks · {recordingHealth(recording.manifest, mediaCheck)}
       </p>
       {(recording.manifest.warnings ?? []).map((warning: any, index: number) => (
         <div
@@ -1879,7 +1913,15 @@ function Review({ id, back, run, setNote, trashed }: any) {
       ))}
       <div className="review-grid">
         <div className="review-main">
-          <div className="player" style={{ aspectRatio: canvasAspect }}>
+          <div
+            className="player"
+            style={
+              {
+                aspectRatio: canvasAspect,
+                '--quick-player-width': String(140 * canvasAspect) + 'px',
+              } as React.CSSProperties
+            }
+          >
             {(renderedPreview || videoSources.screen) && (
               <video
                 ref={screenRef}
@@ -2056,6 +2098,52 @@ function Review({ id, back, run, setNote, trashed }: any) {
               ))}
             </select>
           </div>
+          {compact && (
+            <div className="quick-review-actions">
+              <button className="primary" disabled={exportBusy} onClick={() => doExport('share')}>
+                <Icon name="download" />
+                {exportBusy ? 'Exporting…' : 'Save video'}
+              </button>
+              <button
+                className="secondary"
+                disabled={exportBusy}
+                onClick={() => doExport('editor-tracks')}
+              >
+                Save separate tracks
+              </button>
+              <button
+                className="secondary"
+                onClick={() =>
+                  void run(async () => {
+                    await autosave.flush();
+                    await api.window('editor');
+                  })
+                }
+              >
+                <Icon name="edit" />
+                Edit video
+              </button>
+              <button
+                className="secondary"
+                onClick={() =>
+                  void run(async () => {
+                    await autosave.flush();
+                    await api.window('recorder');
+                  })
+                }
+              >
+                New recording
+              </button>
+            </div>
+          )}
+          {!compact && (
+            <button
+              className="text-button compact-return"
+              onClick={() => void api.window('review')}
+            >
+              ← Compact review
+            </button>
+          )}
           <div className="editor-tabs">
             {['edit', 'transcript', 'clips', 'details'].map((t) => (
               <button className={tab === t ? 'active' : ''} key={t} onClick={() => setTab(t)}>
@@ -2384,7 +2472,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
               {link ? 'Copy share link' : 'Create share link'}
             </button>
             {shareStage && (
-              <p className="fine-print">
+              <p className="fine-print share-progress">
                 {shareStage === 'ready'
                   ? 'Video is ready.'
                   : shareStage === 'failed'
@@ -2393,6 +2481,27 @@ function Review({ id, back, run, setNote, trashed }: any) {
               </p>
             )}
             {link && <input aria-label="Share link" readOnly value={link} />}
+            <p className="fine-print">
+              Share thumbnail:{' '}
+              {typeof edit?.meta?.posterMs === 'number'
+                ? formatDuration(edit.meta.posterMs)
+                : 'first frame'}
+              <button
+                className="text-button"
+                onClick={() =>
+                  setPoster(
+                    posterTimeForPlayhead(edit?.clips ?? [], currentTime, Boolean(renderedPreview)),
+                  )
+                }
+              >
+                Use current frame as thumbnail
+              </button>
+              {typeof edit?.meta?.posterMs === 'number' && (
+                <button className="text-button" onClick={() => setPoster(null)}>
+                  Use first frame
+                </button>
+              )}
+            </p>
             <ShareAccess
               id={id}
               link={link}
@@ -2420,6 +2529,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
             className={draftState === 'failed' ? 'alert error' : 'fine-print'}
             role="status"
             aria-live="polite"
+            data-draft-state={draftState}
           >
             {draftState === 'saved'
               ? 'Draft saved automatically.'
@@ -2524,6 +2634,17 @@ function Review({ id, back, run, setNote, trashed }: any) {
                 onChange={(e) => setMicGain(Number(e.target.value))}
               />
             </label>
+            <label
+              className="check-label"
+              title="Exports use a cleaned copy; your original mic file is kept"
+            >
+              <input
+                type="checkbox"
+                checked={noiseSuppression}
+                onChange={(e) => setNoiseSuppression(e.target.checked)}
+              />
+              Remove background noise from the mic
+            </label>
             <label className="field">
               System audio volume
               <input
@@ -2542,6 +2663,17 @@ function Review({ id, back, run, setNote, trashed }: any) {
                 onChange={(e) => setBurnIn(e.target.checked)}
               />
               Burn captions into export
+            </label>
+            <label
+              className="check-label"
+              title="Draws a ring where you clicked in exported videos"
+            >
+              <input
+                type="checkbox"
+                checked={clickHighlight}
+                onChange={(e) => setClickHighlight(e.target.checked)}
+              />
+              Highlight mouse clicks
             </label>
             <button className="secondary full-width" onClick={save}>
               Save edits
@@ -2577,6 +2709,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
                       ['full', 'Full quality MOV'],
                       ['audio', 'Audio only · M4A'],
                       ['audio-wav', 'Audio only · WAV'],
+                      ['gif', 'GIF · first 5 seconds · 480px'],
                       ['diagnostics', 'Diagnostics bundle'],
                       ['thumbnail', 'YouTube thumbnail'],
                       ['vtt', 'WebVTT captions'],
@@ -2656,7 +2789,7 @@ function Review({ id, back, run, setNote, trashed }: any) {
           </details>
         </aside>
       </div>
-    </>
+    </div>
   );
 }
 function Settings({ permissions, refresh, run, options, updateOptions }: any) {
@@ -2666,6 +2799,7 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
     [test, setTest] = useState(''),
     [editorTemplate, setEditorTemplate] = useState(options.editorCommandTemplate ?? ''),
     [editorStatus, setEditorStatus] = useState('');
+  const [sharingSetup, setSharingSetup] = useState(false);
   useEffect(
     () => setEditorTemplate(options.editorCommandTemplate ?? ''),
     [options.editorCommandTemplate],
@@ -2708,6 +2842,7 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
       </div>
       <div className="settings-grid">
         <ProductionSettings run={run} />
+        <UpdateSettings />
         <section className="settings-card">
           <h2>Permissions</h2>
           <PermissionPanel
@@ -2731,6 +2866,7 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
             <span>Discard with confirmation</span>
             <kbd>⇧ ⌘ Esc</kbd>
           </div>
+          <LaunchAtLoginSetting run={run} />
           <hr />
           <label className="field">
             Live camera bubble size
@@ -2808,6 +2944,22 @@ function Settings({ permissions, refresh, run, options, updateOptions }: any) {
             Share with Copy share link, or enable automatic sharing below. Credentials are encrypted
             with macOS secure storage.
           </p>
+          {sharingSetup ? (
+            <ShareSetupWizard
+              api={api}
+              onClose={() => setSharingSetup(false)}
+              onDone={() =>
+                void api.cloudSettings().then((next) => {
+                  setCloud(next);
+                  setProvider(next.provider);
+                })
+              }
+            />
+          ) : (
+            <button className="primary" onClick={() => setSharingSetup(true)}>
+              Set up sharing for me
+            </button>
+          )}
           <label className="check-label">
             <input
               type="checkbox"

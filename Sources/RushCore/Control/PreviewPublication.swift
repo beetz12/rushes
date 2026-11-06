@@ -9,6 +9,7 @@ internal final class PreviewPublication: @unchecked Sendable {
     private var sink: (@Sendable (ControlEvent) -> Void)?
 
     var currentToken: String? { lock.withLock { token } }
+    var isEnabled: Bool { lock.withLock { enabled } }
     func activate(_ value: String) { lock.withLock { token = value } }
     func invalidate(_ expected: String? = nil) {
         lock.withLock {

@@ -1,0 +1,165 @@
+name: release
+
+# Draft only: builds the arm64 installers and attaches them to a draft GitHub Release.
+# Nothing is published until a maintainer reviews and publishes the draft by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      lane:
+        description: unsigned-preview needs no secrets; notarized fails unless every signing secret exists.
+        type: choice
+        options: [unsigned-preview, notarized]
+        default: unsigned-preview
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: package (${{ inputs.lane || 'unsigned-preview' }})
+    runs-on: macos-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      LANE: ${{ inputs.lane || 'unsigned-preview' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Refuse the notarized lane without complete signing secrets
+        if: env.LANE == 'notarized'
+        env:
+          HAS_CERTIFICATE: ${{ secrets.RUSHES_DEVELOPER_ID_P12 != '' }}
+          HAS_CERTIFICATE_PASSWORD: ${{ secrets.RUSHES_DEVELOPER_ID_P12_PASSWORD != '' }}
+          HAS_IDENTITY: ${{ secrets.RUSHES_SIGN_IDENTITY != '' }}
+          HAS_API_KEY: ${{ secrets.APPLE_API_KEY_P8 != '' }}
+          HAS_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID != '' }}
+          HAS_API_ISSUER: ${{ secrets.APPLE_API_ISSUER != '' }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in HAS_CERTIFICATE HAS_CERTIFICATE_PASSWORD HAS_IDENTITY HAS_API_KEY HAS_API_KEY_ID HAS_API_ISSUER; do
+            if [ "${!name}" != "true" ]; then echo "::error::Notarized lane needs the secret behind $name."; missing=1; fi
+          done
+          if [ "$GITHUB_EVENT_NAME" != "workflow_dispatch" ]; then
+            echo "::error::The notarized lane runs only from a manual dispatch."; missing=1
+          fi
+          exit "$missing"
+      - name: Select the newest available Xcode
+        run: |
+          # shellcheck disable=SC2012
+          XL=$(ls -d /Applications/Xcode*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XL"
+          xcodebuild -version
+          swift --version
+      - name: Install the pinned Node runtime
+        run: |
+          # Same pinned nvm commit as ci.yml; every surface shares one .nvmrc pin.
+          export NVM_DIR="$HOME/.nvm"
+          nvm_sha=a885b885fef16fac4bc544188fb25e9e37ae83e8
+          if [ ! -s "$NVM_DIR/nvm.sh" ]; then
+            mkdir -p "$NVM_DIR"
+            git -C "$NVM_DIR" init -q
+            git -C "$NVM_DIR" remote add origin https://github.com/nvm-sh/nvm.git
+            git -C "$NVM_DIR" fetch --depth 1 origin "$nvm_sha"
+            git -C "$NVM_DIR" checkout --detach FETCH_HEAD
+          fi
+          test "$(git -C "$NVM_DIR" rev-parse HEAD)" = "$nvm_sha"
+          set +e
+          # shellcheck disable=SC1091
+          . "$NVM_DIR/nvm.sh"
+          set -e
+          pins=$(cat shell/.nvmrc cloud/.nvmrc viewer/.nvmrc | tr -d '[:space:]v' | sort -u)
+          if [ "$(printf '%s\n' "$pins" | wc -l | tr -d ' ')" != "1" ]; then echo "::error::Surfaces pin different Node versions."; exit 1; fi
+          nvm install "$pins"
+          test -x "$NVM_DIR/versions/node/v$pins/bin/node"
+          echo "$NVM_DIR/versions/node/v$pins/bin" >> "$GITHUB_PATH"
+      - name: Build the release engine and CLI
+        run: swift build -c release
+      - name: Build the cloud and viewer bundles
+        run: |
+          set -euo pipefail
+          for surface in cloud viewer; do
+            npm --prefix "$surface" ci --no-audit --no-fund
+            npm --prefix "$surface" run build
+          done
+      - name: Install shell dependencies
+        run: npm --prefix shell ci --no-audit --no-fund
+      - name: Package the unsigned preview
+        if: env.LANE == 'unsigned-preview'
+        run: |
+          set -euo pipefail
+          # No identity: package-targets.mjs signs ad hoc and names every artifact *-unsigned-preview.
+          unset CSC_NAME CSC_LINK RUSHES_SIGN_IDENTITY RUSHES_SIGN_TYPE RUSHES_NOTARIZE
+          npm --prefix shell run package
+      - name: Package, sign and notarize
+        if: env.LANE == 'notarized'
+        env:
+          CSC_LINK: ${{ secrets.RUSHES_DEVELOPER_ID_P12 }}
+          CSC_KEY_PASSWORD: ${{ secrets.RUSHES_DEVELOPER_ID_P12_PASSWORD }}
+          RUSHES_SIGN_IDENTITY: ${{ secrets.RUSHES_SIGN_IDENTITY }}
+          RUSHES_SIGN_TYPE: distribution
+          RUSHES_NOTARIZE: '1'
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/notary-key.p8"
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$APPLE_API_KEY_P8" > "$key"
+          # package-signing.mjs still enforces Developer ID + RUSHES_NOTARIZE=1 + complete credentials.
+          APPLE_API_KEY="$key" npm --prefix shell run package
+      - name: List the installers
+        id: installers
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(shell/release/*.dmg shell/release/*.zip)
+          dmgs=(shell/release/*.dmg); zips=(shell/release/*.zip)
+          if [ "${#dmgs[@]}" -ne 1 ] || [ "${#zips[@]}" -ne 1 ]; then echo "::error::Expected exactly one dmg and one zip in shell/release."; exit 1; fi
+          for file in "${files[@]}"; do
+            if [ "$LANE" = "unsigned-preview" ]; then
+              case "$file" in *-unsigned-preview.*) ;; *) echo "::error::$file is not labeled unsigned-preview."; exit 1 ;; esac
+            else
+              case "$file" in *-unsigned-preview.*|*-not-notarized.*) echo "::error::$file is not a notarized build."; exit 1 ;; esac
+            fi
+          done
+          ls -la "${files[@]}"
+          shasum -a 256 "${files[@]}" | tee "$RUNNER_TEMP/SHA256SUMS.txt"
+      - name: Keep the installers as a workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rushes-${{ env.LANE }}
+          path: |
+            shell/release/*.dmg
+            shell/release/*.zip
+            ${{ runner.temp }}/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+      - name: Attach to a draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then tag="$GITHUB_REF_NAME"; else tag="preview-${GITHUB_SHA::12}"; fi
+          title="Rushes $tag ($LANE)"
+          notes="Draft build from $GITHUB_SHA. Lane: $LANE. See docs/install.md before opening a build that is not notarized."
+          prerelease=()
+          if [ "$LANE" = "unsigned-preview" ]; then prerelease=(--prerelease); fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # Never replace the files of a release that has already been published.
+            if [ "$(gh release view "$tag" --json isDraft -q .isDraft)" != "true" ]; then
+              echo "::error::Release $tag is already published; refusing to replace its files."; exit 1
+            fi
+            gh release upload "$tag" shell/release/*.dmg shell/release/*.zip "$RUNNER_TEMP/SHA256SUMS.txt" --clobber
+          else
+            gh release create "$tag" --draft "${prerelease[@]}" --target "$GITHUB_SHA" --title "$title" --notes "$notes" \
+              shell/release/*.dmg shell/release/*.zip "$RUNNER_TEMP/SHA256SUMS.txt"
+          fi

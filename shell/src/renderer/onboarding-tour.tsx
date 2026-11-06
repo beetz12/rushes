@@ -13,7 +13,7 @@ const steps = [
   {
     title: 'Your first recording',
     target: '',
-    body: 'Choose what to show, check access and devices, then record. You can use the highlighted controls as you go. Nothing records until you choose Start recording. Skip hides this guide; Recording guide reopens it anytime.',
+    body: 'Start from this small recorder. The Library and Settings icons open your full workspace. Use the highlighted controls as you go. Nothing records until you choose Start recording. Skip hides this guide; Recording guide under More options reopens it anytime.',
   },
   {
     title: 'What do you want to record?',
@@ -23,7 +23,7 @@ const steps = [
   {
     title: 'Choose your screen content',
     target: 'source',
-    body: 'For a screen recording, choose Entire screen, A window, or Select area, then choose the actual source below. Select recording area lets you draw a frame on your desktop. Camera only leaves this screen source off.',
+    body: 'Choose Full screen, Window or Area, then pick the source. Choose an area lets you draw a frame on your desktop. The preview shows the selected content. Camera only keeps screen capture off.',
   },
   {
     title: 'Allow only the access you need',
@@ -33,12 +33,17 @@ const steps = [
   {
     title: 'Check camera and microphone',
     target: 'devices',
-    body: 'Choose your camera to see its preview and your microphone to include your voice. Microphone off means no voice track. System audio includes sound from your Mac in screen recordings. Refresh devices after connecting a new device.',
+    body: 'Your camera preview stays inside this window until recording starts. Speak and watch the microphone meter; lower your input level if it clips. Microphone Off leaves out your voice. System audio and countdown are under More options.',
+  },
+  {
+    title: 'Sharing links',
+    target: '',
+    body: 'Videos stay on this Mac until you share. Share links upload to storage you own, so set up a share provider once in Settings → Sharing. Until then, Copy video file in the review window lets you paste the MP4 into Slack, email or a ticket.',
   },
   {
     title: 'Ready for your first take',
     target: 'start',
-    body: 'Start recording begins the audible countdown and minimizes this window. Drag the floating camera bubble to move it; × hides the bubble while keeping its camera track. Use the floating bar to Pause, Resume or Stop. After Stop, review your take and choose Save video, Save separate tracks or Create share link. Finish guide leaves you ready to record.',
+    body: 'Start recording begins the audible countdown and minimizes this window. Drag the floating camera bubble to move it; × hides the bubble while keeping its camera track. Use the floating bar to Pause, Resume or Stop. After Stop, a small review offers playback, Save video, Save separate tracks and a share link. Edit video opens the full editor. Finish guide leaves you ready to record.',
   },
 ];
 

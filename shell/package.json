@@ -88,13 +88,38 @@
       {
         "from": "../cloud/package.json",
         "to": "cloud/package.json"
+      },
+      {
+        "from": "../worker/dist/worker.js",
+        "to": "worker/worker.js"
+      },
+      {
+        "from": "../worker/schema.sql",
+        "to": "worker/schema.sql"
       }
     ],
     "mac": {
       "category": "public.app-category.video",
       "minimumSystemVersion": "26.4",
       "target": [
-        "dir"
+        {
+          "target": "dir",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64"
+          ]
+        }
       ],
       "hardenedRuntime": true,
       "extendInfo": {

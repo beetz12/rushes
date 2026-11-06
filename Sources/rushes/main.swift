@@ -161,6 +161,7 @@ func parseArguments(_ words: [String], into invocation: inout CLIInvocation) {
         "--preset", "--output", "--format", "--locale", "--summary", "--chapters", "--args", "--edit",
         "--word-ids", "--word-id", "--text", "--start-ms", "--end-ms", "--at-ms", "--speed", "--clip-id", "--layout",
         "--width", "--height", "--fps", "--codec", "--container", "--password-file", "--expires-at",
+        "--quality",
     ]
     var index = 0
     while index < words.count {
@@ -472,6 +473,16 @@ case "targets":
     printJSON(response.result ?? .object([:]))
     exit(0)
 
+case "import":
+    guard let path = invocation.positional.first, !path.isEmpty else {
+        fail("usage", "import needs a video file: rushes import PATH")
+    }
+    let absolute = URL(fileURLWithPath: path).standardizedFileURL.path
+    // Copying a long video can take minutes; the engine streams, never buffers it.
+    let response = runRequest(invocation, cmd: "library.import", args: .object(["path": .string(absolute)]), timeout: 3_600)
+    printJSON(response.result ?? .object([:]))
+    exit(0)
+
 case "list":
     var args: [String: JSONValue] = [:]
     if let limit = invocation.flags["--limit"] {
@@ -522,6 +533,7 @@ case "record start":
     }
     if let title = invocation.flags["--title"] { args["title"] = .string(title) }
     if let cursor = invocation.flags["--cursor"] { args["cursor"] = .string(cursor) }
+    if let quality = invocation.flags["--quality"] { args["quality"] = .string(quality) }
     if let area = invocation.flags["--area"] {
         let values = area.split(separator: ",").compactMap { Double($0) }
         guard values.count == 4, values.allSatisfy(\.isFinite), values[2] > 0, values[3] > 0 else { fail("usage", "--area needs X,Y,W,H") }

@@ -10,7 +10,7 @@ public actor ExtendedCommandRouter {
     }
     public static var commandDocs: [ControlGuide.CommandDoc] {
         let descriptions: [String: String] = [
-            "export": "Render edited media locally; share/full/youtube/audio/editor-tracks presets preserve masters.",
+            "export": "Render edited media locally; share/full/youtube/audio/editor-tracks/gif presets preserve masters.",
             "thumbnail": "Export a composed frame as PNG or JPEG.",
             "transcribe": "Recognize recorded speech locally and save JSON/SRT/VTT/TXT.",
             "transcript.run": "Run Apple's local speech analyzer; allowAssetDownload explicitly enables first-use model setup.",
@@ -34,9 +34,13 @@ public actor ExtendedCommandRouter {
                 params.append(.init(name: "id", type: "string", required: true, description: "Recording ULID from list/show."))
             }
             if name == "export" {
-                params += [.init(name: "preset", flag: "--preset", type: "share|full|youtube|audio|editor-tracks", description: "Export format/purpose."),
+                params += [.init(name: "preset", flag: "--preset", type: "share|full|youtube|audio|editor-tracks|gif", description: "Export format/purpose; gif loops a short range of the edit."),
                            .init(name: "path", flag: "-o", type: "absolute local path", description: "Destination outside masters or within renders."),
-                           .init(name: "sourceSize", flag: "--source-size", type: "boolean", description: "YouTube output keeps source/current canvas resolution instead of forcing 1920x1080.")]
+                           .init(name: "sourceSize", flag: "--source-size", type: "boolean", description: "YouTube output keeps source/current canvas resolution instead of forcing 1920x1080."),
+                           .init(name: "startMs", flag: "--start-ms", type: "number", description: "GIF only: edited-timeline start; defaults to 0."),
+                           .init(name: "endMs", flag: "--end-ms", type: "number", description: "GIF only: edited-timeline end; the range defaults to 5 s and is capped at 15 s."),
+                           .init(name: "width", flag: "--width", type: "240-640", description: "GIF only: output width, default 480, never upscaled."),
+                           .init(name: "fps", flag: "--fps", type: "10|12", description: "GIF only: frame rate, default 10.")]
             }
             if name == "captions.export" || name == "transcribe" {
                 params.append(.init(name: "format", flag: "--format", type: "json|srt|vtt|txt", description: "Subtitle/transcript output type."))

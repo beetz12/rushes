@@ -35,6 +35,9 @@ extension PostproductionService {
                 if let value=request.param("micGain")?.double { edit.audio.micGain=value }
                 if let value=request.param("systemGain")?.double { edit.audio.systemGain=value }
                 if let value=request.param("micMuted")?.bool { edit.audio.micMuted=value }
+                if let value=request.param("noiseSuppression")?.bool { edit.audio.noiseSuppression=value }
+                if let value=request.param("clickHighlight")?.bool { edit.clickHighlight=value ? true : nil }
+                if let value=request.param("drawCursor")?.bool { edit.drawCursor=value }
                 if let value=request.param("bubbleVisible")?.bool { edit.layout.bubble.visible=value }
                 if let value=request.param("bubbleSize")?.double { edit.layout.bubble.size=value }
                 if let value=request.param("bubbleX")?.double { edit.layout.bubble.center[0]=value }
@@ -43,6 +46,12 @@ extension PostproductionService {
                 if let value=request.param("shape")?.string { edit.layout.bubble.shape=value }
                 if let value=request.param("title")?.string { edit.meta.title=value }
                 if let value=request.param("burnIn")?.bool { edit.captions.burnIn=value }
+                // Share poster time on the edited timeline; null restores the first frame.
+                if let value=request.param("posterMs") {
+                    if value.isNull { edit.meta.posterMs=nil }
+                    else if let ms=value.double { edit.meta.posterMs=ms }
+                    else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"posterMs must be a number or null") }
+                }
             }
             return try JSONValue(encoding:await setEdit(id:id,edit:edit))
         case "edit.cut":
@@ -59,7 +68,10 @@ extension PostproductionService {
             guard let path,!path.isEmpty else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"Export output path is required") }
             let extensionType=URL(fileURLWithPath:path).pathExtension.lowercased()
             let inferredContainer=(preset == .audio && ["m4a","wav"].contains(extensionType)) || (preset == .full && ["mov","mp4"].contains(extensionType)) ? extensionType : nil
-            let options=ExportOptions(preset:preset,codec:request.param("codec")?.string ?? "h264",container:request.param("container")?.string ?? inferredContainer,fps:request.param("fps")?.int.map(Int.init),sourceSize:request.param("sourceSize")?.bool ?? false)
+            let gifStart=request.param("startMs")?.double
+            let gifDuration=request.param("durationMs")?.double ?? request.param("endMs")?.double.map { $0-(gifStart ?? 0) }
+            let options=ExportOptions(preset:preset,codec:request.param("codec")?.string ?? "h264",container:request.param("container")?.string ?? inferredContainer,fps:request.param("fps")?.int.map(Int.init),sourceSize:request.param("sourceSize")?.bool ?? false,
+                                      gifStartMs:gifStart,gifDurationMs:gifDuration,gifWidth:request.param("width")?.int.map(Int.init))
             return try JSONValue(encoding:await export(id:id,options:options,to:URL(fileURLWithPath:path)))
         case "thumbnail":
             guard let path=request.param("path")?.string ?? request.param("output")?.string else { throw ControlFailure(code:ControlErrorCode.invalidParams,message:"Thumbnail output path is required") }

@@ -5,6 +5,54 @@ import Testing
 
 @Suite("Terminal control transport failures")
 struct TransportFailureTests {
+    @Test("An unsent preview may be dropped; a blocked reliable reply remains terminal", arguments: ["preview", "reply"])
+    func noPrefixPressure(category: String) throws {
+        var endpoints: [Int32] = [-1, -1]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &endpoints) == 0)
+        let writer = SocketLineIO(fd: endpoints[0])
+        defer { writer.close(); Darwin.close(endpoints[1]) }
+        try configureBackpressure(endpoints[0], reader: endpoints[1])
+        let occupied = try occupySendBuffer(endpoints[0])
+        #expect(!writer.writeFully(Data("{\"generatedPreview\":true}\n".utf8), category: category))
+        if category == "reply" {
+            #expect(!writer.isOpen)
+            return
+        }
+        try #require(writer.isOpen)
+        var remaining = occupied, chunk = [UInt8](repeating: 0, count: 4096)
+        while remaining > 0 {
+            let received = chunk.withUnsafeMutableBytes { Darwin.read(endpoints[1], $0.baseAddress, min(remaining, $0.count)) }
+            try #require(received > 0)
+            #expect(chunk.prefix(received).allSatisfy { $0 == 32 })
+            remaining -= received
+        }
+        let reply = Data("{\"control\":\"still-connected\"}\n".utf8)
+        #expect(writer.writeFully(reply))
+        let received = chunk.withUnsafeMutableBytes { Darwin.read(endpoints[1], $0.baseAddress, $0.count) }
+        #expect(received == reply.count)
+        #expect(Data(chunk.prefix(max(0, received))) == reply)
+    }
+    @Test("First failed write records metadata and category without frame/request contents")
+    func writeFailureDiagnostic() async throws {
+        for category in ["reply", "preview"] {
+            var endpoints: [Int32] = [-1, -1]
+            #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &endpoints) == 0)
+            let receipt = WriteReceipt()
+            let writer = SocketLineIO(fd: endpoints[0], diagnose: { receipt.set($0) })
+            defer { writer.close(); Darwin.close(endpoints[1]) }
+            try configureBackpressure(endpoints[0], reader: endpoints[1])
+            #expect(!writer.writeFully(Data(repeating: 65, count: 262_144), category: category))
+            let first = try #require(receipt.get())
+            #expect(first.category == category)
+            #expect(first.connectionID == writer.connectionID)
+            #expect(first.errorNumber == EAGAIN || first.errorNumber == EWOULDBLOCK)
+            #expect(first.lineBytes == 262_144)
+            #expect(first.sentBytes > 0 && first.sentBytes < first.lineBytes)
+            #expect(first.disposition == "closed")
+            #expect(!writer.writeFully(Data([65, 10])))
+            #expect(receipt.get()?.lineBytes == 262_144)
+        }
+    }
     @Test("A timed-out JSON prefix closes its stream before any later reliable line can append")
     func partialWriteIsTerminal() throws {
         var endpoints: [Int32] = [-1, -1]
@@ -56,6 +104,30 @@ struct TransportFailureTests {
         #expect(!writer.writeFully(Data([65, 10])))
         #expect(fcntl(replacement, F_GETFD) >= 0)
     }
+}
+
+private func occupySendBuffer(_ descriptor: Int32) throws -> Int {
+    let previous = fcntl(descriptor, F_GETFL)
+    try #require(previous >= 0)
+    try #require(fcntl(descriptor, F_SETFL, previous | O_NONBLOCK) == 0)
+    defer { _ = fcntl(descriptor, F_SETFL, previous) }
+    let spaces = [UInt8](repeating: 32, count: 4096)
+    var occupied = 0
+    while occupied < 4 * 1024 * 1024 {
+        let sent = spaces.withUnsafeBytes { Darwin.write(descriptor, $0.baseAddress, $0.count) }
+        if sent > 0 { occupied += sent; continue }
+        if sent < 0 && errno == EINTR { continue }
+        try #require(sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
+        return occupied
+    }
+    throw ControlFailure(code: "fixture-send-buffer-not-full")
+}
+
+private final class WriteReceipt: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: TransportWriteDiagnostic?
+    func set(_ next: TransportWriteDiagnostic) { lock.withLock { value = next } }
+    func get() -> TransportWriteDiagnostic? { lock.withLock { value } }
 }
 
 private func configureBackpressure(_ descriptor: Int32, reader: Int32) throws {

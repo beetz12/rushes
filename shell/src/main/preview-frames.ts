@@ -5,6 +5,9 @@ import { previewAcknowledgment, previewAcknowledgmentSchema } from '../shared/co
 export class PreviewFrames {
   private generation = 0;
   private token?: string;
+  get currentToken() {
+    return this.token;
+  }
   clear() {
     this.token = undefined;
     return ++this.generation;

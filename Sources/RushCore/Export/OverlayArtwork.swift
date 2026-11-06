@@ -40,6 +40,15 @@ enum OverlayArtwork {
         CTFrameDraw(CTFramesetterCreateFrame(framesetter,CFRange(location:0,length:0),path,nil),context)
         return context.makeImage()
     }
+    /// A soft ring marking a mouse click; `alpha` fades it out over its life.
+    static func clickRing(radius:CGFloat,alpha:CGFloat) -> CGImage? {
+        let line=max(2,radius*0.18),edge=Int(ceil((radius+line)*2))+2
+        guard edge>4,let context=CGContext(data:nil,width:edge,height:edge,bitsPerComponent:8,bytesPerRow:edge*4,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        let center=CGFloat(edge)/2,circle=CGRect(x:center-radius,y:center-radius,width:radius*2,height:radius*2)
+        context.setFillColor(CGColor(red:1,green:0.78,blue:0.2,alpha:alpha*0.22)); context.fillEllipse(in:circle)
+        context.setStrokeColor(CGColor(red:1,green:0.78,blue:0.2,alpha:alpha)); context.setLineWidth(line); context.strokeEllipse(in:circle)
+        return context.makeImage()
+    }
     static func cursor(size:CGFloat) -> CGImage? {
         let edge=max(16,Int(size*1.5))
         guard let context=CGContext(data:nil,width:edge,height:edge,bitsPerComponent:8,bytesPerRow:edge*4,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }

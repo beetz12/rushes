@@ -35,7 +35,9 @@ sys.exit(os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1)
 PY
 
 clean_paths=(Sources Tests)
-for surface in shell cloud viewer worker; do
+# Dependency order: viewer and worker tests import cloud/dist, the worker build inlines
+# viewer/dist, and shell tests drive the real cloud deployWorker and package worker/dist.
+for surface in cloud viewer worker shell browser-worker browser; do
   if [ -f "$surface/package.json" ]; then
     if [ ! -f "$surface/.nvmrc" ]; then
       echo "Missing pinned Node runtime: $surface/.nvmrc" >&2
@@ -57,11 +59,16 @@ for surface in shell cloud viewer worker; do
     fi
     PATH="$node_dir:$PATH" npm --prefix "$surface" run build
     PATH="$node_dir:$PATH" npm --prefix "$surface" test
+    if [ "$surface" = "shell" ]; then
+      PATH="$node_dir:$PATH" node --test verification/helper-process.mjs
+    fi
     if [ -d "$surface/src" ]; then
       clean_paths+=("$surface/src")
     fi
   fi
 done
+clean_paths+=(shell/scripts/package-targets.mjs shell/tests/package-targets.test.mjs .github/workflows/release.yml shell/scripts/package-helper.mjs shell/scripts/owned-helper-build.mjs shell/scripts/helper-session.py verification/helper-process.mjs)
+clean_paths+=(verification/engine_crash_report.py verification/test_engine_crash_report.py .github/workflows/ci.yml)
 
 echo "== clean-room check on our source =="
 python3 tools/checks/test_clean_inputs.py
@@ -73,5 +80,8 @@ first=${clean_output%%$'\n'*}
 echo "== notices sync =="
 python3 tools/checks/test_notices.py
 python3 -I tools/checks/check_notices.py
+
+echo "== independent verifier self-checks =="
+python3 -m unittest discover -s verification -p 'test_*.py'
 
 echo "OK: build, tests, clean-room and notices all pass"

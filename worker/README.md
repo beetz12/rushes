@@ -13,3 +13,16 @@ Owner policy access remains available on expired rows until cron deletion, allow
 Deployment implementation: `cloud.deployWorker({accountId,apiToken,workerName,bucketName,databaseName,workersSubdomain,script,schemaSQL,ownerToken?,sessionSecret?})`. It checks R2 activation before writes, reuses matching resource names, creates missing storage/database, uploads bindings, enables workers.dev, sets `0 3 * * *`, then confirms HTTP health and owner-authorized storage/database read-back. The account ID is caller-selected; no environment scanning or guessed identities. R2 API code 10042 produces `R2_NOT_ENABLED` with the selected account and a Dashboard activation instruction. Do not automatically retry that state. Partial deployment never reports success; retain supplied secrets and resource names before retrying. Deploy only after the user authorizes the selected account/destination.
 
 All tests run the actual Worker HTTP handler with controlled in-memory R2 and actual SQLite-backed D1 fixtures. The integration test also routes the SDK over real localhost HTTP. These tests prove local protocol behavior; they do not prove an actual Cloudflare deployment, paid-account activation, public connectivity or cron execution on the service.
+
+## Embedding
+
+The Worker serves a frameable player at `/embed/<id>` (video and captions only, sent with
+`Content-Security-Policy: frame-ancestors *`; every other route keeps `X-Frame-Options: DENY`)
+and an oEmbed endpoint at `/oembed?url=<share URL>&format=json`. Share pages link to it with
+`<link rel="alternate" type="application/json+oembed">`, so Notion, Slack and similar tools can
+unfurl the player. Password-protected shares embed only a link to open the page on Rushes;
+expired shares return 404. oEmbed only accepts share URLs on this Worker's own origin.
+The embed player runs no script, so plays inside an embed are not counted as views.
+
+Static bucket (S3/R2) shares have no embed route or oEmbed: a bucket cannot set per-route
+framing headers or answer queries, so the desktop app offers "Copy embed code" for Worker shares only.

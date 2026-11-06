@@ -1,6 +1,7 @@
 import type { Env, StoredObject } from './bindings.js';
 import { digest, equal, passwordHash, randomID, signGrant, unlockRevision, verifyGrant } from './crypto.js';
 import { viewerPage } from '../../cloud/src/page.js';
+import { EMBED_CSP, embedPage, embedSize, iframeSnippet, unavailableEmbed } from './embed.js';
 import { ASSET_FILE, SHARE_ID, type ShareManifest, type ShareReservation, type SharePolicy } from '../../cloud/src/types.js';
 declare const VIEWER_JS: string;
 declare const VIEWER_CSS: string;
@@ -164,6 +165,10 @@ function patchManifest(m: ShareManifest, b: Record<string, unknown>): ShareManif
         next.durationMs = integer(b.durationMs, 'duration', 0, 7 * 24 * 60 * 60 * 1000);
     if (b.poster !== undefined)
         next.poster = asset(b.poster);
+    if (b.preview !== undefined) {
+        next.preview = asset(b.preview);
+        if (!next.preview.startsWith('preview-')) fail(400, 'INVALID_PREVIEW', 'Preview filename required.');
+    }
     if (b.transcript === null) delete next.transcript;
     else if (b.transcript !== undefined) {
         next.transcript = asset(b.transcript);
@@ -293,7 +298,7 @@ async function route(req: Request, env: Env): Promise<Response> {
             const remote = await env.MEDIA.head(`s/${id}/${file}`);
             if (!remote || remote.size !== bytes)
                 fail(409, 'VIDEO_NOT_READY', 'Video bytes have not been verified.');
-            const { poster: _poster, ...metadata } = b;
+            const { poster: _poster, preview: _preview, ...metadata } = b;
             const m = patchManifest(JSON.parse(row.manifest) as ShareManifest, metadata);
             const previous = m.video?.file;
             m.status = 'ready';
@@ -303,10 +308,23 @@ async function route(req: Request, env: Env): Promise<Response> {
                 if (!await env.MEDIA.head(`s/${id}/${m.poster}`))
                     fail(409, 'POSTER_NOT_READY', 'Poster has not been uploaded.');
             }
+            // The animated preview is optional: a republish without one drops the old one, and a missing upload is skipped.
+            const previousPreview = m.preview;
+            delete m.preview;
+            if (b.preview) {
+                const preview = asset((b.preview as Record<string, unknown>).file);
+                if (!preview.startsWith('preview-'))
+                    fail(400, 'INVALID_PREVIEW', 'Preview filename required.');
+                if (await env.MEDIA.head(`s/${id}/${preview}`))
+                    m.preview = preview;
+            }
             for(const sidecar of [...(m.captions?.map(c=>c.file)??[]),...(m.transcript?[m.transcript]:[])]) if(!await env.MEDIA.head(`s/${id}/${sidecar}`)) fail(409,'SIDECAR_NOT_READY','Caption/transcript assets must be uploaded before publication.');
             const next = await writeManifest(env, row, m);
             if (previous && previous !== file)
                 await env.MEDIA.delete(`s/${id}/${previous}`);
+            // A superseded preview may show frames the owner trimmed away; remove it from storage too.
+            if (previousPreview && previousPreview !== m.preview)
+                await env.MEDIA.delete(`s/${id}/${previousPreview}`);
             return json(next);
         }
         if (tail === '/views' && req.method === 'GET') {
@@ -358,7 +376,7 @@ async function route(req: Request, env: Env): Promise<Response> {
             const max = Number(env.MAX_UPLOAD_BYTES ?? 50 * 1024 ** 3);
             const bytes = integer(b.bytes, 'bytes', 1, max);
             const type = text(b.contentType, 'content type', 100, 1);
-            const expected = file.startsWith('video-') ? 'video/mp4' : file.endsWith('.jpg') ? 'image/jpeg' : file.endsWith('.png') ? 'image/png' : file.endsWith('.vtt') ? 'text/vtt' : 'application/json';
+            const expected = file.startsWith('video-') ? 'video/mp4' : file.endsWith('.jpg') ? 'image/jpeg' : file.endsWith('.png') ? 'image/png' : file.endsWith('.gif') ? 'image/gif' : file.endsWith('.vtt') ? 'text/vtt' : 'application/json';
             if (type !== expected)
                 fail(415, 'INVALID_TYPE', 'Filename and content type do not match.');
             if (!file.startsWith('video-') && bytes > 20 * 1024 * 1024)
@@ -447,14 +465,46 @@ async function route(req: Request, env: Env): Promise<Response> {
         }
         return fail(404, 'NOT_FOUND', 'Route not found.');
     }
+    const embedMatch = /^\/embed\/([A-Za-z0-9_-]{22})\/?$/.exec(path);
+    if (embedMatch && (req.method === 'GET' || req.method === 'HEAD')) {
+        const frameable = (html: string, status = 200) => new Response(req.method === 'HEAD' ? null : html, { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'private,no-store', 'Content-Security-Policy': EMBED_CSP } });
+        let row: ShareRow;
+        try { row = await shareRow(env, embedMatch[1]!); }
+        catch (e) { if (e instanceof HTTPError && e.status === 404) return frameable(unavailableEmbed(), 404); throw e; }
+        // Third-party frames never carry the SameSite=Strict unlock cookie, so a protected share only links out.
+        return frameable(embedPage(JSON.parse(row.manifest) as ShareManifest, env.PUBLIC_BASE_URL.replace(/\/$/, ''), Boolean(row.password_hash)));
+    }
+    if (path === '/oembed' && (req.method === 'GET' || req.method === 'HEAD')) {
+        const format = url.searchParams.get('format');
+        if (format !== null && format !== 'json')
+            fail(501, 'FORMAT_UNSUPPORTED', 'Only JSON oEmbed is supported.');
+        const base = env.PUBLIC_BASE_URL.replace(/\/$/, '');
+        let target: URL | null = null;
+        try { target = new URL(url.searchParams.get('url') ?? ''); } catch { target = null; }
+        const basePath = new URL(base).pathname.replace(/\/$/, '');
+        const rest = target && target.origin === new URL(base).origin && target.pathname.startsWith(`${basePath}/`) ? target.pathname.slice(basePath.length) : '';
+        const shareMatch = /^\/(?:s|embed)\/([A-Za-z0-9_-]{22})\/?$/.exec(rest);
+        if (!shareMatch)
+            fail(404, 'NOT_FOUND', 'URL is not a share on this server.');
+        const row = await shareRow(env, shareMatch![1]!);
+        const m = JSON.parse(row.manifest) as ShareManifest;
+        const isProtected = Boolean(row.password_hash);
+        const dimension = (name: string) => { const v = url.searchParams.get(name); if (v === null) return undefined; const n = Number(v); return Number.isSafeInteger(n) && n > 0 ? n : fail(400, 'INVALID_INPUT', `Invalid ${name}.`); };
+        // A protected share must not reveal its recording's size or orientation.
+        const { width, height } = embedSize(isProtected ? { ...m, video: undefined } : m, dimension('maxwidth'), dimension('maxheight'));
+        const title = isProtected ? 'Protected recording' : m.title;
+        const out: Record<string, unknown> = { type: 'video', version: '1.0', title, provider_name: 'Rushes', provider_url: base, width, height, html: iframeSnippet(`${base}/embed/${row.id}`, title, width, height) };
+        if (!isProtected && m.poster) Object.assign(out, { thumbnail_url: `${base}/s/${row.id}/${m.poster}`, thumbnail_width: m.video?.width ?? width, thumbnail_height: m.video?.height ?? height });
+        return json(out);
+    }
     const publicMatch = /^\/s\/([A-Za-z0-9_-]{22})(?:\/(.*))?$/.exec(path);
     if (publicMatch && (req.method === 'GET' || req.method === 'HEAD')) {
         const row = await shareRow(env, publicMatch[1]!);
         const m = JSON.parse(row.manifest) as ShareManifest;
         const file = publicMatch[2];
         if (!file) {
-            const shown = row.password_hash ? { ...m, title: 'Protected recording', summary: null, video: undefined, poster: undefined } : m;
-            return new Response(req.method === 'HEAD' ? null : viewerPage(shown, env.PUBLIC_BASE_URL, true), { headers: { 'Content-Type': 'text/html', 'Cache-Control': 'private,no-store', 'X-Frame-Options': 'DENY' } });
+            const shown = row.password_hash ? { ...m, title: 'Protected recording', summary: null, video: undefined, poster: undefined, preview: undefined } : m;
+            return new Response(req.method === 'HEAD' ? null : viewerPage(shown, env.PUBLIC_BASE_URL, true), { headers: { 'Content-Type': 'text/html', 'Cache-Control': 'private,no-store' } });
         }
         await allowed(req, env, row);
         if (file === 'share.json')
@@ -505,6 +555,9 @@ export default {
         headers.set('X-Content-Type-Options', 'nosniff');
         headers.set('Referrer-Policy', 'same-origin');
         headers.set('Vary', 'Origin');
+        // Only the embed player may be framed; it carries its own frame-ancestors policy.
+        if (!headers.get('Content-Security-Policy')?.includes('frame-ancestors *'))
+            headers.set('X-Frame-Options', 'DENY');
         if (origin && [new URL(env.PUBLIC_BASE_URL).origin, ...(env.ALLOWED_ORIGINS ?? '').split(',').filter(Boolean)].includes(origin)) {
             headers.set('Access-Control-Allow-Origin', origin);
             headers.set('Access-Control-Allow-Credentials', 'true');

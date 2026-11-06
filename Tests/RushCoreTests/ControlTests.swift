@@ -277,6 +277,55 @@ private struct EchoHandler: ControlHandling {
 @Suite("ControlServer")
 struct ControlServerTests {
 
+    @Test("Preview delivery is opt-in and a blocked preview peer cannot damage control replies")
+    func isolatedPreviewDelivery() async throws {
+        let socketPath = shortTempSocket("preview-data")
+        defer { try? FileManager.default.removeItem(at: socketPath.deletingLastPathComponent()) }
+        let server = ControlServer(socketPath: socketPath, handler: EchoHandler())
+        try server.start()
+        defer { server.stop() }
+        let control = try ControlClient.connect(to: socketPath)
+        defer { control.close() }
+        _ = try control.roundTrip(.init(id: "connected", cmd: "ping"), timeout: 2)
+        server.broadcast(.init(kind: .cameraPreview, result: .object(["jpeg": .string(String(repeating: "A", count: 32_338))])))
+        let (reply, events) = try control.roundTrip(.init(id: "still-control", cmd: "ping"), timeout: 2)
+        #expect(reply.ok)
+        let previewCountOnControl = events.count
+        #expect(previewCountOnControl == 0)
+
+        let previews = try ControlClient.connect(to: socketPath)
+        defer { previews.close() }
+        let (subscribed, _) = try previews.roundTrip(.init(id: "data", cmd: "preview.subscribe", args: .object(["enabled": .bool(true)])), timeout: 2)
+        try #require(subscribed.result?["enabled"]?.bool == true)
+        server.broadcast(.init(kind: .microphoneLevel, result: .object(["generated": .bool(true)])))
+        let previewMessage = try previews.readMessage(timeout: 2)
+        let small = try #require(previewMessage)
+        guard case .event(let level) = small else { Issue.record("preview peer missed its level"); return }
+        #expect(level.event == "microphone-level")
+        server.broadcast(.init(kind: .cameraPreview, result: .object(["jpeg": .string(String(repeating: "A", count: 1_048_576))])))
+        // Deliberately stop reading this DATA peer through the unchanged send deadline.
+        try await Task.sleep(for: .milliseconds(650))
+        let prefix = try #require(try previews.readLine(timeout: 2))
+        let prefixCount = prefix.count
+        #expect(prefixCount > 0 && prefixCount < 1_048_576)
+        #expect((try? ControlWire.decoder.decode(ControlEvent.self, from: prefix)) == nil)
+        do {
+            _ = try previews.readLine(timeout: 2)
+            Issue.record("The partial DATA stream must close before any later line.")
+        } catch let error as ControlClientError {
+            #expect(error == .connectionClosed(path: socketPath.path))
+        }
+        let (alive, after) = try control.roundTrip(.init(id: "after-data-pressure", cmd: "record.stop"), timeout: 2)
+        #expect(alive.ok && after.isEmpty)
+        server.broadcast(.init(kind: .recordingStopped, recordingId: "generated-saved-take"))
+        let terminalMessage = try control.readMessage(timeout: 2)
+        let terminal = try #require(terminalMessage)
+        guard case .event(let stopped) = terminal else { Issue.record("control peer missed Stop"); return }
+        #expect(stopped.recordingId == "generated-saved-take")
+        let (invalid, _) = try control.roundTrip(.init(id: "bad", cmd: "preview.subscribe", args: .object(["enabled": .string("true")])), timeout: 2)
+        #expect(!invalid.ok && invalid.error?.code == "invalid-params")
+    }
+
     @Test("Folder is 0700, requests answer, malformed lines error, events broadcast, stop cleans up")
     func serverLifecycle() async throws {
         let socketPath = shortTempSocket("srv")
@@ -751,6 +800,57 @@ struct EngineControllerTests {
         await task.value
         #expect(exchange.responses.first(where: { $0.id == "countdown" })?.error?.code == "cancelled")
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
+    @Test("A live microphone level streams while recording and stops with the take")
+    func liveMicrophoneLevelStreams() async throws {
+        let scratch = try tempDirectory("level")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let controller = try makeController(root: scratch.appendingPathComponent("root"), indexURL: scratch.appendingPathComponent("index.sqlite"))
+        let exchange = ControlExchange()
+        await controller.handle(startRequest(), context: exchange.context)
+        let id = try #require(exchange.lastResponse?.result?["id"]?.string)
+        let level = try #require(exchange.event(.recordingLevel, timeout: 10))
+        #expect(level.recordingId == id)
+        let rms = try #require(level.result?["rms"]?.double)
+        #expect(rms.isFinite && rms >= 0 && rms <= 1)
+        #expect(level.result?["clipping"]?.bool != nil)
+        await controller.handle(ControlRequest(id: "stop-level", cmd: "record.stop"), context: exchange.context)
+        let count = exchange.events.filter { $0.event == "recording-level" }.count
+        try await Task.sleep(nanoseconds: 500_000_000)
+        #expect(exchange.events.filter { $0.event == "recording-level" }.count == count)
+    }
+
+    @Test("Recording quality caps the screen size, keeps its shape and rejects unknown values")
+    func recordingQualityCapsScreenSize() async throws {
+        #expect(EngineController.screenDimensions(.init(width: 3024, height: 1964), cappedTo: 1920) == .init(width: 1920, height: 1246))
+        #expect(EngineController.screenDimensions(.init(width: 1280, height: 720), cappedTo: 2560) == .init(width: 1280, height: 720))
+        #expect(EngineController.screenDimensions(.init(width: 5120, height: 1440), cappedTo: 1280) == .init(width: 1280, height: 360))
+        let scratch = try tempDirectory("quality")
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let root = scratch.appendingPathComponent("root")
+        let controller = try makeController(root: root, indexURL: scratch.appendingPathComponent("index.sqlite"))
+        let exchange = ControlExchange()
+        await controller.handle(ControlRequest(id: "bad-quality", cmd: "record.start", args: .object(["display": .string("display-1"), "quality": .string("8k")])), context: exchange.context)
+        #expect(exchange.lastResponse?.error?.code == "invalid-params")
+        func screenSize(quality: String?) async throws -> (Int, Int) {
+            var args: [String: JSONValue] = ["display": .string("display-1"), "mic": .string("dev-mic")]
+            if let quality { args["quality"] = .string(quality) }
+            await controller.handle(ControlRequest(id: "q-\(quality ?? "none")", cmd: "record.start", args: .object(args)), context: exchange.context)
+            let id = try #require(exchange.lastResponse?.result?["id"]?.string)
+            let package = try #require(RecordingPackage.resolve(root: root, id: id))
+            let screen = try #require(try package.readManifest().tracks.first { $0.kind == .screen })
+            await controller.handle(ControlRequest(id: "discard-\(id)", cmd: "record.discard"), context: exchange.context)
+            return (screen.width ?? 0, screen.height ?? 0)
+        }
+        let source = try await screenSize(quality: nil)
+        // The fixture display is 640x480 points; whatever backing scale the
+        // host reports, the quality cap applies the same rule to that size.
+        for (quality, edge) in [("720p", 1280), ("1080p", 1920)] {
+            let capped = try await screenSize(quality: quality)
+            let expected = EngineController.screenDimensions(.init(width: source.0, height: source.1), cappedTo: edge)
+            #expect(capped == (expected.width, expected.height))
+        }
     }
 
     @Test("Mute and bubble metadata persist; restart creates a fresh take and discard removes it")

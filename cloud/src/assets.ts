@@ -4,7 +4,7 @@ import { stat, open } from 'node:fs/promises';
 import { extname } from 'node:path';
 import { ShareError, type UploadInput, type UploadedAsset } from './types.js';
 export const PART_BYTES = 10 * 1024 * 1024;
-export const MIME = { video: 'video/mp4', poster: 'image/jpeg', captions: 'text/vtt', transcript: 'application/json' } as const;
+export const MIME = { video: 'video/mp4', poster: 'image/jpeg', preview: 'image/gif', captions: 'text/vtt', transcript: 'application/json' } as const;
 export async function describeAsset(input: UploadInput): Promise<UploadedAsset & {
     contentType: string;
 }> {
@@ -12,7 +12,7 @@ export async function describeAsset(input: UploadInput): Promise<UploadedAsset &
     if (!info.isFile() || info.size <= 0 || info.size > 50 * 1024 ** 3)
         throw new ShareError('INVALID_FILE', 'Asset must be a nonempty file of at most 50 GiB.');
     const suffix = extname(input.path).toLowerCase();
-    const extensions = { video: ['.mp4'], poster: ['.jpg', '.jpeg', '.png'], captions: ['.vtt'], transcript: ['.json'] };
+    const extensions = { video: ['.mp4'], poster: ['.jpg', '.jpeg', '.png'], preview: ['.gif'], captions: ['.vtt'], transcript: ['.json'] };
     if (!extensions[input.kind].includes(suffix))
         throw new ShareError('INVALID_TYPE', `Invalid ${input.kind} file extension.`);
     const h = createHash('sha256');
@@ -22,7 +22,7 @@ export async function describeAsset(input: UploadInput): Promise<UploadedAsset &
         h.update(chunk);
     }
     const sha256 = h.digest('hex');
-    const ext = input.kind === 'poster' && suffix === '.png' ? 'png' : { video: 'mp4', poster: 'jpg', captions: 'vtt', transcript: 'json' }[input.kind];
+    const ext = input.kind === 'poster' && suffix === '.png' ? 'png' : { video: 'mp4', poster: 'jpg', preview: 'gif', captions: 'vtt', transcript: 'json' }[input.kind];
     return { kind: input.kind, file: `${input.kind}-${sha256.slice(0, 8)}.${ext}`, bytes: info.size, sha256, contentType: ext === 'png' ? 'image/png' : MIME[input.kind] };
 }
 export async function readChunk(path: string, offset: number, bytes: number): Promise<Buffer> {

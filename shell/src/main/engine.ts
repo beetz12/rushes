@@ -160,6 +160,61 @@ export class EngineClient extends EventEmitter {
     this.connectingSocket?.destroy(disconnected());
   }
 }
+// Continuous JPEG/level traffic uses its own disposable socket. A partial
+// preview line still closes that stream, without losing capture commands/events.
+class PreviewConnection {
+  private readonly client = new EngineClient();
+  private enabled = false;
+  private generation = 0;
+  private failures = 0;
+  private timer?: NodeJS.Timeout;
+  constructor(
+    private path: string,
+    deliver: (event: any) => void,
+  ) {
+    this.client.on('event', (event) => {
+      if (this.enabled && ['camera-preview', 'microphone-level'].includes(event.event))
+        deliver(event);
+    });
+    this.client.on('disconnected', () => this.retry(this.generation));
+  }
+  start() {
+    if (this.enabled) return;
+    this.enabled = true;
+    this.failures = 0;
+    void this.attach(++this.generation);
+  }
+  stop() {
+    this.enabled = false;
+    ++this.generation;
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    this.client.close();
+  }
+  private retry(generation: number) {
+    if (!this.enabled || generation !== this.generation || this.timer) return;
+    const wait = Math.min(5000, 500 * 2 ** Math.min(this.failures++, 4));
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      if (this.enabled && generation === this.generation) void this.attach(generation);
+    }, wait);
+  }
+  private async attach(generation: number) {
+    try {
+      await this.client.connect(this.path);
+      if (!this.enabled || generation !== this.generation) return;
+      const result = await this.client.request('preview.subscribe', { enabled: true }, 3000);
+      if (!this.enabled || generation !== this.generation) return;
+      if (result?.enabled !== true) throw new Error('Preview subscription was not confirmed.');
+      this.failures = 0;
+    } catch {
+      if (!this.enabled || generation !== this.generation) return;
+      this.client.close();
+      this.retry(generation);
+    }
+  }
+}
+
 export class EngineSupervisor {
   readonly client = new EngineClient();
   child?: ChildProcess;
@@ -171,6 +226,7 @@ export class EngineSupervisor {
   private quitting?: Promise<void>;
   private stateRevision = 0;
   private lifecycleRevision = 0;
+  private readonly previews: PreviewConnection;
   constructor(
     readonly enginePath: string,
     readonly socketPath: string,
@@ -178,6 +234,7 @@ export class EngineSupervisor {
     readonly indexPath: string,
     private launch: typeof spawn = spawn,
   ) {
+    this.previews = new PreviewConnection(socketPath, (event) => this.client.emit('event', event));
     this.client.on('event', (e) => {
       if (['recording-started', 'recording-stopped', 'state-changed'].includes(e.event))
         this.stateRevision++;
@@ -190,7 +247,10 @@ export class EngineSupervisor {
       if (e.event === 'recording-stopped') this.active = false;
       if (e.event === 'state-changed' && e.state === 'idle') this.active = false;
     });
-    this.client.on('disconnected', () => this.scheduleRestart());
+    this.client.on('disconnected', () => {
+      this.previews.stop();
+      this.scheduleRestart();
+    });
   }
   async start() {
     if (this.closing)
@@ -199,9 +259,13 @@ export class EngineSupervisor {
   }
   private ensureStarted(): Promise<void> {
     if (this.starting) return this.starting;
-    const operation = this.boot().finally(() => {
-      this.starting = undefined;
-    });
+    const operation = this.boot()
+      .then(() => {
+        if (!this.closing && !this.quitting) this.previews.start();
+      })
+      .finally(() => {
+        this.starting = undefined;
+      });
     this.starting = operation;
     return operation;
   }
@@ -249,6 +313,7 @@ export class EngineSupervisor {
         status.state,
       );
       this.restartCount = 0;
+      this.previews.start();
       this.client.emit('event', { event: 'engine-reconnected', state: status.state, status });
       return;
     }
@@ -396,6 +461,7 @@ export class EngineSupervisor {
   }
   private async finishQuit() {
     this.closing = true;
+    this.previews.stop();
     clearTimeout(this.restartTimer);
     this.restartTimer = undefined;
     try {
@@ -416,6 +482,7 @@ export class EngineSupervisor {
       this.child?.kill('SIGTERM');
     } catch (error) {
       this.closing = false;
+      this.previews.start();
       this.scheduleRestart();
       throw error;
     }

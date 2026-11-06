@@ -41,7 +41,7 @@ public actor PostStopJobService {
                 for index in ledger.jobs.indices where ledger.jobs[index].status == .running {
                     interrupt(&ledger.jobs[index],code:"interrupted",message:"Engine restarted before this attempt completed")
                 }
-                for index in ledger.jobs.indices where ledger.jobs[index].status == .failed && ledger.jobs[index].kind == .enrich && retryable(ledger.jobs[index].error?.code) && ledger.jobs[index].attempts<10_000 {
+                for index in ledger.jobs.indices where ledger.jobs[index].status == .failed && canRetry(ledger.jobs[index]) {
                     ledger.jobs[index].status = .queued; ledger.jobs[index].nextRetryAt=nil
                 }
                 try save(ledger,package:package)
@@ -52,8 +52,17 @@ public actor PostStopJobService {
     @discardableResult public func enqueueAfterStop(id:String,locale:String = Locale.current.identifier,metadataMode:JobMetadataMode = .apple) throws -> [PostStopJob] {
         guard !blockedRecordings.contains(id) else { throw jobFailure("recording-busy","Recording is being closed or moved") }
         let package=try resolve(id),manifest=try package.readManifest()
-        guard [.complete,.recovered].contains(manifest.status) else { throw jobFailure("recording-not-finalized","Stop and finalize the recording before queuing work") }
+        guard [.complete,.recovered].contains(manifest.status) || (manifest.status == .failed && manifest.tracks.contains(where: \.present)) else { throw jobFailure("recording-not-finalized","Stop and finalize the recording before queuing work") }
         var ledger=try load(package)
+        if manifest.status == .failed {
+            // Surviving tracks deserve a diagnostic decode, not transcription,
+            // sharing or promotion to a successful recording.
+            if !ledger.jobs.contains(where:{$0.kind == .verify}) {
+                ledger.jobs.append(PostStopJob(recordingId:id,kind:.verify,now:clock()))
+                try save(ledger,package:package); startRunner()
+            }
+            return ledger.jobs
+        }
         if ledger.jobs.contains(where:{$0.kind == .transcribe}) {
             if !ledger.jobs.contains(where:{$0.kind == .verify}) {
                 ledger.jobs.append(PostStopJob(recordingId:id,kind:.verify,now:clock()))
@@ -197,6 +206,7 @@ public actor PostStopJobService {
             let error=describe(failure)
             terminate(&ledger.jobs[index],status:.failed,error:error)
             if job.kind == .enrich,retryable(error.code),job.attempts<(error.code == "share-processing" ? 30 : 5) { ledger.jobs[index].nextRetryAt=clock().addingTimeInterval(min(300,15*pow(2,Double(job.attempts-1)))) }
+            if job.kind == .verify,error.code == "finalization-pending",job.attempts<20 { ledger.jobs[index].nextRetryAt=clock().addingTimeInterval(15) }
         }
         try save(ledger,package:package); eventSink?(PostStopJobEvent(job:ledger.jobs[index]))
     }
@@ -207,7 +217,7 @@ public actor PostStopJobService {
             for job in ledger.jobs {
                 guard (job.kind == .verify) == verificationPass else { continue }
                 guard !blockedRecordings.contains(job.recordingId) else { continue }
-                if job.status == .failed,job.kind == .enrich,let due=job.nextRetryAt,due<=now {
+                if job.status == .failed,canRetry(job),let due=job.nextRetryAt,due<=now {
                     var changed=ledger; let index=changed.jobs.firstIndex(where:{$0.id == job.id})!
                     changed.jobs[index].status = .queued; changed.jobs[index].nextRetryAt=nil
                     do { try save(changed,package:resolve(job.recordingId)) } catch { recordIssue(job.recordingId,error:error); return nil }
@@ -278,6 +288,10 @@ public actor PostStopJobService {
     }
     private func recordIssue(_ id:String,error:any Error) { let detail=describe(error); issues[id] = .init(recordingId:id,code:detail.code,message:detail.message) }
     private func retryable(_ code:String?) -> Bool { ["shell-required","engine-unreachable","connection-closed","timeout","share-network-failed","share-processing","socket-error"].contains(code ?? "") }
+    private func canRetry(_ job:PostStopJob) -> Bool {
+        if job.kind == .verify { return job.error?.code == "finalization-pending" && job.attempts<20 }
+        return job.kind == .enrich && retryable(job.error?.code) && job.attempts<10_000
+    }
     private func describe(_ error:any Error) -> PostStopJobError {
         let failure=error as? ControlFailure,code=failure?.payload.code ?? (error is CancellationError ? "cancelled" : "job-failed")
         let action:String?
@@ -287,6 +301,7 @@ public actor PostStopJobService {
         case "shell-required": action="open-rushes"
         case "permission-denied": action="grant-permission"
         case "verification-failed": action="review-verification-report"
+        case "finalization-pending": action="wait-or-relaunch-rushes"
         default: action=nil
         }
         return .init(code:code,message:String(DiagnosticRedactor.redact(failure?.payload.message ?? String(describing:error)).prefix(2048)),requiresAction:action,artifact:code == "verification-failed" ? "verification.json" : nil)

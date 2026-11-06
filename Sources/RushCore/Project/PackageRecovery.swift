@@ -55,7 +55,7 @@ public struct RecoveryReport: Equatable, Sendable {
     public let trackOutcomes: [TrackOutcome]
     public let warnings: [RecordingManifest.ManifestWarning]
     /// Media duration (seconds) recorded in the manifest after recovery, if
-    /// a video track could be measured.
+    /// a usable track could be measured.
     public let recoveredDurationSeconds: Double?
 
     /// Whether every track file the package had on disk stayed on disk.
@@ -69,8 +69,8 @@ public struct RecoveryReport: Equatable, Sendable {
 /// pass runs belongs to no live session: the engine just started (or
 /// `rushes recover` asked for a rescan). Recovery marks it `recovered`,
 /// keeps every track file that holds more than 0.1 s of media, clears
-/// `present` on files that vanished or cannot be opened, sets the manifest
-/// duration to the shortest recovered video track, and records what it did
+/// `present` on files that vanished (unreadable existing files stay visible), sets the manifest
+/// duration to the common available timeline, and records every measured tail
 /// in the manifest's warnings. It never deletes footage: not a missing
 /// manifest, not an unopenable file, not even an empty one.
 public struct PackageRecovery: Sendable {
@@ -116,7 +116,7 @@ public struct PackageRecovery: Sendable {
         var updated = manifest
         var warnings: [RecordingManifest.ManifestWarning] = []
         var outcomes: [RecoveryReport.TrackOutcome] = []
-        var videoDurations: [Double] = []
+        var durations: [(kind: TrackKind, seconds: Double)] = []
 
         for index in manifest.tracks.indices {
             let track = manifest.tracks[index]
@@ -155,12 +155,12 @@ public struct PackageRecovery: Sendable {
                 }
             }
 
-            let usable = probe.openable
-                && (probe.durationSeconds ?? 0) > Self.minimumUsableSeconds
+            let seconds = probe.durationSeconds ?? 0
+            let usable = probe.openable && seconds.isFinite
+                && seconds > Self.minimumUsableSeconds && seconds < Double(Int64.max) / 1e9
             if usable {
-                if track.kind.carriesVideo, let duration = probe.durationSeconds {
-                    videoDurations.append(duration)
-                }
+                durations.append((track.kind, seconds))
+                updated.tracks[index].durationNs = Int64((seconds * 1e9).rounded())
             } else {
                 warnings.append(
                     .init(
@@ -172,9 +172,16 @@ public struct PackageRecovery: Sendable {
                       salvaged: salvaged))
         }
 
-        // The recovered duration is the shortest recovered video track, so
-        // every track still lines up on the timeline.
-        let recoveredDuration = videoDurations.min()
+        // Independently flushed fragments need not end together. Keep the raw
+        // files and declare each measured tail; playback uses their common
+        // available end. A deliberately lost camera does not truncate another
+        // input that continued recording after that loss.
+        let cameraLost = manifest.warnings.contains { $0.code == "camera-lost" }
+        let eligible = durations.filter { item in
+            !(cameraLost && item.kind == .camera
+              && durations.contains { $0.kind != .camera && $0.seconds > item.seconds })
+        }
+        let recoveredDuration = eligible.map(\.seconds).min()
         if let recoveredDuration {
             let durationNs = Int64((recoveredDuration * 1e9).rounded())
             if updated.clock == nil {
@@ -183,6 +190,9 @@ public struct PackageRecovery: Sendable {
             } else {
                 updated.clock?.durationNs = durationNs
             }
+            let tails = durations.map { "\($0.kind.rawValue): \(String(format: "%.3f", $0.seconds)) s" }.joined(separator: "; ")
+            warnings.append(.init(code: "recovered-track-timing",
+                message: "Recovered \(String(format: "%.3f", recoveredDuration)) s of shared playback. \(tails). Original files kept."))
         }
 
         updated.status = .recovered

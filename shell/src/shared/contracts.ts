@@ -1,5 +1,10 @@
 import { z } from 'zod';
 import type { OnboardingAction, OnboardingRecord } from './onboarding';
+import type { UpdateAction, UpdateStatus } from './updates';
+import type { PrimaryView } from './navigation';
+import type { CloudflareAccount, ShareSetupResult, ShareSetupRunInput } from './share-setup';
+import type { LoginItemState } from './login-item';
+import { librarySortKeys } from './library-sort';
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 export const commands = [
   'ping',
@@ -23,6 +28,9 @@ export const commands = [
   'camera.preview.start',
   'camera.preview.stop',
   'camera.preview.subscribe',
+  'capture.preflight.start',
+  'capture.preflight.stop',
+  'capture.preflight.snapshot',
   'list',
   'show',
   'verify',
@@ -73,6 +81,8 @@ export const windowSchema = z
       'library',
       'settings',
       'recorder',
+      'review',
+      'editor',
       'close',
       'minimize',
       'maximize',
@@ -85,6 +95,7 @@ export const windowSchema = z
       'bubble-size',
       'move-bubble',
       'hide-bubble',
+      'show-bubble',
       'relaunch',
       'acknowledgements',
       'quit',
@@ -113,6 +124,29 @@ export function countdownFromSelection(value: string): CountdownSeconds | undefi
   if (!selection.success) return;
   return countdownSecondsSchema.parse(Number(selection.data));
 }
+export const timeLimitMinutesSchema = z.union([
+  z.literal(0),
+  z.literal(5),
+  z.literal(15),
+  z.literal(30),
+  z.literal(60),
+]);
+export type TimeLimitMinutes = z.infer<typeof timeLimitMinutesSchema>;
+export const timeLimitChoices: ReadonlyArray<{ minutes: TimeLimitMinutes; label: string }> = [
+  { minutes: 0, label: 'No limit' },
+  { minutes: 5, label: '5 minutes' },
+  { minutes: 15, label: '15 minutes' },
+  { minutes: 30, label: '30 minutes' },
+  { minutes: 60, label: '1 hour' },
+];
+export const recordingQualitySchema = z.enum(['720p', '1080p', '1440p', '4k']);
+export type RecordingQuality = z.infer<typeof recordingQualitySchema>;
+export const qualityChoices: ReadonlyArray<{ value: RecordingQuality; label: string }> = [
+  { value: '4k', label: 'Best (up to 4K)' },
+  { value: '1440p', label: '1440p' },
+  { value: '1080p', label: '1080p' },
+  { value: '720p', label: '720p (smaller files)' },
+];
 export const recordingOptionsSchema = z.object({
   mode: z.enum(['display', 'window', 'area', 'camera-only']),
   source: z.string().max(300),
@@ -123,7 +157,13 @@ export const recordingOptionsSchema = z.object({
   editorCommandTemplate: z.string().max(10000).default(''),
   countdownSeconds: countdownSecondsSchema,
   bubbleSize: z.union([z.literal(160), z.literal(200), z.literal(280)]),
+  timeLimitMinutes: timeLimitMinutesSchema.default(0),
+  // A Library view preference, not a recording setting: an unknown value
+  // (e.g. from a newer build) falls back alone instead of failing the parse.
+  librarySort: z.enum(librarySortKeys).optional().catch(undefined),
   cursor: z.enum(['baked', 'data']).optional(),
+  quality: recordingQualitySchema.optional(),
+  noiseSuppression: z.boolean().optional(),
   bubbleAnchor: anchorSchema.optional(),
   barAnchor: anchorSchema.optional(),
   area: z
@@ -146,6 +186,7 @@ export const defaultOptions: RecordingOptions = {
   editorCommandTemplate: '',
   countdownSeconds: 3,
   bubbleSize: 200,
+  timeLimitMinutes: 0,
 };
 // The native engine represents camera-only with an absent screen target.
 export function recordingStartArguments(raw: RecordingOptions): Record<string, unknown> {
@@ -158,8 +199,12 @@ export function recordingStartArguments(raw: RecordingOptions): Record<string, u
     systemAudio: options.mode === 'camera-only' ? false : options.systemAudio,
     countdownSeconds: options.countdownSeconds,
   };
+  // The engine stops at this much recorded media; paused time does not count.
+  if (options.timeLimitMinutes > 0) args.duration = options.timeLimitMinutes * 60;
   if (options.mode === 'camera-only') return args;
   args.cursor = options.cursor ?? 'baked';
+  // Best quality is the engine default (source size, capped at 4K).
+  if (options.quality && options.quality !== '4k') args.quality = options.quality;
   if (options.mode === 'window') {
     if (!options.source) throw new Error('Choose a window to record.');
     args.window = options.source;
@@ -178,6 +223,7 @@ export const exportPresetSchema = z.enum([
   'audio',
   'audio-wav',
   'editor-tracks',
+  'gif',
   'srt',
   'vtt',
   'txt',
@@ -207,6 +253,7 @@ export const cloudSettingsSchema = z.discriminatedUnion('provider', [
     workerURL: z.url(),
     token: z.string().min(1),
     accountId: z.string().min(1).optional(),
+    sessionSecret: z.string().min(32).optional(),
   }),
 ]);
 export type CloudSettings = z.infer<typeof cloudSettingsSchema>;
@@ -265,6 +312,72 @@ export type ShareStatus = {
   providerMatches?: boolean;
 };
 export type EngineEvent = { event: string; [key: string]: unknown };
+export const preflightAcknowledgmentSchema = z.object({
+  previewToken: z.uuid(),
+  selectionToken: z.uuid(),
+  selectionRevision: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  microphone: z.string().max(300).nullable(),
+  source: z.string().max(300).nullable(),
+});
+export type PreflightAcknowledgment = z.infer<typeof preflightAcknowledgmentSchema>;
+const levelIdentity = {
+  previewToken: z.uuid(),
+  microphone: z.string().min(1).max(300),
+  measuredAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+};
+export const microphoneLevelSchema = z.discriminatedUnion('available', [
+  z.object({
+    ...levelIdentity,
+    available: z.literal(true),
+    rms: z.number().finite().nonnegative(),
+    peak: z.number().finite().nonnegative(),
+    clipping: z.boolean(),
+    frames: z.number().int().positive().max(1_000_000),
+  }),
+  z.object({ ...levelIdentity, available: z.literal(false) }),
+]);
+export type MicrophoneLevel = z.infer<typeof microphoneLevelSchema>;
+export const screenPreviewSchema = z.object({
+  previewToken: z.uuid(),
+  source: z.string().min(1).max(300),
+  jpeg: z
+    .string()
+    .min(4)
+    .max(349_528)
+    .regex(/^[A-Za-z0-9+/]+={0,2}$/)
+    .refine((value) => value.length % 4 === 0),
+  mime: z.literal('image/jpeg'),
+  width: z.number().int().positive().max(640),
+  height: z.number().int().positive().max(640),
+});
+export type ScreenPreview = z.infer<typeof screenPreviewSchema>;
+export function preflightArguments(
+  options: RecordingOptions,
+  selectionToken: string,
+  selectionRevision: number,
+) {
+  z.uuid().parse(selectionToken);
+  return {
+    selectionToken,
+    selectionRevision: z
+      .number()
+      .int()
+      .positive()
+      .max(Number.MAX_SAFE_INTEGER)
+      .parse(selectionRevision),
+    ...preflightInputs(options),
+  };
+}
+export function preflightInputs(options: RecordingOptions) {
+  const value: Record<string, unknown> = { mic: options.mic };
+  if (options.mode === 'camera-only') return value;
+  if (options.mode === 'window') value.window = options.source;
+  else if (options.mode !== 'area' || options.area) {
+    value.display = options.source;
+    if (options.mode === 'area') value.area = options.area;
+  }
+  return value;
+}
 export const previewAcknowledgmentSchema = z.object({ previewToken: z.string().min(1).max(200) });
 export type PreviewAcknowledgment = z.infer<typeof previewAcknowledgmentSchema>;
 export function previewAcknowledgment(raw: unknown): PreviewAcknowledgment {
@@ -279,13 +392,25 @@ export function previewAcknowledgment(raw: unknown): PreviewAcknowledgment {
   return value.data;
 }
 export interface RushesAPI {
+  openRecording(id: string): Promise<void>;
+  restorePrimaryView(view: PrimaryView): Promise<void>;
+  draftFlushed(token: string, error?: string): Promise<void>;
   onboarding(action: OnboardingAction): Promise<OnboardingRecord>;
+  updates(request: UpdateAction): Promise<UpdateStatus>;
   request(cmd: string, args?: Record<string, unknown>): Promise<any>;
+  /// Native picker for videos to import; resolves to the granted paths ([] when cancelled).
+  chooseVideos(): Promise<string[]>;
+  /// Grants the dropped video files for import; resolves to the granted paths.
+  allowDroppedVideos(files: File[]): Promise<string[]>;
+  /// Imports one picked or dropped path, once.
+  importVideo(path: string): Promise<any>;
   bootstrap(): Promise<{
     options: RecordingOptions;
     enginePath: string;
     packaged: boolean;
     primaryView?: string;
+    reviewId?: string;
+    inputPreflight?: PreflightAcknowledgment;
   }>;
   saveOptions(options: RecordingOptions): Promise<void>;
   presets(
@@ -302,6 +427,8 @@ export interface RushesAPI {
   previewFile(id: string): Promise<{ url: string; path: string; durationMs: number }>;
   copyVideoFile(id: string): Promise<{ copied: boolean }>;
   media(path: string): Promise<string>;
+  libraryThumbnail(folder: string): Promise<string | null>;
+  loginItem(enabled?: boolean): Promise<LoginItemState>;
   selectArea(area: { x: number; y: number; width: number; height: number }): Promise<void>;
   reveal(path: string): Promise<void>;
   confirm(message: string): Promise<boolean>;
@@ -314,6 +441,9 @@ export interface RushesAPI {
   }>;
   saveCloudSettings(settings: CloudSettings): Promise<void>;
   testCloud(): Promise<any>;
+  shareSetupAccounts(token: string): Promise<CloudflareAccount[]>;
+  shareSetupRun(input: ShareSetupRunInput): Promise<ShareSetupResult>;
+  shareSetupOpen(page: 'token' | 'r2'): Promise<void>;
   share(id: string, policy?: SharePolicyPatch): Promise<{ url: string; state?: string }>;
   shareStatus(id: string): Promise<ShareStatus>;
   getSharePolicy(id: string): Promise<SharePolicy>;

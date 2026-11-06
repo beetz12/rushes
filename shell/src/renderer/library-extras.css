@@ -1,0 +1,29 @@
+.recording-poster.has-thumbnail {
+  background: #17212b;
+  overflow: hidden;
+}
+.recording-thumbnail {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* The play glyph stays as a hover cue over a real poster frame. */
+.recording-poster.has-thumbnail > svg {
+  position: relative;
+  color: #fff;
+  opacity: 0;
+  filter: drop-shadow(0 1px 4px #0008);
+  transition: opacity 0.15s;
+}
+.recording-card:hover .recording-poster.has-thumbnail > svg {
+  opacity: 0.9;
+}
+.library-sort {
+  font-size: 11px;
+  width: auto;
+}
+.launch-at-login {
+  margin-top: 8px;
+}

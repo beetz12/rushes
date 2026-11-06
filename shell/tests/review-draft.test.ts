@@ -9,6 +9,8 @@ import {
   videoExportRequest,
   persistReviewDraft,
   refreshedMetadata,
+  editedTimeForSource,
+  posterTimeForPlayhead,
 } from '../src/shared/review-draft';
 import { atomicJSON } from '../src/main/atomic';
 import { copyVideoFile } from '../src/main/file-clipboard';
@@ -151,9 +153,11 @@ describe('durable review draft queue', () => {
       shape: 'squircle',
       mirror: false,
       micGain: 0.2,
+      noiseSuppression: false,
       systemGain: 0.8,
       title: 'draft manual title',
       burnIn: true,
+      clickHighlight: false,
     });
     expect(fields).not.toHaveProperty('meta');
     expect(fields).not.toHaveProperty('clips');
@@ -282,5 +286,42 @@ describe('awaited clipboard adapters', () => {
     expect(events.mock.calls.filter(([event]) => event.event === 'share-link-copied')).toHaveLength(
       1,
     );
+  });
+});
+
+describe('share thumbnail time', () => {
+  const clips = [
+    { sourceStartMs: 1000, sourceEndMs: 3000, speed: 1 },
+    { sourceStartMs: 5000, sourceEndMs: 9000, speed: 2 },
+  ];
+  it('maps a source playhead onto the edited timeline through trims and speed', () => {
+    expect(editedTimeForSource(clips, 1500)).toBe(500);
+    expect(editedTimeForSource(clips, 7000)).toBe(3000);
+    // Inside a removed range or before the first kept clip: the next kept clip.
+    expect(editedTimeForSource(clips, 4000)).toBe(2000);
+    expect(editedTimeForSource(clips, 0)).toBe(0);
+    // After every kept clip: the end of the edit; the engine clamps it.
+    expect(editedTimeForSource(clips, 9500)).toBe(4000);
+  });
+  it('uses the rendered preview time directly and rounds to whole milliseconds', () => {
+    expect(posterTimeForPlayhead(clips, 1.2345, true)).toBe(1235);
+    expect(posterTimeForPlayhead(clips, 1.5, false)).toBe(500);
+    expect(posterTimeForPlayhead(clips, -1, true)).toBe(0);
+  });
+  it('gives thumbnail export an edited-timeline time inside the edit (trimmed start)', () => {
+    // Regression: a 1 s trimmed start used to send the source playhead (1500 ms).
+    const trimmed = [{ sourceStartMs: 1000, sourceEndMs: 3000, speed: 1 }];
+    expect(posterTimeForPlayhead(trimmed, 1.5, false)).toBe(500);
+    // Past the kept range: clamped one frame inside the 2 s edit, never beyond it.
+    expect(posterTimeForPlayhead(trimmed, 9, false)).toBe(1966);
+    expect(posterTimeForPlayhead(trimmed, 9, true)).toBe(1966);
+    expect(posterTimeForPlayhead([], 2, false)).toBe(2000);
+  });
+  it('requests the GIF preset unchanged', () => {
+    expect(videoExportRequest('a', 'gif', '/tmp/a.gif')).toEqual({
+      id: 'a',
+      preset: 'gif',
+      path: '/tmp/a.gif',
+    });
   });
 });

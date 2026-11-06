@@ -350,6 +350,9 @@ public enum ControlEventKind: String, Codable, Sendable {
     /// Never crosses the socket; the engine prints it on its own stdout.
     case ready = "ready"
     case cameraPreview = "camera-preview"
+    case microphoneLevel = "microphone-level"
+    /// Live microphone level while recording (`result.rms`, `result.clipping`), about 5 per second.
+    case recordingLevel = "recording-level"
     case countdown = "countdown"
     case teleprompterProgress = "teleprompter-progress"
     case jobChanged = "job-changed"

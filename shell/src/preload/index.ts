@@ -1,16 +1,21 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { EngineEvent, RushesAPI } from '../shared/contracts';
 async function invoke(channel: string, value?: unknown) {
-  const response = await ipcRenderer.invoke(channel, value);
-  if (response?.__rushesError)
-    throw Object.assign(new Error(response.__rushesError.message), {
-      code: response.__rushesError.code,
-    });
-  return response;
+  // Keep coded failures as data until the renderer has crossed contextBridge.
+  return ipcRenderer.invoke(channel, value);
 }
 const api: RushesAPI = {
+  openRecording: (id) => invoke('rushes:open-recording', id),
+  restorePrimaryView: (view) => invoke('rushes:restore-primary-view', view),
+  draftFlushed: (token, error) => invoke('rushes:draft-flushed', { token, error }),
   onboarding: (action) => invoke('rushes:onboarding', action),
+  updates: (request) => invoke('rushes:updates', request),
   request: (cmd, args = {}) => invoke('rushes:request', { cmd, args }),
+  chooseVideos: () => invoke('rushes:choose-videos'),
+  // Only real dropped File objects carry a path; the renderer never sends one.
+  allowDroppedVideos: (files) =>
+    invoke('rushes:allow-dropped-videos', [...files].map((file) => webUtils.getPathForFile(file))),
+  importVideo: (path) => invoke('rushes:import-video', path),
   presets: (action, name, options) => invoke('rushes:presets', { action, name, options }),
   bootstrap: () => invoke('rushes:bootstrap'),
   saveOptions: (options) => invoke('rushes:save-options', options),
@@ -26,11 +31,16 @@ const api: RushesAPI = {
   previewFile: (id) => invoke('rushes:preview-file', id),
   copyVideoFile: (id) => invoke('rushes:copy-video-file', id),
   media: (path) => invoke('rushes:media', path),
+  libraryThumbnail: (folder) => invoke('rushes:library-thumbnail', folder),
+  loginItem: (enabled) => invoke('rushes:login-item', enabled),
   reveal: (path) => invoke('rushes:reveal', path),
   confirm: (message) => invoke('rushes:confirm', message),
   cloudSettings: () => invoke('rushes:cloud-settings'),
   saveCloudSettings: (settings) => invoke('rushes:save-cloud', settings),
   testCloud: () => invoke('rushes:test-cloud'),
+  shareSetupAccounts: (token) => invoke('rushes:share-setup-accounts', token),
+  shareSetupRun: (input) => invoke('rushes:share-setup-run', input),
+  shareSetupOpen: (page) => invoke('rushes:share-setup-open', page),
   share: (id, policy) => invoke('rushes:share-command', { cmd: 'share', args: { id, ...policy } }),
   shareStatus: (id) => invoke('rushes:share-command', { cmd: 'share.status', args: { id } }),
   getSharePolicy: (id) => invoke('rushes:share-command', { cmd: 'share.policy.get', args: { id } }),

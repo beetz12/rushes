@@ -6,7 +6,9 @@ import {
   type ShareFeedback,
 } from '../shared/contracts';
 
-const api = window.rushes;
+import { createNativeAPI } from './native-api';
+import { embedSnippet } from './embed-snippet';
+const api = window.rushes ? createNativeAPI(window.rushes) : window.rushes;
 function localDate(value: string | null) {
   if (!value) return '';
   const date = new Date(value);
@@ -159,6 +161,20 @@ export function ShareAccess({
           <button className="text-button" disabled={busy} onClick={() => run(refresh)}>
             Refresh
           </button>
+          {embedSnippet(link) && (
+            <button
+              className="text-button"
+              title={policy?.protected ? 'Embedded players show a link to enter the password on Rushes.' : undefined}
+              onClick={() =>
+                run(async () => {
+                  await api.copyText(embedSnippet(link)!);
+                  setNote('Embed code copied. Paste it into a page, doc or site that accepts iframes.');
+                })
+              }
+            >
+              Copy embed code
+            </button>
+          )}
         </div>
       )}
       {error && (
