@@ -289,6 +289,11 @@ function windowFor(
     ...extra,
   });
   windows.set(key, w);
+  if (dockViews.includes(key)) {
+    for (const name of ['show', 'hide', 'minimize', 'restore'] as const)
+      w.on(name as any, () => setImmediate(syncDock));
+    w.on('closed', () => setImmediate(syncDock));
+  }
   if (primary && process.platform === 'darwin') w.setWindowButtonVisibility(false);
   if (compact) {
     // The transient picker contains only selection controls and closes before capture.
@@ -917,7 +922,35 @@ async function requestControl(cmd: string, args: Record<string, unknown> = {}) {
     broadcast({ event: 'error', message: String(error), code: (error as { code?: string })?.code });
   }
 }
+/** Windows that put Rushes in the Dock while open, like Loom. Overlays never do. */
+const dockViews = ['recorder', 'permissions'];
+let dockShown = false;
+/** Shows the Dock icon while a main window is open and hides it while capturing. */
+function syncDock() {
+  if (!app.dock) return;
+  const wanted =
+    !quitting &&
+    !(captureBusy() && state !== 'finishing') &&
+    dockViews.some((view) => {
+      const w = windows.get(view);
+      return !!w && !w.isDestroyed() && (w.isVisible() || w.isMinimized());
+    });
+  if (wanted === dockShown) return;
+  dockShown = wanted;
+  if (wanted) {
+    void app.dock.show().then(() => {
+      // Showing the Dock icon can drop focus from the window that caused it.
+      const focused = BrowserWindow.getFocusedWindow();
+      if (focused) return;
+      const target = ['permissions', 'recorder']
+        .map((view) => windows.get(view))
+        .find((w) => w && !w.isDestroyed() && w.isVisible());
+      target?.focus();
+    });
+  } else app.dock.hide();
+}
 function trayUpdate() {
+  syncDock();
   if (!tray) return;
   tray.setToolTip(state === 'idle' ? 'Rushes — ready to record' : `Rushes — ${state}`);
   tray.setContextMenu(
