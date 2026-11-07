@@ -104,6 +104,31 @@ struct ShareAssetsTests {
         #expect(try await fresh.getEdit(id:fixture.package.id).layout.bubble.center == [0.75,0.5])
         #expect(try await fresh.getEdit(id:fixture.package.id).layout.bubble.size == 0.25)
     }
+    @Test func cameraTurnedOffMidTakeDropsOutOnlyForThatStretch() async throws {
+        let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
+        var manifest=try JSONDecoder().decode(JSONValue.self,from:Data(contentsOf:fixture.package.manifestURL))
+        var fields=try #require(manifest.object)
+        // Turned off at 0 ms, back on at 1000 ms, off again at 1600 ms until the 2 s take ended.
+        fields["bubble"] = .object(["center":.array([.double(0.4),.double(0.35)]),"visible":.bool(false),"size":.int(200),"sizeFraction":.double(0.125),
+                                    "hiddenRanges":.array([.array([.double(0),.double(1000)])]),"hiddenSinceMs":.double(1600)])
+        manifest = .object(fields)
+        try AtomicFileWriter.writeEncodable(manifest,to:fixture.package.manifestURL,encoder:ControlWire.encoder)
+        let service=PostproductionService(root:fixture.root)
+        let edit=try await service.getEdit(id:fixture.package.id)
+        #expect(edit.layout.bubble.visible)
+        #expect(edit.layout.bubble.hiddenRanges == [[0,1000],[1600,2000]])
+        let output=fixture.root.appendingPathComponent("camera-off.mp4")
+        _=try await service.export(id:fixture.package.id,to:output)
+        func redPixels(at seconds:Double) async throws -> Int {
+            let pixels=try await SyntheticExportFixture.pixels(output,at:seconds)
+            var count=0
+            for i in stride(from:0,to:pixels.width*pixels.height*4,by:4) where pixels.data[i]>160 && pixels.data[i+1]<60 && pixels.data[i+2]<60 { count+=1 }
+            return count
+        }
+        #expect(try await redPixels(at:0.5) == 0)
+        #expect(try await redPixels(at:1.3) > 100)
+        #expect(try await redPixels(at:1.8) == 0)
+    }
     @Test func lateTranscriptEnrichmentAndManagedDirectoryContainment() async throws {
         let fixture=try await SyntheticExportFixture(); defer { fixture.cleanup() }
         let postproduction=PostproductionService(root:fixture.root)

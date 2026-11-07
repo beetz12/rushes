@@ -43,7 +43,7 @@ const steps = [
   {
     title: 'Ready for your first take',
     target: 'start',
-    body: 'Start recording begins the audible countdown and minimizes this window. Drag the floating camera bubble to move it; × hides the bubble while keeping its camera track. Use the floating bar to Pause, Resume or Stop. After Stop, a small review offers playback, Save video, Save separate tracks and a share link. Edit video opens the full editor. Finish guide leaves you ready to record.',
+    body: 'Start recording begins the audible countdown and minimizes this window. Drag the floating camera bubble to move it; × turns your camera off while the recording keeps going; the camera button on the bar turns it back on. Use the floating bar to Pause, Resume or Stop. After Stop, a small review offers playback, Save video, Save separate tracks and a share link. Edit video opens the full editor. Finish guide leaves you ready to record.',
   },
 ];
 

@@ -24,7 +24,7 @@ export function sidebarDraft(document: any, fallbackTitle: string): Record<strin
   return {
     layout: document.layout?.preset ?? 'bubble',
     bubbleSize: bubble?.size ?? 0.22,
-    bubbleX: bubble?.center?.[0] ?? 0.88,
+    bubbleX: bubble?.center?.[0] ?? 0.12,
     bubbleY: bubble?.center?.[1] ?? 0.82,
     bubbleVisible: bubble?.visible ?? true,
     shape: bubble?.shape ?? 'circle',

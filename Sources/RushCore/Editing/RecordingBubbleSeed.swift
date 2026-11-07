@@ -6,12 +6,16 @@ enum RecordingBubbleSeed {
     private struct Envelope:Decodable {
         var bubble:Bubble?
         var capture:Capture?
+        var clock:Clock?
+        struct Clock:Decodable { var durationNs:Int64? }
         struct Capture:Decodable { var pointToPixel:Double? }
         struct Bubble:Decodable {
             var center:[Double]?
             var visible:Bool?
             var size:Double?
             var sizeFraction:Double?
+            var hiddenRanges:[[Double]]?
+            var hiddenSinceMs:Double?
         }
     }
     static func apply(to edit:inout EditDocument,package:RecordingPackage,manifest:RecordingManifest) throws {
@@ -25,7 +29,17 @@ enum RecordingBubbleSeed {
             guard center.count == 2,center.allSatisfy({$0.isFinite && (0...1).contains($0)}) else { throw renderFailure("Recorded bubble center is invalid") }
             edit.layout.bubble.center=center
         }
-        if let visible=bubble.visible { edit.layout.bubble.visible=visible }
+        if bubble.hiddenRanges != nil || bubble.hiddenSinceMs != nil {
+            // Turning the camera off with × hides it only for that stretch.
+            var ranges=bubble.hiddenRanges ?? []
+            if let since=bubble.hiddenSinceMs {
+                let end=Double(projection.clock?.durationNs ?? 0)/1_000_000
+                ranges.append([since,max(since,end.isFinite ? end : since)])
+            }
+            ranges=ranges.filter { $0.count == 2 && $0.allSatisfy(\.isFinite) && $0[0] >= 0 && $0[1] > $0[0] }
+            edit.layout.bubble.hiddenRanges=ranges.isEmpty ? nil : ranges
+            edit.layout.bubble.visible=true
+        } else if let visible=bubble.visible { edit.layout.bubble.visible=visible }
         var fraction=bubble.sizeFraction
         if fraction == nil,let points=bubble.size,let scale=projection.capture?.pointToPixel,
            let pixels=manifest.tracks.first(where:{$0.kind == .screen})?.width,

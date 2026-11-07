@@ -23,13 +23,18 @@ public enum LayoutPreset: String, Codable, CaseIterable, Sendable {
     case bubble, overlap, sideBySide = "side-by-side", presenter, cameraOnly = "camera-only", screenOnly = "screen-only"
 }
 public struct BubbleSettings: Codable, Equatable, Sendable {
-    public var center: [Double] = [0.88, 0.82]
+    public var center: [Double] = [0.12, 0.82]
     public var size: Double = 0.22
     public var shape: String = "circle"
     public var roundness: Double = 1
     public var mirror: Bool = true
     public var visible: Bool = true
+    /// Source-time stretches (ms) when the camera was turned off during recording.
+    public var hiddenRanges: [[Double]]?
     public init() {}
+    public func cameraOff(atSourceMs ms: Double) -> Bool {
+        hiddenRanges?.contains { $0.count == 2 && ms >= $0[0] && ms < $0[1] } ?? false
+    }
 }
 public struct EditLayout: Codable, Equatable, Sendable {
     public var preset: LayoutPreset = .bubble
@@ -129,6 +134,9 @@ public struct EditDocument: Codable, Equatable, Sendable {
               ["source", "16:9", "1:1", "9:16"].contains(layout.canvas),
               captions.fontSize.isFinite, (12...120).contains(captions.fontSize), captions.position.isFinite, (0...1).contains(captions.position)
         else { throw invalid("Layout, caption or audio settings are invalid") }
+        for range in layout.bubble.hiddenRanges ?? [] {
+            guard range.count == 2, range.allSatisfy(\.isFinite), range[0] >= 0, range[1] > range[0] else { throw invalid("Camera-off ranges are invalid") }
+        }
         if let poster = meta.posterMs, !poster.isFinite { throw invalid("Poster time must be a finite number") }
         for cue in zoomCues {
             guard let clip = clips.first(where: { $0.id == cue.clipId }), cue.sourceStartMs.isFinite, cue.sourceEndMs.isFinite,

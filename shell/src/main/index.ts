@@ -34,6 +34,7 @@ import { AutoShare, ViewNotifications } from './share-lifecycle';
 import { openInEditor, editorArguments } from './editor-handoff';
 import { copyVideoFile } from './file-clipboard';
 import { videoExportRequest } from '../shared/review-draft';
+import { suggestedExportName } from '../shared/export-name';
 import { atomicJSON, atomicBytes } from './atomic';
 import { OnboardingStore } from './onboarding-store';
 import { createAppUpdates } from './update-app';
@@ -540,6 +541,8 @@ function handle(name: string, fn: (value: any) => any) {
     }
   });
 }
+/** The folder of the last export this session; the next save dialog opens there. */
+let lastExportFolder: string | undefined;
 const positionTimers = new Map<string, NodeJS.Timeout>();
 let bubbleTimer: NodeJS.Timeout | undefined;
 function placement(view: 'bubble' | 'bar', width: number, height: number) {
@@ -1053,7 +1056,9 @@ async function ready() {
       properties: ['openFile', 'multiSelections'],
       filters: [{ name: 'Videos', extensions: ['mp4', 'mov', 'm4v'] }],
     });
-    return choice.canceled ? [] : importAllowlist.grant(choice.filePaths.filter((p) => isImportCandidate(p)));
+    return choice.canceled
+      ? []
+      : importAllowlist.grant(choice.filePaths.filter((p) => isImportCandidate(p)));
   });
   // Paths the preload resolved from File objects of one drop event.
   handle('rushes:allow-dropped-videos', async (value) => {
@@ -1062,9 +1067,12 @@ async function ready() {
   });
   handle('rushes:import-video', async (value) => {
     if (!importAllowlist.consume(value))
-      throw Object.assign(new Error('Choose the video with Import video or drop it on the Library.'), {
-        code: 'import-not-allowed',
-      });
+      throw Object.assign(
+        new Error('Choose the video with Import video or drop it on the Library.'),
+        {
+          code: 'import-not-allowed',
+        },
+      );
     // Copying a long downloaded video streams the whole file.
     return supervisor.client.request('library.import', { path: value }, 60 * 60_000);
   });
@@ -1408,12 +1416,17 @@ async function ready() {
       write: (formats) => clipboard.write([new ClipboardItem(formats)]),
     });
   });
+  const saveDialog = (parent: BrowserWindow | undefined, settings: Electron.SaveDialogOptions) =>
+    parent && !parent.isDestroyed()
+      ? dialog.showSaveDialog(parent, settings)
+      : dialog.showSaveDialog(settings);
   const exportFile = async (value: unknown) => {
     const v = z
       .object({
         id: z.string().min(1).max(200),
         preset: exportPresetSchema,
         atMs: z.number().nonnegative().optional(),
+        title: z.string().max(500).optional(),
       })
       .parse(value);
     const extension =
@@ -1434,22 +1447,41 @@ async function ready() {
                     : v.preset === 'diagnostics'
                       ? 'zip'
                       : 'mp4';
+    let createdAt: string | undefined;
+    try {
+      createdAt = (await supervisor.client.request('show', { id: v.id }))?.manifest?.createdAt;
+    } catch {
+      createdAt = undefined;
+    }
+    // A save sheet on the window that asked, so it never opens behind the app.
+    const parent = BrowserWindow.getFocusedWindow() ?? windows.get('recorder');
+    const folder = lastExportFolder ?? app.getPath('downloads');
     let path: string | undefined;
     if (v.preset === 'editor-tracks') {
-      const d = await dialog.showOpenDialog({
-        title: 'Save separate original screen, camera and audio files',
-        properties: ['openDirectory', 'createDirectory'],
+      const d = await saveDialog(parent, {
+        title: 'Save original screen, camera and audio files',
+        message: 'Rushes creates a folder with this name holding each track.',
+        buttonLabel: 'Save Tracks',
+        defaultPath: join(
+          folder,
+          suggestedExportName(v.title, createdAt, 'tracks').replace(/\.tracks$/, ''),
+        ),
+        properties: ['createDirectory', 'showOverwriteConfirmation'],
       });
-      if (!d.canceled) path = join(d.filePaths[0], `Rushes-${v.id}`);
+      if (!d.canceled && d.filePath) path = d.filePath;
     } else {
-      const d = await dialog.showSaveDialog({
+      const d = await saveDialog(parent, {
         title: 'Export recording',
-        defaultPath: `Rushes-${v.id}.${extension}`,
-        filters: [{ name: 'Media', extensions: [extension] }],
+        message: 'Choose a name and a folder for the exported file.',
+        buttonLabel: 'Export',
+        defaultPath: join(folder, suggestedExportName(v.title, createdAt, extension)),
+        filters: [{ name: extension.toUpperCase(), extensions: [extension] }],
+        properties: ['createDirectory', 'showOverwriteConfirmation'],
       });
-      if (!d.canceled) path = d.filePath;
+      if (!d.canceled && d.filePath) path = d.filePath;
     }
     if (!path) return { canceled: true };
+    lastExportFolder = dirname(path);
     let result;
     if (['srt', 'vtt', 'txt'].includes(v.preset))
       result = await supervisor.client.request('captions.export', {

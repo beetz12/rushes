@@ -604,7 +604,28 @@ public struct BubbleMetadata: Codable, Equatable, Sendable {
     public var size: Int
     public var visible: Bool
     public var sizeFraction: Double?
+    /// Media-time stretches (ms) when the person turned the camera off with the
+    /// bubble's ×. Playback and export leave the camera out only inside them.
+    public var hiddenRanges: [[Double]]?
+    /// Start (ms) of a camera-off stretch that has not ended yet.
+    public var hiddenSinceMs: Double?
     public init(center: [Double], size: Int = 200, visible: Bool = true, sizeFraction: Double? = nil) {
         self.center = center; self.size = size; self.visible = visible; self.sizeFraction = sizeFraction
+    }
+    /// Carries the camera-off history forward and opens or closes a stretch
+    /// when visibility changes at media time `atMs`.
+    public func applying(_ next: BubbleMetadata, atMs: Double) -> BubbleMetadata {
+        var result = next
+        result.hiddenRanges = hiddenRanges
+        result.hiddenSinceMs = hiddenSinceMs
+        let at = atMs.isFinite ? max(0, atMs) : 0
+        if visible && !next.visible {
+            result.hiddenSinceMs = at
+        } else if !visible && next.visible {
+            let start = hiddenSinceMs ?? at
+            if at > start { result.hiddenRanges = (hiddenRanges ?? []) + [[start, at]] }
+            result.hiddenSinceMs = nil
+        }
+        return result
     }
 }

@@ -420,7 +420,7 @@ export interface RushesAPI {
   ): Promise<Record<string, RecordingOptions>>;
   onEvent(listener: (event: EngineEvent) => void): () => void;
   window(action: string, value?: number, x?: number, y?: number): Promise<any>;
-  exportFile(id: string, preset: string, atMs?: number): Promise<any>;
+  exportFile(id: string, preset: string, atMs?: number, title?: string): Promise<any>;
   openEditor(
     id: string,
   ): Promise<{ canceled?: boolean; revealed?: boolean; started?: boolean; path?: string }>;

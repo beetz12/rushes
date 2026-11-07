@@ -19,6 +19,20 @@ struct EditingTests {
         let screenWithHiddenOverlay=LayoutPlanner.frames(layout:layout,canvasAspect:16/9,hasCamera:true)
         #expect(screenWithHiddenOverlay.screen != nil && screenWithHiddenOverlay.camera == nil)
     }
+    @Test func bubbleVisibilityChangesRecordCameraOffStretches() {
+        var bubble=BubbleMetadata(center:[0.1,0.8])
+        bubble=bubble.applying(BubbleMetadata(center:[0.1,0.8],visible:false),atMs:1200)
+        #expect(bubble.hiddenSinceMs == 1200 && bubble.hiddenRanges == nil)
+        bubble=bubble.applying(BubbleMetadata(center:[0.2,0.8],visible:false),atMs:1500)
+        #expect(bubble.hiddenSinceMs == 1200 && bubble.center == [0.2,0.8])
+        bubble=bubble.applying(BubbleMetadata(center:[0.2,0.8],visible:true),atMs:4000)
+        #expect(bubble.hiddenSinceMs == nil && bubble.hiddenRanges == [[1200,4000]])
+        bubble=bubble.applying(BubbleMetadata(center:[0.2,0.8],visible:true),atMs:5000)
+        #expect(bubble.hiddenRanges == [[1200,4000]])
+        var settings=BubbleSettings(); settings.hiddenRanges=bubble.hiddenRanges
+        #expect(!settings.cameraOff(atSourceMs:1199) && settings.cameraOff(atSourceMs:1200) && !settings.cameraOff(atSourceMs:4000))
+        #expect(BubbleSettings().center == [0.12,0.82])
+    }
     @Test func cutsReorderSpeedAndValidation() throws {
         var edit=EditDocument(durationMs:10_000)
         try edit.removeRanges([EditCut(sourceStartMs:2000,sourceEndMs:4000,reason:"words",wordIds:["w1"])])

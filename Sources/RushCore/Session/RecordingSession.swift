@@ -573,7 +573,13 @@ public actor RecordingSession {
     public func currentClock() -> SessionClock? { clock }
 
     public func setBubble(_ bubble: BubbleMetadata) throws {
-        manifest?.bubble = bubble
+        let atMs = clock.map { Double(max(0, $0.durationNs(nowNs: nowNs()))) / 1_000_000 } ?? 0
+        if let previous = manifest?.bubble {
+            manifest?.bubble = previous.applying(bubble, atMs: atMs)
+        } else {
+            manifest?.bubble = BubbleMetadata(center: bubble.center, size: bubble.size, sizeFraction: bubble.sizeFraction)
+                .applying(bubble, atMs: atMs)
+        }
         try persistManifest()
     }
 

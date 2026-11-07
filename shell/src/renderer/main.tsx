@@ -82,7 +82,7 @@ import {
 } from '../shared/live-recording';
 import { createNativeAPI } from './native-api';
 import { ShareSetupWizard } from './share-setup';
-import { reviewVideoSources } from '../shared/review-video';
+import { cameraOffAt, DEFAULT_BUBBLE_CENTER, reviewVideoSources } from '../shared/review-video';
 import {
   captureIntent,
   captureIntentOptions,
@@ -519,6 +519,7 @@ function App() {
         await refresh();
       }
     });
+  const liveTake = ['armed', 'recording', 'paused'].includes(String(status?.state ?? ''));
   if (view === 'bubble')
     return (
       <div
@@ -534,8 +535,12 @@ function App() {
         <span className="bubble-move-hint">Drag to move</span>
         <button
           className="bubble-close"
-          aria-label="Hide camera bubble"
-          title="Hide camera bubble"
+          aria-label={liveTake ? 'Turn camera off (recording continues)' : 'Hide camera preview'}
+          title={
+            liveTake
+              ? 'Turn camera off. Recording continues, and the video leaves your camera out until you turn it back on from the bar.'
+              : 'Hide camera preview'
+          }
           style={{ WebkitAppRegion: 'no-drag' } as any}
           onClick={() => void api.window('hide-bubble').catch((e) => setError(String(e), e.code))}
         >
@@ -637,7 +642,12 @@ function App() {
         {options.camera !== 'none' && (
           <>
             <button
-              title={bubbleHidden ? 'Show camera bubble' : 'Hide camera bubble'}
+              title={
+                bubbleHidden
+                  ? 'Turn camera back on'
+                  : 'Turn camera off (recording continues without your camera)'
+              }
+              aria-label={bubbleHidden ? 'Turn camera back on' : 'Turn camera off'}
               aria-pressed={!bubbleHidden}
               onClick={() =>
                 run(async () => {
@@ -1349,7 +1359,7 @@ function Review({ id, back, run, setNote, trashed, compact, registerNavigationGu
     [end, setEnd] = useState(0),
     [layout, setLayout] = useState('bubble'),
     [bubbleSize, setBubbleSize] = useState(0.22),
-    [bubbleCenter, setBubbleCenter] = useState([0.88, 0.82]),
+    [bubbleCenter, setBubbleCenter] = useState<number[]>([...DEFAULT_BUBBLE_CENTER]),
     [bubbleVisible, setBubbleVisible] = useState(true),
     [bubbleShape, setBubbleShape] = useState('circle'),
     [frames, setFrames] = useState<any>(null),
@@ -1557,7 +1567,7 @@ function Review({ id, back, run, setNote, trashed, compact, registerNavigationGu
       setLayout(document.layout?.preset ?? 'bubble');
       setBubbleSize(document.layout?.bubble?.size ?? 0.22);
       setMirror(document.layout?.bubble?.mirror ?? true);
-      setBubbleCenter(document.layout?.bubble?.center ?? [0.88, 0.82]);
+      setBubbleCenter(document.layout?.bubble?.center ?? DEFAULT_BUBBLE_CENTER);
       setBubbleVisible(document.layout?.bubble?.visible ?? true);
       setBubbleShape(document.layout?.bubble?.shape ?? 'circle');
       setBurnIn(document.captions?.burnIn ?? false);
@@ -1791,6 +1801,7 @@ function Review({ id, back, run, setNote, trashed, compact, registerNavigationGu
           id,
           exportPreset,
           posterTimeForPlayhead(edit?.clips ?? [], currentTime, Boolean(renderedPreview)),
+          title,
         );
         if (!r.canceled) {
           setNote(`Export saved: ${r.path}`);
@@ -1968,6 +1979,11 @@ function Review({ id, back, run, setNote, trashed, compact, registerNavigationGu
                         ? '50%'
                         : '25%',
                   transform: mirror ? 'scaleX(-1)' : undefined,
+                  visibility:
+                    !videoSources.cameraPrimary &&
+                    cameraOffAt(edit?.layout?.bubble?.hiddenRanges, currentTime * 1000)
+                      ? 'hidden'
+                      : undefined,
                 }}
                 onPointerDown={(e) => e.currentTarget.setPointerCapture(e.pointerId)}
                 onPointerMove={(e) => {

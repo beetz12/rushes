@@ -222,7 +222,7 @@ final class NativeRenderer: @unchecked Sendable {
                     clicks.removeAll { mapped.sourceMs-$0.t >= ClickHighlight.lifeMs }
                     lastSource=mapped.sourceMs
                     let state=viewport.tick(clip:mapped.clip,sourceMs:mapped.sourceMs,cues:edit.zoomCues,pointer:pointer,dt:1/Double(options.fps))
-                    let composite=try compose(screen:screenReader?.image(at:mapped.sourceMs),camera:cameraReader?.image(at:mapped.sourceMs),viewport:state,pointer:edit.drawCursor ? pointer : nil,clicks:clicks.map { (mapped.sourceMs-$0.t,$0.point) },width:dimensions.0,height:dimensions.1)
+                    let composite=try compose(screen:screenReader?.image(at:mapped.sourceMs),camera:cameraOff(at:mapped.sourceMs) ? nil : cameraReader?.image(at:mapped.sourceMs),viewport:state,pointer:edit.drawCursor ? pointer : nil,clicks:clicks.map { (mapped.sourceMs-$0.t,$0.point) },width:dimensions.0,height:dimensions.1)
                     let image=captions.image(at:mapped.sourceMs)?.composited(over:composite) ?? composite
                     try await wait(input,writer:writer)
                     guard let pool=adaptor.pixelBufferPool else { throw renderFailure("Missing render buffer pool") }
@@ -261,6 +261,11 @@ final class NativeRenderer: @unchecked Sendable {
         let data=try Data(contentsOf:url)
         guard let text=String(data:data,encoding:.utf8) else { throw renderFailure("Input timeline is not UTF-8") }
         return text.split(separator:"\n").compactMap { try? JSONDecoder().decode(PointerSample.self,from:Data($0.utf8)) }.sorted { $0.t < $1.t }
+    }
+    /// The camera stays in a camera-only video; elsewhere it drops out while turned off.
+    private func cameraOff(at sourceMs: Double) -> Bool {
+        let hasScreen=manifest.tracks.contains { $0.kind == .screen && $0.present }
+        return hasScreen && edit.layout.preset != .cameraOnly && edit.layout.bubble.cameraOff(atSourceMs:sourceMs)
     }
     private func compose(screen: CIImage?,camera: CIImage?,viewport: ViewportState,pointer: [Double]?,clicks: [(ageMs:Double,point:[Double])] = [],width: Int,height: Int) throws -> CIImage {
         let bounds=CGRect(x:0,y:0,width:width,height:height)
