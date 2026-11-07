@@ -15,6 +15,7 @@ import {
   safeStorage,
   Notification,
   ClipboardItem,
+  systemPreferences,
 } from 'electron';
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -34,6 +35,7 @@ import { AutoShare, ViewNotifications } from './share-lifecycle';
 import { openInEditor, editorArguments } from './editor-handoff';
 import { copyVideoFile } from './file-clipboard';
 import { videoExportRequest } from '../shared/review-draft';
+import { permissionGate } from '../shared/recording-setup';
 import { suggestedExportName } from '../shared/export-name';
 import { atomicJSON, atomicBytes } from './atomic';
 import { OnboardingStore } from './onboarding-store';
@@ -618,6 +620,33 @@ function queueBubbleWrite(write: () => Promise<void>) {
   bubbleWrites = next;
   return next;
 }
+/** Opens the separate permissions window. Without screen or camera access it is the only window. */
+function showPermissions(blocking: boolean) {
+  if (blocking) windows.get('recorder')?.hide();
+  const existing = windows.get('permissions');
+  if (existing && !existing.isDestroyed()) {
+    existing.show();
+    existing.focus();
+    return;
+  }
+  windowFor('permissions', {
+    width: 560,
+    height: 640,
+    minWidth: 560,
+    minHeight: 640,
+    resizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    center: true,
+    titleBarStyle: 'hiddenInset',
+    title: 'Rushes Access',
+    backgroundColor: '#ffffff',
+  });
+}
+async function checkPermissionsAtLaunch() {
+  const gate = permissionGate(await supervisor.client.request('permissions.check'));
+  if (gate.missing.length) showPermissions(!gate.canRecord);
+}
 async function hideCameraBubble() {
   ++feedbackRefresh;
   const feedbackStopped = idleCapture.stop();
@@ -1141,6 +1170,19 @@ async function ready() {
       cameraOverlay.hide();
       windows.get('bubble')?.close();
     }
+    const mediaPermission =
+      request.cmd === 'permissions.request' &&
+      process.platform === 'darwin' &&
+      ['camera', 'microphone'].includes(String(request.args.permission))
+        ? (String(request.args.permission) as 'camera' | 'microphone')
+        : undefined;
+    // The engine is a helper binary, so macOS may not show its access prompt.
+    // Ask from the app itself, which owns the usage text, then let the engine re-check.
+    if (
+      mediaPermission &&
+      systemPreferences.getMediaAccessStatus(mediaPermission) === 'not-determined'
+    )
+      await systemPreferences.askForMediaAccess(mediaPermission).catch(() => false);
     let result;
     try {
       // Finish idle warm-up before native acquisition takes over the camera.
@@ -1171,6 +1213,16 @@ async function ready() {
         startRequests--;
         if (!supervisor.active) void syncIdlePreview();
       }
+    }
+    // Still not allowed after asking: send the person to the exact Settings pane.
+    if (
+      mediaPermission &&
+      result?.[mediaPermission] !== 'granted' &&
+      systemPreferences.getMediaAccessStatus(mediaPermission) === 'denied'
+    ) {
+      const url = result?.details?.[mediaPermission]?.settingsURL;
+      if (typeof url === 'string' && new URL(url).protocol === 'x-apple.systempreferences:')
+        await shell.openExternal(url);
     }
     if (request.cmd === 'permissions.settings' && result.url) {
       const u = new URL(result.url);
@@ -1282,6 +1334,16 @@ async function ready() {
       case 'editor':
         windowFor(v.action);
         return;
+      case 'permissions':
+        return showPermissions(false);
+      case 'permissions-done': {
+        const gate = permissionGate(await supervisor.client.request('permissions.check'));
+        if (!gate.canRecord)
+          throw new Error('Allow Screen Recording or Camera so Rushes has something to record.');
+        windows.get('permissions')?.close();
+        windowFor('recorder');
+        return;
+      }
       case 'drawing':
         return showDrawing();
       case 'drawing-hide':
@@ -1828,6 +1890,10 @@ async function ready() {
       if (promptEnabled) void showTeleprompter().catch(() => {});
     }
     broadcast({ event: 'engine-ready' });
+    if (!supervisor.active)
+      void checkPermissionsAtLaunch().catch((error) =>
+        console.error('[Rushes] Permission check failed', String(error)),
+      );
     void syncIdlePreview();
     viewNotifications.start();
     updates.checker.start();

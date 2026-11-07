@@ -86,6 +86,7 @@ import { cameraOffAt, DEFAULT_BUBBLE_CENTER, reviewVideoSources } from '../share
 import {
   captureIntent,
   captureIntentOptions,
+  permissionGate,
   recordingReadiness,
   type CaptureIntent,
   type ScreenSelection,
@@ -434,7 +435,14 @@ function App() {
       const readiness = recordingReadiness(options, permissions, status.state);
       if (readiness.blockingReason) throw new Error(readiness.blockingReason);
       await api.saveOptions(options);
-      const args = recordingStartArguments(options);
+      // Keep the saved camera choice; this take just records without it.
+      const args = recordingStartArguments(
+        readiness.screenSkipped
+          ? { ...options, mode: 'camera-only' }
+          : readiness.cameraSkipped
+            ? { ...options, camera: 'none' }
+            : options,
+      );
       if (options.countdownSeconds) await countdownAudio.prepare().catch(() => {});
       setCountdown(options.countdownSeconds ? 0 : null);
       try {
@@ -553,6 +561,7 @@ function App() {
         )}
       </div>
     );
+  if (view === 'permissions') return <PermissionsWindow />;
   if (view === 'area') return <AreaSelector />;
   if (view === 'teleprompter') return <TeleprompterOverlay />;
   if (view === 'drawing') return <DrawingOverlay />;
@@ -851,10 +860,8 @@ function App() {
                 })
               }
               permissions={
-                ((options.mode !== 'camera-only' && permissions.screen !== 'granted') ||
-                  (options.camera !== 'none' && permissions.camera !== 'granted') ||
-                  (options.mic !== 'none' && permissions.microphone !== 'granted') ||
-                  guideTarget === 'permissions') && (
+                (Object.keys(permissions).length > 0 && !permissionGate(permissions).canRecord) ||
+                guideTarget === 'permissions' ? (
                   <PermissionPanel
                     permissions={permissions}
                     refresh={refresh}
@@ -863,7 +870,19 @@ function App() {
                     cameraRequired={options.camera !== 'none'}
                     microphoneRequired={options.mic !== 'none'}
                   />
-                )
+                ) : permissionGate(permissions).missing.length > 0 &&
+                  Object.keys(permissions).length > 0 ? (
+                  <button
+                    className="access-reminder"
+                    onClick={() => void run(() => api.window('permissions'))}
+                  >
+                    {permissionGate(permissions)
+                      .missing.map((key) => accessRows.find((row) => row.key === key)?.title ?? key)
+                      .join(' and ')}{' '}
+                    {permissionGate(permissions).missing.length > 1 ? 'are' : 'is'} off · Review
+                    access
+                  </button>
+                ) : undefined
               }
               savedSetups={
                 <div className="compact-presets">
@@ -996,6 +1015,154 @@ function WindowChrome({ run }: { run: (action: () => Promise<any>) => Promise<an
           </svg>
         </button>
       </div>
+    </div>
+  );
+}
+const accessRows = [
+  {
+    key: 'screen',
+    title: 'Screen Recording',
+    purpose: 'Record your screen, a window or an area.',
+    icon: 'screen',
+    restart: true,
+  },
+  {
+    key: 'camera',
+    title: 'Camera',
+    purpose: 'Show yourself in a bubble, or record your camera alone.',
+    icon: 'camera',
+    restart: false,
+  },
+  {
+    key: 'microphone',
+    title: 'Microphone',
+    purpose: 'Narrate while you record.',
+    icon: 'mic',
+    restart: false,
+  },
+] as const;
+function PermissionsWindow() {
+  const [access, setAccess] = useState<Record<string, string>>({});
+  const [busyKey, setBusyKey] = useState('');
+  const [error, setError] = useState('');
+  const check = useCallback(async () => {
+    try {
+      setAccess(await api.request('permissions.check'));
+    } catch (e) {
+      setError(String(e).replace(/^Error: /, ''));
+    }
+  }, []);
+  useEffect(() => {
+    void check();
+    // Access granted in System Settings shows up here without a button press.
+    const timer = setInterval(() => void check(), 1500);
+    window.addEventListener('focus', check);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('focus', check);
+    };
+  }, [check]);
+  const gate = permissionGate(access);
+  const allow = async (key: string) => {
+    const row = accessRows.find((item) => item.key === key);
+    if (
+      access[key] === 'denied' &&
+      row?.restart &&
+      !(await api.confirm(
+        'Rushes will open System Settings. After you turn on Screen Recording, macOS will ask to quit and reopen Rushes. Nothing you have recorded is lost.',
+      ))
+    )
+      return;
+    setBusyKey(key);
+    setError('');
+    try {
+      await api.request(access[key] === 'denied' ? 'permissions.settings' : 'permissions.request', {
+        permission: key,
+      });
+      await check();
+    } catch (e) {
+      setError(String(e).replace(/^Error: /, ''));
+    } finally {
+      setBusyKey('');
+    }
+  };
+  return (
+    <div className="access-window">
+      <div className="access-drag" />
+      <header>
+        <span className="access-mark" aria-hidden="true">
+          <Icon name="record" size={26} />
+        </span>
+        <h1>{gate.canRecord ? 'Finish setting up Rushes' : 'Let Rushes record'}</h1>
+        <p>
+          {gate.canRecord
+            ? 'Rushes can record now. Allow the rest for the full experience.'
+            : 'Allow Screen Recording or Camera to start. You can add the others any time.'}
+        </p>
+      </header>
+      <ul className="access-list">
+        {accessRows.map((row) => {
+          const state = access[row.key];
+          const granted = state === 'granted';
+          return (
+            <li key={row.key} className={granted ? 'granted' : ''}>
+              <span className="access-icon">
+                <Icon name={row.icon} size={22} />
+              </span>
+              <span className="access-text">
+                <strong>{row.title}</strong>
+                <span>{row.purpose}</span>
+                {row.restart && !granted && (
+                  <small>macOS asks to quit and reopen Rushes after you allow this.</small>
+                )}
+                {!row.restart && state === 'denied' && (
+                  <small>Turned off earlier. Turn it on for Rushes in System Settings.</small>
+                )}
+              </span>
+              {granted ? (
+                <span className="access-allowed">
+                  <Icon name="check" size={16} /> Allowed
+                </span>
+              ) : (
+                <button
+                  className={state === 'denied' ? 'secondary small' : 'primary small'}
+                  disabled={!!busyKey || state === undefined}
+                  onClick={() => void allow(row.key)}
+                >
+                  {busyKey === row.key
+                    ? 'Waiting…'
+                    : state === 'denied'
+                      ? 'Open Settings'
+                      : 'Allow'}
+                </button>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+      {error && (
+        <p className="access-error" role="alert">
+          {error}
+        </p>
+      )}
+      <footer>
+        <span className="muted">
+          {gate.missing.length === 0
+            ? 'Everything is allowed.'
+            : gate.canRecord
+              ? 'You can allow the rest later from the recorder.'
+              : 'Rushes needs Screen Recording or Camera to record.'}
+        </span>
+        <button
+          className="primary"
+          disabled={!gate.canRecord}
+          onClick={() =>
+            void api.window('permissions-done').catch((e: unknown) => setError(String(e)))
+          }
+        >
+          Continue
+        </button>
+      </footer>
     </div>
   );
 }

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { defaultOptions, recordingStartArguments } from './contracts';
-import { captureIntent, captureIntentOptions, recordingReadiness } from './recording-setup';
+import {
+  captureIntent,
+  captureIntentOptions,
+  permissionGate,
+  recordingReadiness,
+} from './recording-setup';
 
 const granted = { screen: 'granted', camera: 'granted', microphone: 'granted' };
 
@@ -77,6 +82,52 @@ describe('recording setup choices', () => {
     expect(recordingReadiness(defaultOptions, granted, 'offline').blockingReason).toContain(
       'Reconnect',
     );
+  });
+  it('records the screen alone when camera access is missing instead of blocking', () => {
+    const withCamera = { ...defaultOptions, camera: 'cam' };
+    for (const camera of ['not-determined', 'denied', undefined]) {
+      const readiness = recordingReadiness(withCamera, { ...granted, camera } as any, 'idle');
+      expect(readiness.blockingReason).toBeUndefined();
+      expect(readiness.cameraSkipped).toBe(true);
+      expect(readiness.tracks).toEqual(['Screen']);
+      expect(readiness.notice).toContain('camera is left out');
+    }
+    expect(
+      recordingReadiness(withCamera, { ...granted, camera: 'granted' }, 'idle').cameraSkipped,
+    ).toBe(false);
+    const cameraOnly = { ...withCamera, mode: 'camera-only' as const };
+    expect(recordingReadiness(cameraOnly, { ...granted, camera: 'denied' }, 'idle')).toMatchObject({
+      blockingReason: 'Allow camera access to continue.',
+      cameraSkipped: false,
+    });
+  });
+  it('records the camera alone when screen access is missing', () => {
+    const withCamera = { ...defaultOptions, camera: 'cam' };
+    const readiness = recordingReadiness(withCamera, { ...granted, screen: 'denied' }, 'idle');
+    expect(readiness).toMatchObject({
+      screenSkipped: true,
+      cameraSkipped: false,
+      tracks: ['Camera'],
+    });
+    expect(readiness.blockingReason).toBeUndefined();
+    expect(readiness.notice).toContain('screen is left out');
+    expect(
+      recordingReadiness(withCamera, { microphone: 'granted' }, 'idle').blockingReason,
+    ).toContain('screen recording or camera');
+    expect(
+      recordingReadiness(defaultOptions, { camera: 'granted' }, 'idle').blockingReason,
+    ).toContain('or choose a camera');
+  });
+  it('lets Rushes continue when either screen or camera access exists', () => {
+    expect(permissionGate({})).toEqual({
+      canRecord: false,
+      missing: ['screen', 'camera', 'microphone'],
+    });
+    expect(permissionGate({ camera: 'granted' })).toEqual({
+      canRecord: true,
+      missing: ['screen', 'microphone'],
+    });
+    expect(permissionGate(granted)).toEqual({ canRecord: true, missing: [] });
   });
   it('describes only originals actually enabled, with an explicit voice-off warning', () => {
     expect(recordingReadiness(defaultOptions, granted, 'idle')).toMatchObject({

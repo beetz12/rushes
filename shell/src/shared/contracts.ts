@@ -97,6 +97,8 @@ export const windowSchema = z
       'hide-bubble',
       'show-bubble',
       'relaunch',
+      'permissions',
+      'permissions-done',
       'acknowledgements',
       'quit',
     ]),

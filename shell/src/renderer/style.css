@@ -2473,3 +2473,124 @@ textarea:focus-visible {
 .bar-level.clipping > span {
   background: #f76050;
 }
+
+/* Separate access window, shown at launch when a permission is missing. */
+:root[data-view='permissions'],
+:root[data-view='permissions'] body {
+  background: #ffffff;
+}
+.access-window {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  padding: 0 32px 24px;
+  box-sizing: border-box;
+}
+.access-drag {
+  height: 36px;
+  flex: 0 0 36px;
+  -webkit-app-region: drag;
+}
+.access-window header {
+  text-align: center;
+  margin-bottom: 22px;
+}
+.access-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: #e95846;
+  color: #fff;
+  margin-bottom: 14px;
+}
+.access-window h1 {
+  font-size: 22px;
+  letter-spacing: -0.4px;
+  margin: 0 0 6px;
+}
+.access-window header p {
+  margin: 0;
+  color: #5d6670;
+  line-height: 1.45;
+}
+.access-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+}
+.access-list li {
+  display: grid;
+  grid-template-columns: 40px 1fr auto;
+  gap: 14px;
+  align-items: center;
+  padding: 14px 16px;
+  border: 1px solid #e4e7eb;
+  border-radius: 12px;
+  background: #fbfbfc;
+}
+.access-list li.granted {
+  background: #f3faf5;
+  border-color: #cfe9d6;
+}
+.access-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #fff;
+  border: 1px solid #e4e7eb;
+}
+.access-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.access-text span {
+  color: #5d6670;
+  font-size: 13px;
+}
+.access-text small {
+  color: #8a5a00;
+  font-size: 12px;
+  margin-top: 2px;
+}
+.access-allowed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #1f7a3d;
+  font-weight: 600;
+  font-size: 13px;
+}
+.access-error {
+  color: #b42318;
+  margin: 10px 0 0;
+}
+.access-window footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 18px;
+  border-top: 1px solid #eef0f2;
+}
+.access-reminder {
+  width: 100%;
+  margin: 6px 0;
+  padding: 8px 10px;
+  border: 1px solid #f3d6a8;
+  border-radius: 8px;
+  background: #fff8ec;
+  color: #7a4a00;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}

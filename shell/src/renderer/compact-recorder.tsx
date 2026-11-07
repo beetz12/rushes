@@ -22,7 +22,7 @@ export type CompactRecorderProps = {
   level?: { value: MicrophoneLevel; receivedAt: number };
   feedbackError: string;
   intent: CaptureIntent;
-  readiness: { blockingReason?: string; voiceOff: boolean; tracks: string[] };
+  readiness: { blockingReason?: string; voiceOff: boolean; tracks: string[]; notice?: string };
   busy: boolean;
   active: boolean;
   recordingState: string;
@@ -314,7 +314,7 @@ export function CompactRecorder(p: CompactRecorderProps) {
               ? 'Recording paused'
               : p.active
                 ? 'Recording in progress'
-                : p.readiness.blockingReason || 'Ready to record'}
+                : p.readiness.blockingReason || p.readiness.notice || 'Ready to record'}
       </div>
       <div className="compact-start" data-tour="start">
         {p.countdown !== null ? (
