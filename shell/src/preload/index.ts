@@ -14,7 +14,10 @@ const api: RushesAPI = {
   chooseVideos: () => invoke('rushes:choose-videos'),
   // Only real dropped File objects carry a path; the renderer never sends one.
   allowDroppedVideos: (files) =>
-    invoke('rushes:allow-dropped-videos', [...files].map((file) => webUtils.getPathForFile(file))),
+    invoke(
+      'rushes:allow-dropped-videos',
+      [...files].map((file) => webUtils.getPathForFile(file)),
+    ),
   importVideo: (path) => invoke('rushes:import-video', path),
   presets: (action, name, options) => invoke('rushes:presets', { action, name, options }),
   bootstrap: () => invoke('rushes:bootstrap'),
@@ -36,6 +39,8 @@ const api: RushesAPI = {
   loginItem: (enabled) => invoke('rushes:login-item', enabled),
   reveal: (path) => invoke('rushes:reveal', path),
   confirm: (message) => invoke('rushes:confirm', message),
+  dragApp: () => ipcRenderer.send('rushes:drag-app'),
+  appIcon: () => invoke('rushes:app-icon'),
   cloudSettings: () => invoke('rushes:cloud-settings'),
   saveCloudSettings: (settings) => invoke('rushes:save-cloud', settings),
   testCloud: () => invoke('rushes:test-cloud'),

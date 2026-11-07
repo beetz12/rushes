@@ -99,6 +99,8 @@ export const windowSchema = z
       'relaunch',
       'permissions',
       'permissions-done',
+      'access-helper',
+      'access-helper-close',
       'acknowledgements',
       'quit',
     ]),
@@ -434,6 +436,9 @@ export interface RushesAPI {
   selectArea(area: { x: number; y: number; width: number; height: number }): Promise<void>;
   reveal(path: string): Promise<void>;
   confirm(message: string): Promise<boolean>;
+  /** Starts dragging the Rushes app bundle, for dropping into a System Settings privacy list. */
+  dragApp(): void;
+  appIcon(): Promise<string>;
   cloudSettings(): Promise<{
     provider: string;
     configured: boolean;

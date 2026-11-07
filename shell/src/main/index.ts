@@ -367,7 +367,9 @@ function windowFor(
   if (view === 'bubble' || view === 'bar') w.on('moved', () => rememberPosition(view, w));
   w.once('ready-to-show', () => {
     if (quitting || w.isDestroyed() || windows.get(key) !== w) return;
-    if (['bubble', 'bar', 'teleprompter', 'drawing', 'drawing-tools'].includes(view))
+    if (
+      ['bubble', 'bar', 'teleprompter', 'drawing', 'drawing-tools', 'access-helper'].includes(view)
+    )
       w.showInactive();
     else w.show();
   });
@@ -642,6 +644,53 @@ function showPermissions(blocking: boolean) {
     title: 'Rushes Access',
     backgroundColor: '#ffffff',
   });
+}
+/** The installed .app bundle, or undefined when running from a development checkout. */
+function appBundlePath() {
+  const bundle = resolve(app.getPath('exe'), '../../..');
+  return bundle.endsWith('.app') ? bundle : undefined;
+}
+let appIconImage: Electron.NativeImage | undefined;
+async function loadAppIcon() {
+  const bundle = appBundlePath();
+  if (!appIconImage && bundle) appIconImage = await app.getFileIcon(bundle, { size: 'large' });
+  return appIconImage;
+}
+/**
+ * A small floating card with the Rushes icon, shown while System Settings is open,
+ * so the person can drag Rushes into a privacy list when it is not listed yet.
+ */
+async function showAccessHelper() {
+  await loadAppIcon().catch(() => undefined);
+  const existing = windows.get('access-helper');
+  if (existing && !existing.isDestroyed()) {
+    existing.showInactive();
+    return;
+  }
+  const area = screen.getPrimaryDisplay().workArea;
+  const width = 360,
+    height = 112;
+  const w = windowFor('access-helper', {
+    width,
+    height,
+    minWidth: width,
+    minHeight: height,
+    x: Math.round(area.x + (area.width - width) / 2),
+    y: Math.round(area.y + area.height - height - 24),
+    frame: false,
+    resizable: false,
+    movable: true,
+    focusable: true,
+    hasShadow: true,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    backgroundColor: '#ffffff',
+  });
+  w.setAlwaysOnTop(true, 'floating');
+  w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  setTimeout(() => {
+    if (!w.isDestroyed()) w.close();
+  }, 5 * 60_000);
 }
 async function checkPermissionsAtLaunch() {
   const gate = permissionGate(await supervisor.client.request('permissions.check'));
@@ -1324,6 +1373,17 @@ async function ready() {
     });
     return r.response === 1;
   });
+  handle('rushes:app-icon', async () => (await loadAppIcon())?.toDataURL() ?? '');
+  ipcMain.on('rushes:drag-app', (event) => {
+    try {
+      guard(event as unknown as Electron.IpcMainInvokeEvent);
+    } catch {
+      return;
+    }
+    const bundle = appBundlePath();
+    if (bundle && appIconImage && !appIconImage.isEmpty())
+      event.sender.startDrag({ file: bundle, icon: appIconImage.resize({ width: 64 }) });
+  });
   handle('rushes:window', async (value) => {
     const v = windowSchema.parse(value);
     switch (v.action) {
@@ -1336,11 +1396,17 @@ async function ready() {
         return;
       case 'permissions':
         return showPermissions(false);
+      case 'access-helper':
+        return showAccessHelper();
+      case 'access-helper-close':
+        windows.get('access-helper')?.close();
+        return;
       case 'permissions-done': {
         const gate = permissionGate(await supervisor.client.request('permissions.check'));
         if (!gate.canRecord)
           throw new Error('Allow Screen Recording or Camera so Rushes has something to record.');
         windows.get('permissions')?.close();
+        windows.get('access-helper')?.close();
         windowFor('recorder');
         return;
       }

@@ -562,6 +562,7 @@ function App() {
       </div>
     );
   if (view === 'permissions') return <PermissionsWindow />;
+  if (view === 'access-helper') return <AccessHelper />;
   if (view === 'area') return <AreaSelector />;
   if (view === 'teleprompter') return <TeleprompterOverlay />;
   if (view === 'drawing') return <DrawingOverlay />;
@@ -1063,6 +1064,10 @@ function PermissionsWindow() {
     };
   }, [check]);
   const gate = permissionGate(access);
+  useEffect(() => {
+    if (Object.keys(access).length && gate.missing.length === 0)
+      void api.window('access-helper-close').catch(() => {});
+  }, [access, gate.missing.length]);
   const allow = async (key: string) => {
     const row = accessRows.find((item) => item.key === key);
     if (
@@ -1076,9 +1081,11 @@ function PermissionsWindow() {
     setBusyKey(key);
     setError('');
     try {
+      const opensSettings = access[key] === 'denied' || key === 'screen';
       await api.request(access[key] === 'denied' ? 'permissions.settings' : 'permissions.request', {
         permission: key,
       });
+      if (opensSettings) await api.window('access-helper');
       await check();
     } catch (e) {
       setError(String(e).replace(/^Error: /, ''));
@@ -1107,25 +1114,17 @@ function PermissionsWindow() {
           return (
             <li key={row.key} className={granted ? 'granted' : ''}>
               <span className="access-icon">
-                <Icon name={row.icon} size={22} />
+                <Icon name={granted ? 'check' : row.icon} size={22} />
               </span>
               <span className="access-text">
                 <strong>{row.title}</strong>
                 <span>{row.purpose}</span>
-                {row.restart && !granted && (
-                  <small>macOS asks to quit and reopen Rushes after you allow this.</small>
-                )}
-                {!row.restart && state === 'denied' && (
-                  <small>Turned off earlier. Turn it on for Rushes in System Settings.</small>
-                )}
               </span>
               {granted ? (
-                <span className="access-allowed">
-                  <Icon name="check" size={16} /> Allowed
-                </span>
+                <span className="access-allowed">Allowed</span>
               ) : (
                 <button
-                  className={state === 'denied' ? 'secondary small' : 'primary small'}
+                  className="primary small"
                   disabled={!!busyKey || state === undefined}
                   onClick={() => void allow(row.key)}
                 >
@@ -1140,6 +1139,13 @@ function PermissionsWindow() {
           );
         })}
       </ul>
+      {access.screen !== 'granted' && (
+        <p className="access-hint">
+          After you turn on Screen Recording, macOS asks to quit and reopen Rushes. Nothing you
+          recorded is lost. If Rushes is not in the list, drag it in from the card at the bottom of
+          your screen.
+        </p>
+      )}
       {error && (
         <p className="access-error" role="alert">
           {error}
@@ -1163,6 +1169,42 @@ function PermissionsWindow() {
           Continue
         </button>
       </footer>
+    </div>
+  );
+}
+function AccessHelper() {
+  const [icon, setIcon] = useState('');
+  useEffect(() => {
+    void api
+      .appIcon()
+      .then((value) => setIcon(typeof value === 'string' ? value : ''))
+      .catch(() => {});
+  }, []);
+  return (
+    <div className="access-helper">
+      <div
+        className="access-helper-app"
+        draggable
+        title="Drag Rushes into the list in System Settings"
+        onDragStart={(event) => {
+          event.preventDefault();
+          api.dragApp();
+        }}
+      >
+        {icon ? <img src={icon} alt="" draggable={false} /> : <Icon name="record" size={32} />}
+        <span>Rushes</span>
+      </div>
+      <div className="access-helper-text">
+        <strong>Drag Rushes into the list</strong>
+        <span>Drop it on the Screen Recording list in System Settings, then turn it on.</span>
+      </div>
+      <button
+        className="access-helper-close"
+        aria-label="Close"
+        onClick={() => void api.window('access-helper-close')}
+      >
+        ×
+      </button>
     </div>
   );
 }
