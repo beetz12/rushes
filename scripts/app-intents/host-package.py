@@ -22,7 +22,8 @@ versions=helper_versions(version,args.build_version if args.build_version is not
 timestamp=helper_timestamp(args.sign_identity,args.production,args.qa_socket,args.configuration)
 with tempfile.TemporaryDirectory(prefix='rushes-helper-build-') as workspace:
     scratch=Path(workspace)/'compiler';stage=Path(workspace)/'metadata'
-    common=['swift','build','--force-resolved-versions','--scratch-path',str(scratch),'-c',args.configuration]
+    # Older SwiftPM (Xcode 26) does not emit compiler constants unless asked; App Intents metadata needs them.
+    common=['swift','build','--force-resolved-versions','--scratch-path',str(scratch),'-c',args.configuration,'-Xswiftc','-emit-const-values']
     build=common+['--product','RushIntentsExtension','-Xswiftc','-DRUSHES_INTENTS_MAIN_HOST']
     if args.qa_socket:build+=['-Xswiftc','-DRUSHES_INTENT_QA']
     subprocess.run(build,cwd=root,check=True)

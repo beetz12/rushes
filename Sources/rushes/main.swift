@@ -14,7 +14,7 @@ import RushCore
 /// reserved seam for the Phase 2 launch-on-demand; both are parsed and
 /// reported in the error today so the contract is visible.
 
-let cliVersion = "0.2.1"
+let cliVersion = "0.2.2"
 
 // MARK: - Output helpers
 

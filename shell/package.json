@@ -1,6 +1,6 @@
 {
   "name": "rushes-desktop",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "license": "MIT",
   "description": "Rushes native recording desktop shell",
