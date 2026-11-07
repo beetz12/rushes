@@ -23,7 +23,9 @@ concurrency:
 jobs:
   package:
     name: package (${{ inputs.lane || 'unsigned-preview' }})
-    runs-on: macos-latest
+    # The App Intents helper needs Xcode 27's SwiftPM, which emits the compiler
+    # constants its metadata step reads; macos-latest still ships Xcode 26.6.
+    runs-on: xcode-27
     timeout-minutes: 90
     permissions:
       contents: write
