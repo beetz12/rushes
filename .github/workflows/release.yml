@@ -75,17 +75,18 @@ jobs:
           # shellcheck disable=SC1091
           . "$NVM_DIR/nvm.sh"
           set -e
-          pins=$(cat shell/.nvmrc cloud/.nvmrc viewer/.nvmrc | tr -d '[:space:]v' | sort -u)
+          pins=$(sed -e 's/^v//' -e 's/[[:space:]]//g' shell/.nvmrc cloud/.nvmrc viewer/.nvmrc | sort -u)
           if [ "$(printf '%s\n' "$pins" | wc -l | tr -d ' ')" != "1" ]; then echo "::error::Surfaces pin different Node versions."; exit 1; fi
           nvm install "$pins"
           test -x "$NVM_DIR/versions/node/v$pins/bin/node"
           echo "$NVM_DIR/versions/node/v$pins/bin" >> "$GITHUB_PATH"
       - name: Build the release engine and CLI
         run: swift build -c release
-      - name: Build the cloud and viewer bundles
+      - name: Build the cloud, viewer and worker bundles
         run: |
           set -euo pipefail
-          for surface in cloud viewer; do
+          # The app ships the share Worker bundle for one-click sharing setup.
+          for surface in cloud viewer worker; do
             npm --prefix "$surface" ci --no-audit --no-fund
             npm --prefix "$surface" run build
           done

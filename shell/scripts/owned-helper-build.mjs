@@ -47,6 +47,8 @@ export function runOwnedHelper(command, argumentsList, options = {}) {
       }
       if (reason || exitCode !== 0 || exitSignal) {
         const failure = reason ?? new Error('Native helper build failed.');
+        // Show the helper's last output so a CI failure is diagnosable.
+        if (retained.length) process.stderr.write(`Native helper output (last ${retained.length} bytes):\n${retained.toString()}\n`);
         failure.buildResult = result; reject(failure);
       } else resolve(result);
     }

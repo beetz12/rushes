@@ -11,7 +11,7 @@ import RushCore
 /// attach to it directly; Phase 2's shell launches it from inside
 /// Rushes.app and takes over that duty.
 
-let engineVersion = "0.2.0"
+let engineVersion = "0.2.1"
 
 // MARK: - Flags
 
