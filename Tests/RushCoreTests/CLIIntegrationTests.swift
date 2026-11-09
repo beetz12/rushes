@@ -131,38 +131,50 @@ struct ControlCLIIntegrationTests {
 
     @Test("list shows the take; show returns the manifest; verify is green")
     func listShowVerify() throws {
-        // Make one take through the CLI.
-        let start = try Self.runCLI([
-            "record", "start", "--display", "main", "--duration", "1",
-        ], timeout: 180)
-        #expect(start.status == 0, "stderr: \(start.stderr)")
-        let started = try Self.stdoutJSON(start.stdout)
-        let recordingID = try #require(started["id"] as? String)
+        // Hosted runners can kill the stub *after* start returns 0
+        // (AppleM2Scaler). ensureRunning then replaces the engine, so list
+        // never sees that take and exit-4 retry never fires. One full
+        // start+list+show+verify redo covers that shape and stays bounded.
+        var lastRecordingID: String?
+        for attempt in 0..<2 {
+            let start = try Self.runCLI([
+                "record", "start", "--display", "main", "--duration", "1",
+            ], timeout: 180)
+            #expect(start.status == 0, "stderr: \(start.stderr)")
+            let started = try Self.stdoutJSON(start.stdout)
+            let recordingID = try #require(started["id"] as? String)
+            lastRecordingID = recordingID
 
-        // Wait for the duration stop to land before listing.
-        var listed: [[String: Any]] = []
-        for _ in 0..<100 {
-            let list = try Self.runCLI(["list"])
-            #expect(list.status == 0)
-            let rows = (try Self.stdoutJSON(list.stdout)["recordings"] as? [[String: Any]]) ?? []
-            if let row = rows.first(where: { $0["id"] as? String == recordingID }),
-               row["status"] as? String == "complete" {
-                listed = rows
-                break
+            var listed: [[String: Any]] = []
+            for _ in 0..<100 {
+                let list = try Self.runCLI(["list"])
+                #expect(list.status == 0)
+                let rows = (try Self.stdoutJSON(list.stdout)["recordings"] as? [[String: Any]]) ?? []
+                if let row = rows.first(where: { $0["id"] as? String == recordingID }),
+                   row["status"] as? String == "complete" {
+                    listed = rows
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.2)
             }
-            Thread.sleep(forTimeInterval: 0.2)
+            guard listed.contains(where: { $0["id"] as? String == recordingID }) else {
+                continue
+            }
+
+            let show = try Self.runCLI(["show", recordingID])
+            #expect(show.status == 0)
+            let shown = try Self.stdoutJSON(show.stdout)
+            #expect((shown["manifest"] as? [String: Any])?["id"] as? String == recordingID)
+
+            let verify = try Self.runCLI(["verify", recordingID])
+            #expect(verify.status == 0, "stderr: \(verify.stderr)")
+            let report = try Self.stdoutJSON(verify.stdout)
+            #expect(report["ok"] as? Bool == true)
+            return
         }
-        #expect(listed.contains { $0["id"] as? String == recordingID })
-
-        let show = try Self.runCLI(["show", recordingID])
-        #expect(show.status == 0)
-        let shown = try Self.stdoutJSON(show.stdout)
-        #expect((shown["manifest"] as? [String: Any])?["id"] as? String == recordingID)
-
-        let verify = try Self.runCLI(["verify", recordingID])
-        #expect(verify.status == 0, "stderr: \(verify.stderr)")
-        let report = try Self.stdoutJSON(verify.stdout)
-        #expect(report["ok"] as? Bool == true)
+        #expect(
+            Bool(false),
+            "recording \(lastRecordingID ?? "?") never completed in list after start (post-start engine death?)")
     }
 
     @Test("A disconnected generated engine never repeats a capture request")
