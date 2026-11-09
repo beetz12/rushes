@@ -138,31 +138,38 @@ for (const [name, browserType, options] of [
         assert.equal(transcriptReads, 3);
         // Cue click calls seek(startMs) → currentTime = 3. Arm seeked before
         // click so a fast seek cannot be missed; Node-side timeout (not page
-        // setTimeout) so timer compression cannot shrink it. Still require
-        // currentTime within 0.25 of 3 — same tightness as before.
+        // setTimeout) so timer compression cannot shrink it. Always click the
+        // cue (never short-circuit on an already-near-3 currentTime) so this
+        // path really exercises the cue click. Sync-after-click may still win.
+        // Still require currentTime within 0.25 of 3 — same tightness as before.
         const seekWait = page.evaluate(() => {
             const video = document.querySelector('video');
             const button = document.querySelector('#transcript button');
             return new Promise(resolve => {
                 const finish = (via) => resolve({ currentTime: video.currentTime, via });
-                if (Math.abs(video.currentTime - 3) < 0.25) return finish('already');
                 video.addEventListener('seeked', () => finish('seeked'), { once: true });
                 button.click();
                 if (Math.abs(video.currentTime - 3) < 0.25) finish('sync');
             });
         });
         let seekOutcome;
+        let seekTimeoutId;
         try {
             seekOutcome = await Promise.race([
                 seekWait,
-                new Promise((_, reject) => setTimeout(
-                    () => reject(Object.assign(new Error('seeked-timeout'), { code: 'SEEKED_TIMEOUT' })),
-                    15_000,
-                )),
+                new Promise((_, reject) => {
+                    seekTimeoutId = setTimeout(
+                        () => reject(Object.assign(new Error('seeked-timeout'), { code: 'SEEKED_TIMEOUT' })),
+                        15_000,
+                    );
+                }),
             ]);
         } catch (error) {
+            if (error?.code !== 'SEEKED_TIMEOUT') throw error;
             const currentTime = await page.locator('video').evaluate(video => video.currentTime);
             assert.fail(`cue click seek timed out waiting for seeked; currentTime=${currentTime}`);
+        } finally {
+            clearTimeout(seekTimeoutId);
         }
         assert.ok(
             Math.abs(seekOutcome.currentTime - 3) < 0.25,
