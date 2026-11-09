@@ -136,9 +136,38 @@ for (const [name, browserType, options] of [
         assert.equal(page.url(), originalURL);
         assert.equal(await page.evaluate(() => window.mediaResets), 0);
         assert.equal(transcriptReads, 3);
-        await page.locator('#transcript button').click();
-        await page.waitForFunction(() => Math.abs(document.querySelector('video').currentTime - 3) < .25,
-            null, { timeout: 3000 });
+        // Cue click calls seek(startMs) → currentTime = 3. Arm seeked before
+        // click so a fast seek cannot be missed; Node-side timeout (not page
+        // setTimeout) so timer compression cannot shrink it. Still require
+        // currentTime within 0.25 of 3 — same tightness as before.
+        const seekWait = page.evaluate(() => {
+            const video = document.querySelector('video');
+            const button = document.querySelector('#transcript button');
+            return new Promise(resolve => {
+                const finish = (via) => resolve({ currentTime: video.currentTime, via });
+                if (Math.abs(video.currentTime - 3) < 0.25) return finish('already');
+                video.addEventListener('seeked', () => finish('seeked'), { once: true });
+                button.click();
+                if (Math.abs(video.currentTime - 3) < 0.25) finish('sync');
+            });
+        });
+        let seekOutcome;
+        try {
+            seekOutcome = await Promise.race([
+                seekWait,
+                new Promise((_, reject) => setTimeout(
+                    () => reject(Object.assign(new Error('seeked-timeout'), { code: 'SEEKED_TIMEOUT' })),
+                    15_000,
+                )),
+            ]);
+        } catch (error) {
+            const currentTime = await page.locator('video').evaluate(video => video.currentTime);
+            assert.fail(`cue click seek timed out waiting for seeked; currentTime=${currentTime}`);
+        }
+        assert.ok(
+            Math.abs(seekOutcome.currentTime - 3) < 0.25,
+            `cue click should seek near 3s; currentTime=${seekOutcome.currentTime} via=${seekOutcome.via}`,
+        );
         await page.locator('video').evaluate(video => video.pause());
         assert.deepEqual(errors, []);
         t.diagnostic(`${name} ${browser.version()}: real local HTTP; same transcript restored while paused and playing; no media reset.`);
