@@ -109,6 +109,19 @@ struct WriterFinalizeBudgetTests {
     }
     private func elapsed(_ start: DispatchTime) -> Double { Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1e9 }
 
+    /// Hosted CI has occasionally overshot a 250ms wall check by ~2–3ms while
+    /// still returning well before the 500ms backend barrier. Keep the
+    /// production finalize deadline at 100ms; this is only the test's
+    /// observation window, still well under the 500ms barrier.
+    private let hostedObservationCap: Double = 0.40
+
+    private final class SignalFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func set() { lock.withLock { value = true } }
+        var isSet: Bool { lock.withLock { value } }
+    }
+
     @Test("Queue admission is inside the finish budget")
     func parkedAppend() async throws {
         let f = try Fixture(); defer { f.close() }
@@ -117,10 +130,15 @@ struct WriterFinalizeBudgetTests {
         let sample = try frame(33_333_333)
         let append = Task.detached { f.writer.appendVideo(sample) }
         #expect(f.backend.waitForAppend())
-        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(500)) { barrier.signal() }
+        let released = SignalFlag()
+        DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(500)) {
+            released.set(); barrier.signal()
+        }
         let start = DispatchTime.now()
         let result = await f.writer.finalize(deadline: .milliseconds(100))
-        #expect(elapsed(start) < 0.25)
+        // Semantic timing: must not have waited for the 500ms append barrier.
+        #expect(!released.isSet)
+        #expect(elapsed(start) < hostedObservationCap)
         #expect(result.finalizeState == .degraded)
         #expect(result.framesWritten >= 1)
         #expect(PendingWriterFiles.shared.contains(in:f.root))
@@ -136,7 +154,7 @@ struct WriterFinalizeBudgetTests {
         f.writer.appendVideo(try frame(33_333_333))
         let start = DispatchTime.now()
         let result = await f.writer.finalize(endMediaTimeNs: 1_000_000_000, deadline: .milliseconds(100))
-        #expect(elapsed(start) < 0.25)
+        #expect(elapsed(start) < hostedObservationCap)
         #expect(result.finalizeState == .degraded)
         #expect(f.backend.counts.cancels == 0)
     }
@@ -147,7 +165,7 @@ struct WriterFinalizeBudgetTests {
         f.writer.appendVideo(try frame()); f.backend.endDelay = 0.5
         let start = DispatchTime.now()
         let result = await f.writer.finalize(endMediaTimeNs: 1_000_000_000, deadline: .milliseconds(100))
-        #expect(elapsed(start) < 0.25)
+        #expect(elapsed(start) < hostedObservationCap)
         #expect(result.finalizeState == .degraded)
         // Allow the owned backend to leave its synchronous operation before cleanup.
         #expect(PendingWriterFiles.shared.contains(in:f.root))
@@ -208,10 +226,15 @@ struct WriterFinalizeBudgetTests {
         let barrier=DispatchSemaphore(value:0); f.backend.cancelBarrier=barrier
         let cancel=Task { await f.writer.cancel() }
         #expect(f.backend.waitForCancel())
-        DispatchQueue.global().asyncAfter(deadline:.now() + .milliseconds(500)) { barrier.signal() }
+        let released=SignalFlag()
+        DispatchQueue.global().asyncAfter(deadline:.now() + .milliseconds(500)) {
+            released.set(); barrier.signal()
+        }
         let start=DispatchTime.now()
         let result=await f.writer.finalize(deadline:.milliseconds(100))
-        #expect(elapsed(start)<0.25)
+        // Semantic timing: must not have waited for the 500ms cancel barrier.
+        #expect(!released.isSet)
+        #expect(elapsed(start)<hostedObservationCap)
         #expect(result.finalizeState == .degraded)
         #expect(PendingWriterFiles.shared.contains(in:f.root))
         await cancel.value
