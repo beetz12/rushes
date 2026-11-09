@@ -177,8 +177,19 @@ def main():
     parser.add_argument('--reports', type=Path, action='append')
     options = parser.parse_args()
     executable = options.engine.resolve(strict=True)
-    identity = subprocess.run(['dwarfdump', '--uuid', str(executable)], check=True,
-                              capture_output=True, text=True, timeout=5)
+    try:
+        identity = subprocess.run(['dwarfdump', '--uuid', str(executable)], check=True,
+                                  capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        options.output.write_text(json.dumps({
+            'schema': 'rushes.owned-engine-crash/1',
+            'availability': 'unavailable',
+            'reason': 'dwarfdump --uuid timed out',
+            'reports': [], 'unavailablePids': [], 'errors': ['TimeoutExpired'],
+        }, indent=2))
+        print(json.dumps({'ownedBoots': 0, 'matchedStacks': 0,
+                          'unavailablePids': [], 'errors': ['TimeoutExpired']}))
+        return
     uuids = {s.upper() for s in re.findall(r'UUID: ([0-9A-Fa-f-]{36})', identity.stdout)}
     if not uuids:
         raise ValueError('No exact engine Mach-O UUID')

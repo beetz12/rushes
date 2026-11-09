@@ -131,38 +131,50 @@ struct ControlCLIIntegrationTests {
 
     @Test("list shows the take; show returns the manifest; verify is green")
     func listShowVerify() throws {
-        // Make one take through the CLI.
-        let start = try Self.runCLI([
-            "record", "start", "--display", "main", "--duration", "1",
-        ], timeout: 180)
-        #expect(start.status == 0, "stderr: \(start.stderr)")
-        let started = try Self.stdoutJSON(start.stdout)
-        let recordingID = try #require(started["id"] as? String)
+        // Hosted runners can kill the stub *after* start returns 0
+        // (AppleM2Scaler). ensureRunning then replaces the engine, so list
+        // never sees that take and exit-4 retry never fires. One full
+        // start+list+show+verify redo covers that shape and stays bounded.
+        var lastRecordingID: String?
+        for attempt in 0..<2 {
+            let start = try Self.runCLI([
+                "record", "start", "--display", "main", "--duration", "1",
+            ], timeout: 180)
+            #expect(start.status == 0, "stderr: \(start.stderr)")
+            let started = try Self.stdoutJSON(start.stdout)
+            let recordingID = try #require(started["id"] as? String)
+            lastRecordingID = recordingID
 
-        // Wait for the duration stop to land before listing.
-        var listed: [[String: Any]] = []
-        for _ in 0..<100 {
-            let list = try Self.runCLI(["list"])
-            #expect(list.status == 0)
-            let rows = (try Self.stdoutJSON(list.stdout)["recordings"] as? [[String: Any]]) ?? []
-            if let row = rows.first(where: { $0["id"] as? String == recordingID }),
-               row["status"] as? String == "complete" {
-                listed = rows
-                break
+            var listed: [[String: Any]] = []
+            for _ in 0..<100 {
+                let list = try Self.runCLI(["list"])
+                #expect(list.status == 0)
+                let rows = (try Self.stdoutJSON(list.stdout)["recordings"] as? [[String: Any]]) ?? []
+                if let row = rows.first(where: { $0["id"] as? String == recordingID }),
+                   row["status"] as? String == "complete" {
+                    listed = rows
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.2)
             }
-            Thread.sleep(forTimeInterval: 0.2)
+            guard listed.contains(where: { $0["id"] as? String == recordingID }) else {
+                continue
+            }
+
+            let show = try Self.runCLI(["show", recordingID])
+            #expect(show.status == 0)
+            let shown = try Self.stdoutJSON(show.stdout)
+            #expect((shown["manifest"] as? [String: Any])?["id"] as? String == recordingID)
+
+            let verify = try Self.runCLI(["verify", recordingID])
+            #expect(verify.status == 0, "stderr: \(verify.stderr)")
+            let report = try Self.stdoutJSON(verify.stdout)
+            #expect(report["ok"] as? Bool == true)
+            return
         }
-        #expect(listed.contains { $0["id"] as? String == recordingID })
-
-        let show = try Self.runCLI(["show", recordingID])
-        #expect(show.status == 0)
-        let shown = try Self.stdoutJSON(show.stdout)
-        #expect((shown["manifest"] as? [String: Any])?["id"] as? String == recordingID)
-
-        let verify = try Self.runCLI(["verify", recordingID])
-        #expect(verify.status == 0, "stderr: \(verify.stderr)")
-        let report = try Self.stdoutJSON(verify.stdout)
-        #expect(report["ok"] as? Bool == true)
+        #expect(
+            Bool(false),
+            "recording \(lastRecordingID ?? "?") never completed in list after start (post-start engine death?)")
     }
 
     @Test("A disconnected generated engine never repeats a capture request")
@@ -471,10 +483,19 @@ final class EngineHarness: @unchecked Sendable {
 
     /// The stub engine can exit after a take on the hosted runner. Later CLI
     /// calls use the same recordings root and index, so boot another one
-    /// instead of failing the suite.
+    /// instead of failing the suite. A process that is still listed as
+    /// running but no longer accepting on the socket is treated as dead —
+    /// that is the post-take crash we see on GitHub's macOS VMs
+    /// (`AppleM2ScalerParavirtDriver` / exit 11).
     private func ensureRunning() {
-        if process?.isRunning == true { return }
-        logEngineReplacement("process had exited")
+        if process?.isRunning == true,
+           CLIEngineHandover.socketIsLive(socketPath) {
+            return
+        }
+        logEngineReplacement(
+            process?.isRunning == true
+                ? "process running but socket not accepting"
+                : "process had exited")
         startVerifiedEngine()
     }
 
@@ -676,21 +697,43 @@ final class EngineHarness: @unchecked Sendable {
         _ arguments: [String], timeout: TimeInterval
     ) throws -> (status: Int32, stdout: String, stderr: String) {
         ensureRunning()
-        let result: (status: Int32, stdout: String, stderr: String)
-        do { result = try runCLIOnce(arguments, timeout: timeout) }
-        catch {
-            if CLIEngineHandover.targetsEngine(arguments, engineSocket: socketPath.path) {
-                output.reportFirstFailure(process: process, arguments: arguments, cliStatus: nil,
-                    cliError: String(describing: error), cliOutput: "")
+        // Hosted runners sometimes kill the stub after a successful take
+        // (AppleM2ScalerParavirtDriver / PackageVerifier AVAssetReader crash).
+        // ensureRunning can still see isRunning right before the crash; the
+        // CLI then gets exit 4 / connection-closed. Restart up to three times
+        // when this harness's engine is gone — not when a fixture intentionally
+        // closed a live socket, and not for a foreign --socket.
+        var attempt = 0
+        var result: (status: Int32, stdout: String, stderr: String)
+        while true {
+            do { result = try runCLIOnce(arguments, timeout: timeout) }
+            catch {
+                if CLIEngineHandover.targetsEngine(arguments, engineSocket: socketPath.path) {
+                    output.reportFirstFailure(process: process, arguments: arguments, cliStatus: nil,
+                        cliError: String(describing: error), cliOutput: "")
+                }
+                throw error
             }
-            throw error
+            let targets = CLIEngineHandover.targetsEngine(
+                arguments, engineSocket: socketPath.path)
+            let shouldRetry = CLIEngineHandover.shouldRetryAfterExit4(
+                status: result.status,
+                targetsEngine: targets,
+                processRunning: process?.isRunning == true,
+                socketLive: CLIEngineHandover.socketIsLive(socketPath))
+            if shouldRetry, attempt < 3 {
+                attempt += 1
+                logEngineReplacement(
+                    "retry #\(attempt) after exit 4 with dead harness engine")
+                startVerifiedEngine()
+                continue
+            }
+            if result.status == 4, targets {
+                output.reportFirstFailure(process: process, arguments: arguments,
+                    cliStatus: result.status, cliError: result.stderr, cliOutput: result.stdout)
+            }
+            return result
         }
-        if result.status == 4,
-           CLIEngineHandover.targetsEngine(arguments, engineSocket: socketPath.path) {
-            output.reportFirstFailure(process: process, arguments: arguments, cliStatus: result.status,
-                cliError: result.stderr, cliOutput: result.stdout)
-        }
-        return result
     }
 
     private func runCLIOnce(
@@ -873,6 +916,18 @@ final class CLIEngineOutputLedger: @unchecked Sendable {
 /// must not be treated as this engine dying.
 enum CLIEngineHandover {
 
+    /// Exit 4 against this harness socket is only a restart candidate when
+    /// the engine process or its listen socket is already gone. A live
+    /// fixture that intentionally closes one connection must not retry.
+    static func shouldRetryAfterExit4(
+        status: Int32,
+        targetsEngine: Bool,
+        processRunning: Bool,
+        socketLive: Bool
+    ) -> Bool {
+        status == 4 && targetsEngine && (!processRunning || !socketLive)
+    }
+
     /// The last `--socket PATH` wins, matching `parseCLI`. No override
     /// means the harness socket.
     static func targetsEngine(_ arguments: [String], engineSocket: String) -> Bool {
@@ -966,6 +1021,22 @@ struct CLIEngineHandoverTests {
         #expect(!CLIEngineHandover.targetsEngine(
             ["--socket", engine, "--socket", "/tmp/absent/control.sock", "guide"],
             engineSocket: engine))
+    }
+
+    @Test("Exit 4 retries only when this harness engine is already gone")
+    func exit4RetryOnlyForDeadHarnessEngine() {
+        #expect(CLIEngineHandover.shouldRetryAfterExit4(
+            status: 4, targetsEngine: true, processRunning: false, socketLive: false))
+        #expect(CLIEngineHandover.shouldRetryAfterExit4(
+            status: 4, targetsEngine: true, processRunning: true, socketLive: false))
+        #expect(!CLIEngineHandover.shouldRetryAfterExit4(
+            status: 4, targetsEngine: true, processRunning: true, socketLive: true))
+        #expect(!CLIEngineHandover.shouldRetryAfterExit4(
+            status: 4, targetsEngine: false, processRunning: false, socketLive: false))
+        #expect(!CLIEngineHandover.shouldRetryAfterExit4(
+            status: 0, targetsEngine: true, processRunning: false, socketLive: false))
+        #expect(!CLIEngineHandover.shouldRetryAfterExit4(
+            status: 5, targetsEngine: true, processRunning: false, socketLive: false))
     }
 }
 

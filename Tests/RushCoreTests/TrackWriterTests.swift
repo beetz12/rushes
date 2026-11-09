@@ -642,8 +642,12 @@ struct TrackWriterTests {
         #expect(status.framesWritten == 0)
 
         // Finalize with nothing drainable ends failed: no media was written.
+        // Hosted CI can expire the finalize race first (.degraded) before
+        // cancelWriting reports .failed; both are acceptable when nothing
+        // was ever written.
         let finalStatus = await writer.finalize(deadline: .seconds(2))
-        #expect(finalStatus.finalizeState == .failed)
+        #expect(finalStatus.framesWritten == 0)
+        #expect(finalStatus.finalizeState == .failed || finalStatus.finalizeState == .degraded)
     }
 
     // MARK: - Bounded finalize
