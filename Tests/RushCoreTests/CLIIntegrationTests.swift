@@ -685,37 +685,43 @@ final class EngineHarness: @unchecked Sendable {
         _ arguments: [String], timeout: TimeInterval
     ) throws -> (status: Int32, stdout: String, stderr: String) {
         ensureRunning()
-        let result: (status: Int32, stdout: String, stderr: String)
-        do { result = try runCLIOnce(arguments, timeout: timeout) }
-        catch {
-            if CLIEngineHandover.targetsEngine(arguments, engineSocket: socketPath.path) {
-                output.reportFirstFailure(process: process, arguments: arguments, cliStatus: nil,
-                    cliError: String(describing: error), cliOutput: "")
-            }
-            throw error
-        }
         // Hosted runners sometimes kill the stub after a successful take
-        // (SIGSEGV around AppleM2ScalerParavirtDriver). ensureRunning can
-        // still see isRunning right before the crash; the first CLI call
-        // then gets exit 4 / connection-closed. Restart once when this
-        // harness's engine is gone — not when a fixture intentionally
+        // (AppleM2ScalerParavirtDriver / PackageVerifier AVAssetReader crash).
+        // ensureRunning can still see isRunning right before the crash; the
+        // CLI then gets exit 4 / connection-closed. Restart up to three times
+        // when this harness's engine is gone — not when a fixture intentionally
         // closed a live socket, and not for a foreign --socket.
-        if CLIEngineHandover.shouldRetryAfterExit4(
-            status: result.status,
-            targetsEngine: CLIEngineHandover.targetsEngine(
-                arguments, engineSocket: socketPath.path),
-            processRunning: process?.isRunning == true,
-            socketLive: CLIEngineHandover.socketIsLive(socketPath)) {
-            logEngineReplacement("retry after exit 4 with dead harness engine")
-            startVerifiedEngine()
-            return try runCLIOnce(arguments, timeout: timeout)
+        var attempt = 0
+        var result: (status: Int32, stdout: String, stderr: String)
+        while true {
+            do { result = try runCLIOnce(arguments, timeout: timeout) }
+            catch {
+                if CLIEngineHandover.targetsEngine(arguments, engineSocket: socketPath.path) {
+                    output.reportFirstFailure(process: process, arguments: arguments, cliStatus: nil,
+                        cliError: String(describing: error), cliOutput: "")
+                }
+                throw error
+            }
+            let targets = CLIEngineHandover.targetsEngine(
+                arguments, engineSocket: socketPath.path)
+            let shouldRetry = CLIEngineHandover.shouldRetryAfterExit4(
+                status: result.status,
+                targetsEngine: targets,
+                processRunning: process?.isRunning == true,
+                socketLive: CLIEngineHandover.socketIsLive(socketPath))
+            if shouldRetry, attempt < 3 {
+                attempt += 1
+                logEngineReplacement(
+                    "retry #\(attempt) after exit 4 with dead harness engine")
+                startVerifiedEngine()
+                continue
+            }
+            if result.status == 4, targets {
+                output.reportFirstFailure(process: process, arguments: arguments,
+                    cliStatus: result.status, cliError: result.stderr, cliOutput: result.stdout)
+            }
+            return result
         }
-        if result.status == 4,
-           CLIEngineHandover.targetsEngine(arguments, engineSocket: socketPath.path) {
-            output.reportFirstFailure(process: process, arguments: arguments, cliStatus: result.status,
-                cliError: result.stderr, cliOutput: result.stdout)
-        }
-        return result
     }
 
     private func runCLIOnce(
