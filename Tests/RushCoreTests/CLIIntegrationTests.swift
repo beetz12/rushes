@@ -471,10 +471,19 @@ final class EngineHarness: @unchecked Sendable {
 
     /// The stub engine can exit after a take on the hosted runner. Later CLI
     /// calls use the same recordings root and index, so boot another one
-    /// instead of failing the suite.
+    /// instead of failing the suite. A process that is still listed as
+    /// running but no longer accepting on the socket is treated as dead —
+    /// that is the post-take crash we see on GitHub's macOS VMs
+    /// (`AppleM2ScalerParavirtDriver` / exit 11).
     private func ensureRunning() {
-        if process?.isRunning == true { return }
-        logEngineReplacement("process had exited")
+        if process?.isRunning == true,
+           CLIEngineHandover.socketIsLive(socketPath) {
+            return
+        }
+        logEngineReplacement(
+            process?.isRunning == true
+                ? "process running but socket not accepting"
+                : "process had exited")
         startVerifiedEngine()
     }
 
@@ -685,6 +694,22 @@ final class EngineHarness: @unchecked Sendable {
             }
             throw error
         }
+        // Hosted runners sometimes kill the stub after a successful take
+        // (SIGSEGV around AppleM2ScalerParavirtDriver). ensureRunning can
+        // still see isRunning right before the crash; the first CLI call
+        // then gets exit 4 / connection-closed. Restart once when this
+        // harness's engine is gone — not when a fixture intentionally
+        // closed a live socket, and not for a foreign --socket.
+        if CLIEngineHandover.shouldRetryAfterExit4(
+            status: result.status,
+            targetsEngine: CLIEngineHandover.targetsEngine(
+                arguments, engineSocket: socketPath.path),
+            processRunning: process?.isRunning == true,
+            socketLive: CLIEngineHandover.socketIsLive(socketPath)) {
+            logEngineReplacement("retry after exit 4 with dead harness engine")
+            startVerifiedEngine()
+            return try runCLIOnce(arguments, timeout: timeout)
+        }
         if result.status == 4,
            CLIEngineHandover.targetsEngine(arguments, engineSocket: socketPath.path) {
             output.reportFirstFailure(process: process, arguments: arguments, cliStatus: result.status,
@@ -873,6 +898,18 @@ final class CLIEngineOutputLedger: @unchecked Sendable {
 /// must not be treated as this engine dying.
 enum CLIEngineHandover {
 
+    /// Exit 4 against this harness socket is only a restart candidate when
+    /// the engine process or its listen socket is already gone. A live
+    /// fixture that intentionally closes one connection must not retry.
+    static func shouldRetryAfterExit4(
+        status: Int32,
+        targetsEngine: Bool,
+        processRunning: Bool,
+        socketLive: Bool
+    ) -> Bool {
+        status == 4 && targetsEngine && (!processRunning || !socketLive)
+    }
+
     /// The last `--socket PATH` wins, matching `parseCLI`. No override
     /// means the harness socket.
     static func targetsEngine(_ arguments: [String], engineSocket: String) -> Bool {
@@ -966,6 +1003,22 @@ struct CLIEngineHandoverTests {
         #expect(!CLIEngineHandover.targetsEngine(
             ["--socket", engine, "--socket", "/tmp/absent/control.sock", "guide"],
             engineSocket: engine))
+    }
+
+    @Test("Exit 4 retries only when this harness engine is already gone")
+    func exit4RetryOnlyForDeadHarnessEngine() {
+        #expect(CLIEngineHandover.shouldRetryAfterExit4(
+            status: 4, targetsEngine: true, processRunning: false, socketLive: false))
+        #expect(CLIEngineHandover.shouldRetryAfterExit4(
+            status: 4, targetsEngine: true, processRunning: true, socketLive: false))
+        #expect(!CLIEngineHandover.shouldRetryAfterExit4(
+            status: 4, targetsEngine: true, processRunning: true, socketLive: true))
+        #expect(!CLIEngineHandover.shouldRetryAfterExit4(
+            status: 4, targetsEngine: false, processRunning: false, socketLive: false))
+        #expect(!CLIEngineHandover.shouldRetryAfterExit4(
+            status: 0, targetsEngine: true, processRunning: false, socketLive: false))
+        #expect(!CLIEngineHandover.shouldRetryAfterExit4(
+            status: 5, targetsEngine: true, processRunning: false, socketLive: false))
     }
 }
 
