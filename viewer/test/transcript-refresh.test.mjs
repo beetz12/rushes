@@ -60,23 +60,43 @@ for (const [name, browserType, options] of [
         const page = await browser.newPage();
         const errors = [];
         page.on('pageerror', error => errors.push(error.message));
-        // Only shorten polling waits; requests, responses and viewer callbacks remain real.
+        // Ready-status refresh polls at 15s; compress long timers so CI does not
+        // sit on a single poll. Keep request/response and viewer callbacks real.
         await page.addInitScript(() => {
             const timer = window.setTimeout.bind(window);
-            window.setTimeout = (callback, delay, ...args) => timer(callback,
-                delay >= 3000 && delay <= 15000 ? 100 : delay, ...args);
+            window.setTimeout = (callback, delay, ...args) => {
+                const ms = typeof delay === 'number' ? delay : Number(delay);
+                const compressed = Number.isFinite(ms) && ms >= 1000 ? 100 : delay;
+                return timer(callback, compressed, ...args);
+            };
         });
         await page.goto(`${base}/s/${manifest.id}`);
-        const waitForCue = () => page.waitForFunction(() =>
-            document.querySelector('#transcript button')?.textContent.includes('Restorable line'),
-        null, { timeout: 3000 });
+        // Explicit cue presence (button + text), not a bare 3s race against one
+        // ready-poll. polling:50 catches the compressed 100ms refresh promptly.
+        const waitForCue = () => page.waitForFunction(() => {
+            const button = document.querySelector('#transcript button');
+            return Boolean(button && button.textContent.includes('Restorable line'));
+        }, null, { timeout: 15_000, polling: 50 });
         const remove = async () => {
             manifest.transcript = null;
             await page.waitForFunction(() => document.querySelector('#transcript')?.textContent
-                .includes('will appear here'), null, { timeout: 3000 });
+                .includes('will appear here'), null, { timeout: 15_000, polling: 50 });
             assert.equal(await page.locator('#transcript button').count(), 0);
         };
-        const restore = async () => { manifest.transcript = transcriptFile; await waitForCue(); };
+        const restore = async () => {
+            const readsBefore = transcriptReads;
+            manifest.transcript = transcriptFile;
+            await waitForCue();
+            // Catches a stale-panel "refresh" that never re-fetches the JSON.
+            assert.ok(
+                transcriptReads > readsBefore,
+                `restore must refetch transcript (reads ${readsBefore} → ${transcriptReads})`,
+            );
+            assert.match(
+                await page.locator('#transcript button').textContent(),
+                /Restorable line/,
+            );
+        };
         await waitForCue();
         await page.locator('video').evaluate(async video => {
             video.muted = true; await video.play(); video.pause();
